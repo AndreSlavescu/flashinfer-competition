@@ -16,10 +16,10 @@
 // CSV header
 // ---------------------------------------------------------------------------
 static void print_csv_header() {
-    printf("experiment,config,data_type,dim0,box_dim0,bytes_per_row,"
+    printf("experiment,x_var,config,data_type,dim0,box_dim0,bytes_per_row,"
            "bytes_per_gather4,col_steps,num_blocks,pattern,cache_hint,"
            "swizzle,total_data_MB,n_outstanding,num_iters,"
-           "elapsed_ms,throughput_GBps,avg_latency_ns,"
+           "throughput_GBps,avg_latency_ns,"
            "net_latency_ns,spread_pct\n");
 }
 
@@ -66,6 +66,8 @@ static const char* dtype_name(CUtensorMapDataType dt) {
 }
 
 struct BenchConfig {
+    std::string      experiment;      // unique per experiment runner
+    std::string      x_var;           // CSV column name of the swept variable (x-axis)
     TensorMapConfig  tm_cfg;
     int              num_blocks;
     IndexPattern     pattern;
@@ -161,8 +163,10 @@ static void run_throughput(const BenchConfig& cfg, bool verbose) {
     // Compute per-gather4 latency: total_time / total_gather4_calls
     double avg_latency_ns = ms_elapsed.value() * 1e6 / total_gather4_calls;
 
-    printf("throughput,%s,%s,%lu,%u,%zu,%zu,%d,%d,%s,%s,%s,%zu,,%d,"
-           "%.4f,%.2f,%.1f,,%.1f\n",
+    printf("%s,%s,%s,%s,%lu,%u,%zu,%zu,%d,%d,%s,%s,%s,%zu,,%d,"
+           "%.2f,%.1f,,%.1f\n",
+           cfg.experiment.c_str(),
+           cfg.x_var.c_str(),
            cfg.tm_cfg.name,
            dtype_name(cfg.tm_cfg.data_type),
            cfg.tm_cfg.dim0,
@@ -176,7 +180,6 @@ static void run_throughput(const BenchConfig& cfg, bool verbose) {
            swizzle_name(cfg.tm_cfg.swizzle),
            cfg.total_data_MB,
            total_gather4_calls,
-           ms_elapsed.value(),
            ms_throughput.value(),
            avg_latency_ns,
            ms_throughput.spread() * 100.0);
@@ -246,13 +249,14 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
         ms_net.add(net_ns / num_iters);
     }
 
-    // Compute elapsed_ms and throughput from total latency
-    double total_elapsed_ms = ms_total.value() * num_iters / 1e6;  // ns → ms
+    // Compute throughput from total latency
     double total_bytes = (double)num_iters * cfg.tm_cfg.bytes_per_gather4();
     double gbps = total_bytes / (ms_total.value() * num_iters);  // bytes / ns = GB/s
 
-    printf("latency,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,,%d,"
-           "%.4f,%.2f,%.1f,%.1f,%.1f\n",
+    printf("%s,%s,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,,%d,"
+           "%.2f,%.1f,%.1f,%.1f\n",
+           cfg.experiment.c_str(),
+           cfg.x_var.c_str(),
            cfg.tm_cfg.name,
            dtype_name(cfg.tm_cfg.data_type),
            cfg.tm_cfg.dim0,
@@ -265,7 +269,6 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
            swizzle_name(cfg.tm_cfg.swizzle),
            cfg.total_data_MB,
            num_iters,
-           total_elapsed_ms,
            gbps,
            ms_total.value(),
            ms_net.value(),
@@ -326,7 +329,7 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
 
     // Measured runs
     constexpr int NUM_RUNS = 11;
-    MeasurementSeries ms_elapsed, ms_per_gather4;
+    MeasurementSeries ms_per_gather4, ms_gbps;
 
     for (int r = 0; r < NUM_RUNS; r++) {
         CUDA_CHECK(cudaMemset(d_timer, 0, 3 * sizeof(int64_t)));
@@ -341,16 +344,14 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
         double ns_per_gather4 = result.elapsed_ns / total_gather4s;
         double gbps = (total_gather4s * bytes_per_gather4) / result.elapsed_ns;
 
-        ms_elapsed.add(result.elapsed_ms);
         ms_per_gather4.add(ns_per_gather4);
+        ms_gbps.add(gbps);
     }
 
-    // Compute throughput from elapsed time
-    double total_gather4s = (double)num_outer_iters * N;
-    double pipe_gbps = (total_gather4s * bytes_per_gather4) / (ms_elapsed.value() * 1e6);
-
-    printf("pipeline,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,%d,%d,"
-           "%.4f,%.2f,%.1f,,%.1f\n",
+    printf("%s,%s,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,%d,%d,"
+           "%.2f,%.1f,,%.1f\n",
+           cfg.experiment.c_str(),
+           cfg.x_var.c_str(),
            cfg.tm_cfg.name,
            dtype_name(cfg.tm_cfg.data_type),
            cfg.tm_cfg.dim0,
@@ -364,8 +365,7 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
            cfg.total_data_MB,
            N,
            num_outer_iters,
-           ms_elapsed.value(),
-           pipe_gbps,
+           ms_gbps.value(),
            ms_per_gather4.value(),
            ms_per_gather4.spread() * 100.0);
 
@@ -389,28 +389,31 @@ static void experiment_throughput(bool verbose) {
     };
 
     std::vector<BoxSweep> sweeps = {
-        // INT64 packing: dim0=D/8, box varies
-        {CU_TENSOR_MAP_DATA_TYPE_INT64, 8,  CU_TENSOR_MAP_SWIZZLE_NONE},    // 64B/row
-        {CU_TENSOR_MAP_DATA_TYPE_INT64, 16, CU_TENSOR_MAP_SWIZZLE_NONE},    // 128B/row
-        {CU_TENSOR_MAP_DATA_TYPE_INT64, 32, CU_TENSOR_MAP_SWIZZLE_NONE},    // 256B/row
-        {CU_TENSOR_MAP_DATA_TYPE_INT64, 64, CU_TENSOR_MAP_SWIZZLE_NONE},    // 512B/row
+        // INT64 packing: dim0=128 (512 BF16 = 1024B = 128 INT64), box varies
+        {CU_TENSOR_MAP_DATA_TYPE_INT64, 8,   CU_TENSOR_MAP_SWIZZLE_NONE},   // 64B/step, 16 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_INT64, 16,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 128B/step, 8 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_INT64, 32,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 256B/step, 4 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_INT64, 64,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 512B/step, 2 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_INT64, 128, CU_TENSOR_MAP_SWIZZLE_NONE},   // 1024B/step, 1 col_step
         // BF16 native: dim0=512, box varies
         // Swizzle constraint: box_dim0 * sizeof(element) <= swizzle_bytes
         // SWIZZLE_128B max: 128B / 2B = 64 BF16 elements
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 32,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 64B/row
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 64,  CU_TENSOR_MAP_SWIZZLE_128B},   // 128B/row (max for SW128)
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 128, CU_TENSOR_MAP_SWIZZLE_NONE},   // 256B/row (exceeds SW128)
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 256, CU_TENSOR_MAP_SWIZZLE_NONE},   // 512B/row (exceeds SW128)
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 32,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 64B/step, 16 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 64,  CU_TENSOR_MAP_SWIZZLE_128B},   // 128B/step, 8 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 128, CU_TENSOR_MAP_SWIZZLE_NONE},   // 256B/step, 4 col_steps
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 256, CU_TENSOR_MAP_SWIZZLE_NONE},   // 512B/step, 2 col_steps
     };
 
     for (auto& s : sweeps) {
-        uint64_t dim0 = (s.dtype == CU_TENSOR_MAP_DATA_TYPE_INT64) ? 64 : 512;
+        uint64_t dim0 = (s.dtype == CU_TENSOR_MAP_DATA_TYPE_INT64) ? 128 : 512;
         TensorMapConfig tm = {
             "sweep", s.dtype, dim0, s.box_dim0,
             s.swizzle, CU_TENSOR_MAP_L2_PROMOTION_L2_128B
         };
 
         BenchConfig cfg;
+        cfg.experiment = "throughput_box_sweep";
+        cfg.x_var = "box_dim0";
         cfg.tm_cfg = tm;
         cfg.num_blocks = 76;
         cfg.pattern = IndexPattern::RANDOM;
@@ -422,7 +425,7 @@ static void experiment_throughput(bool verbose) {
     }
 }
 
-// Experiment 2: Cache hint comparison
+// Experiment 2: Cache hint comparison (one sub-experiment per working set size)
 static void experiment_cache_hints(bool verbose) {
     if (verbose) fprintf(stderr, "[Experiment 2: Cache Hints]\n");
 
@@ -430,10 +433,13 @@ static void experiment_cache_hints(bool verbose) {
     std::vector<IndexPattern> patterns = {IndexPattern::SEQUENTIAL, IndexPattern::RANDOM, IndexPattern::CLUSTERED_64};
     std::vector<size_t> data_sizes = {8, 64, 256, 1024};
 
-    for (auto hint : hints) {
-        for (auto pat : patterns) {
-            for (auto sz : data_sizes) {
+    for (auto sz : data_sizes) {
+        std::string exp_name = "throughput_hints_" + std::to_string(sz) + "MB";
+        for (auto hint : hints) {
+            for (auto pat : patterns) {
                 BenchConfig cfg;
+                cfg.experiment = exp_name;
+                cfg.x_var = "cache_hint";
                 cfg.tm_cfg = config_ckv_int64();
                 cfg.num_blocks = 76;
                 cfg.pattern = pat;
@@ -459,9 +465,12 @@ static void experiment_patterns(bool verbose) {
     };
     std::vector<size_t> data_sizes = {64, 256, 1024};
 
-    for (auto pat : patterns) {
-        for (auto sz : data_sizes) {
+    for (auto sz : data_sizes) {
+        std::string exp_name = "throughput_patterns_" + std::to_string(sz) + "MB";
+        for (auto pat : patterns) {
             BenchConfig cfg;
+            cfg.experiment = exp_name;
+            cfg.x_var = "pattern";
             cfg.tm_cfg = config_ckv_int64();
             cfg.num_blocks = 76;
             cfg.pattern = pat;
@@ -504,10 +513,10 @@ static void experiment_swizzle(bool verbose) {
                     CU_TENSOR_MAP_SWIZZLE_64B, CU_TENSOR_MAP_SWIZZLE_128B}) {
         sweeps.push_back({CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 512, 256, sw});
     }
-    // INT64 × 64 = 512B/row
+    // INT64 × 128 = 1024B/row
     for (auto sw : {CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_SWIZZLE_32B,
                     CU_TENSOR_MAP_SWIZZLE_64B, CU_TENSOR_MAP_SWIZZLE_128B}) {
-        sweeps.push_back({CU_TENSOR_MAP_DATA_TYPE_INT64, 64, 64, sw});
+        sweeps.push_back({CU_TENSOR_MAP_DATA_TYPE_INT64, 128, 128, sw});
     }
 
     for (auto& s : sweeps) {
@@ -524,6 +533,8 @@ static void experiment_swizzle(bool verbose) {
         };
 
         BenchConfig cfg;
+        cfg.experiment = "throughput_swizzle";
+        cfg.x_var = "swizzle";
         cfg.tm_cfg = tm;
         cfg.num_blocks = 76;
         cfg.pattern = IndexPattern::RANDOM;
@@ -544,6 +555,8 @@ static void experiment_l2(bool verbose) {
 
     for (auto sz : sizes) {
         BenchConfig cfg;
+        cfg.experiment = "throughput_l2";
+        cfg.x_var = "total_data_MB";
         cfg.tm_cfg = config_ckv_int64();
         cfg.num_blocks = 76;
         cfg.pattern = IndexPattern::RANDOM;
@@ -585,6 +598,8 @@ static void experiment_latency(bool verbose) {
 
     for (auto& s : cfgs) {
         BenchConfig cfg;
+        cfg.experiment = "latency";
+        cfg.x_var = "config";
         cfg.tm_cfg = s.tm;
         cfg.num_blocks = 1;
         cfg.pattern = s.pat;
@@ -607,6 +622,8 @@ static void experiment_pipeline(bool verbose) {
 
     for (int N : n_values) {
         BenchConfig cfg;
+        cfg.experiment = "pipeline";
+        cfg.x_var = "n_outstanding";
         cfg.tm_cfg = config_ckv_int64();
         cfg.num_blocks = 1;
         cfg.pattern = IndexPattern::RANDOM;
@@ -627,6 +644,8 @@ static void experiment_saturation(bool verbose) {
 
     for (int nb : block_counts) {
         BenchConfig cfg;
+        cfg.experiment = "throughput_saturation";
+        cfg.x_var = "num_blocks";
         cfg.tm_cfg = config_ckv_int64();
         cfg.num_blocks = nb;
         cfg.pattern = IndexPattern::RANDOM;

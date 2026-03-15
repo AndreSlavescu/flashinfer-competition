@@ -135,14 +135,12 @@ struct TensorMapConfig {
     int    col_steps()         const { return (int)(dim0 / box_dim0); }
 };
 
-// Config A: ckv 512d packed as INT64 (8 BF16 → 1 INT64), single col step
-//   Matches FlashMLA's NoPE tensor map approach (kernel.cuh:913-921)
-//   512 BF16 values = 1024 bytes = 128 INT64 elements, box=128, 1 col step
-//   But gather4 box_dim0 max is 256 elements, and 128 INT64 × 8 bytes = 1024B per row
-//   Actually: dim0=64 (D_NOPE/8=512/8=64 INT64 elements), box_dim0=64
+// Config A: ckv 512d packed as INT64 (4 BF16 → 1 INT64), single col step
+//   Competition uses BF16: 512 values × 2 bytes = 1024 bytes = 128 INT64 elements
+//   box_dim0=128, 1 col step, 128×8=1024B/row, gather4 loads 4×1024=4096B
 inline TensorMapConfig config_ckv_int64() {
     return {"ckv_int64", CU_TENSOR_MAP_DATA_TYPE_INT64,
-            64, 64, CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B};
+            128, 128, CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B};
 }
 
 // Config B: ckv 512d native BF16, 8 col steps (box=64, 64*2=128B per step)

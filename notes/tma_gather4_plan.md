@@ -432,7 +432,7 @@ These are the configurations that directly map to the competition workload:
 
 | Config | Use Case | data_type | dim0 | box_dim0 | stride (bytes) | swizzle | bytes/row | bytes/gather4 | col_steps |
 |--------|----------|-----------|------|----------|----------------|---------|-----------|---------------|-----------|
-| **A** | ckv 512d via INT64 packing | INT64 | 64 | 64 | 1024 | NONE | 512 | 2048 | 1 |
+| **A** | ckv 512d via INT64 packing | INT64 | 128 | 128 | 1024 | NONE | 1024 | 4096 | 1 |
 | **B** | ckv 512d native BF16 | BF16 | 512 | 256 | 1024 | 128B | 512 | 2048 | 2 |
 | **C** | kpe 64d native BF16 | BF16 | 64 | 64 | 128 | NONE | 128 | 512 | 1 |
 | **D** | kpe 64d with SWIZZLE_128B | BF16 | 64 | 64 | 128 | 128B | 128 | 512 | 1 |
@@ -502,10 +502,10 @@ Config A packs 8 BF16 values into 1 INT64 element (matching FlashMLA's FP8 appro
 | Parameter | Values |
 |-----------|--------|
 | swizzle | NONE, 32B, 64B, 128B |
-| data_type × box_dim0 | BF16×64 (128B/row), BF16×128 (256B/row), BF16×256 (512B/row), INT64×64 (512B/row) |
+| data_type × box_dim0 | BF16×64 (128B/row), BF16×128 (256B/row), BF16×256 (512B/row), INT64×128 (1024B/row) |
 | Fixed | num_blocks=76, random, EVICT_LAST, 256MB |
 
-Note: SWIZZLE_128B requires box_dim0 × sizeof(dtype) ≥ 128B. Invalid combos skipped.
+Note: SWIZZLE_128B requires box_dim0 × sizeof(dtype) ≤ 128B. Invalid combos skipped.
 
 #### Experiment 5: L2 Partition / Working Set Size
 

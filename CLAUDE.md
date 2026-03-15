@@ -1,4 +1,33 @@
-I want to microbenchmark the B200 GPU and sm100_a compute architecture. The goal is to give a coding agent context to write an optimized deepseek sparse attention kernel for a competition.
+I want to microbenchmark the B200 GPU and sm100_a compute architecture. The goal is to give a coding agent context to write an optimized deepseek sparse attention kernel AND indexer kernel for a competition.
+
+I want to start with benchmarking the sm100 intrinsics of FlashMLA in /home/mark123/projects/FlashMLA/csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh
+
+Microbenchmarking research:
+Dissecting the NVIDIA Hopper Architecture through Microbenchmarking and
+Multiple Level Analysis: https://arxiv.org/pdf/2501.12084
+
+Dissecting the NVidia Turing T4 GPU via Microbenchmarking: https://arxiv.org/pdf/1903.07486
+
+Dissecting GPU Memory Hierarchy through Microbenchmarking: https://arxiv.org/pdf/1509.02308
+
+Dissecting the NVIDIA Volta GPU Architecture via Microbenchmarking: https://arxiv.org/pdf/1804.06826
+
+
+Benchmarks from other projects:
+/home/mark123/projects/FlashMLA/microbenchmarks/gpu-benches
+/home/mark123/projects/FlashMLA/microbenchmarks/NVIDIA-Hopper-Benchmark
+/home/mark123/projects/FlashMLA/microbenchmarks/mem_benchmarks.cu
+/home/mark123/projects/FlashMLA/microbenchmarks/pchase.cu
+/home/mark123/projects/FlashMLA/microbenchmarks/wmma_benchmarks.cu
+
+Deeseek sparse attention:
+/home/mark123/projects/FlashMLA/notes/deepseek_sparse_attention_algorithm.md
+/home/mark123/projects/FlashMLA/notes/flashmla_implementation.md
+
+My benchmarks:
+/home/mark123/projects/FlashMLA/notes/tma_gather4_plan.md
+/home/mark123/projects/FlashMLA/microbenchmarks/tma_gather4
+/home/mark123/projects/FlashMLA/notes/tma_gather4_analysis.md
 
 Reference attention kernel:
 ```
@@ -166,33 +195,3 @@ def run(q_index_fp8, k_index_cache_fp8, weights, seq_lens, block_table):
 
     return (topk_indices,)
 ```
-
-I want to start with benchmarking the sm100 intrinsics of FlashMLA in /home/mark123/projects/FlashMLA/csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh
-
-Microbenchmarking research:
-Dissecting the NVIDIA Hopper Architecture through Microbenchmarking and
-Multiple Level Analysis: https://arxiv.org/pdf/2501.12084
-
-Dissecting the NVidia Turing T4 GPU via Microbenchmarking: https://arxiv.org/pdf/1903.07486
-
-Dissecting GPU Memory Hierarchy through Microbenchmarking: https://arxiv.org/pdf/1509.02308
-
-Dissecting the NVIDIA Volta GPU Architecture via Microbenchmarking: https://arxiv.org/pdf/1804.06826
-
-
-Benchmarks from other projects:
-/home/mark123/projects/FlashMLA/microbenchmarks/gpu-benches
-/home/mark123/projects/FlashMLA/microbenchmarks/NVIDIA-Hopper-Benchmark
-/home/mark123/projects/FlashMLA/microbenchmarks/mem_benchmarks.cu
-/home/mark123/projects/FlashMLA/microbenchmarks/pchase.cu
-/home/mark123/projects/FlashMLA/microbenchmarks/wmma_benchmarks.cu
-
-Deeseek sparse attention:
-/home/mark123/projects/FlashMLA/notes/deepseek_sparse_attention_algorithm.md
-/home/mark123/projects/FlashMLA/notes/flashmla_implementation.md
-
-My benchmarks:
-/home/mark123/projects/FlashMLA/notes/tma_gather4_plan.md
-/home/mark123/projects/FlashMLA/microbenchmarks/tma_gather4
-/home/mark123/projects/FlashMLA/notes/tma_gather4_analysis.md
-
