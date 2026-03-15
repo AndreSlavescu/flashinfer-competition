@@ -106,11 +106,6 @@ inline const char* cache_hint_name(int64_t hint) {
 // smem_bytes = max_bytes_per_gather4 + 16 (for mbarrier)
 // ===================================================================
 
-// Maximum smem per gather4: 4 rows × box_dim0 × elem_size
-// For config A (INT64, box=64): 4 × 64 × 8 = 2048 bytes
-// For config B (BF16, box=256): 4 × 256 × 2 = 2048 bytes
-// We allocate enough for the largest case.
-constexpr int MAX_SMEM_PER_GATHER4 = 2048;
 
 __global__ void __launch_bounds__(1)
 throughput_kernel(
@@ -120,13 +115,14 @@ throughput_kernel(
     int           col_steps,        // number of col steps per row group
     int           box_dim0,         // elements per col step (for col_idx coordinate)
     int           bytes_per_step,   // box_dim0 * elem_size * 4 rows
+    int           smem_data_size,   // total data region = bytes_per_step * col_steps
     int64_t       cache_hint,
     int64_t*      d_timer_buf)      // [num_blocks * 3]
 {
     extern __shared__ char smem_raw[];
-    // Partition shared memory: [data region][mbarrier]
+    // Partition: [data region (smem_data_size bytes)][8B-aligned mbarrier]
     char*     smem_data = smem_raw;
-    uint64_t* mbar      = reinterpret_cast<uint64_t*>(smem_raw + MAX_SMEM_PER_GATHER4);
+    uint64_t* mbar      = reinterpret_cast<uint64_t*>(smem_raw + smem_data_size);
 
     KernelTimer timer;
     timer.init(d_timer_buf, blockIdx.x);
@@ -189,7 +185,7 @@ latency_kernel(
 {
     extern __shared__ char smem_raw[];
     char*     smem_data = smem_raw;
-    uint64_t* mbar      = reinterpret_cast<uint64_t*>(smem_raw + MAX_SMEM_PER_GATHER4);
+    uint64_t* mbar      = reinterpret_cast<uint64_t*>(smem_raw + bytes_per_gather4);
 
     mbarrier_init(mbar, 1);
     fence_proxy_async();

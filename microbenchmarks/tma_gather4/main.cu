@@ -27,6 +27,25 @@ static void print_csv_header() {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Returns the swizzle size in bytes, or 0 for SWIZZLE_NONE
+static size_t swizzle_size_bytes(CUtensorMapSwizzle s) {
+    switch (s) {
+        case CU_TENSOR_MAP_SWIZZLE_32B:  return 32;
+        case CU_TENSOR_MAP_SWIZZLE_64B:  return 64;
+        case CU_TENSOR_MAP_SWIZZLE_128B: return 128;
+        default: return 0;  // NONE = no constraint
+    }
+}
+
+// Validate: box_dim0 * sizeof(element) <= swizzle_bytes (or swizzle=NONE)
+static bool is_valid_swizzle_config(CUtensorMapDataType dtype, uint32_t box_dim0,
+                                    CUtensorMapSwizzle swizzle) {
+    size_t sw_bytes = swizzle_size_bytes(swizzle);
+    if (sw_bytes == 0) return true;  // SWIZZLE_NONE always valid
+    size_t box_bytes = box_dim0 * tensor_map_element_size(dtype);
+    return box_bytes <= sw_bytes;
+}
+
 static const char* swizzle_name(CUtensorMapSwizzle s) {
     switch (s) {
         case CU_TENSOR_MAP_SWIZZLE_NONE:  return "none";
@@ -88,20 +107,32 @@ static void run_throughput(const BenchConfig& cfg, bool verbose) {
     CUDA_CHECK(cudaMalloc(&d_timer, cfg.num_blocks * 3 * sizeof(int64_t)));
     CUDA_CHECK(cudaMemset(d_timer, 0, cfg.num_blocks * 3 * sizeof(int64_t)));
 
-    size_t smem_bytes = MAX_SMEM_PER_GATHER4 + 16;
     int col_steps = cfg.tm_cfg.col_steps();
     int bytes_per_step = (int)(cfg.tm_cfg.box_dim0 * tensor_map_element_size(cfg.tm_cfg.data_type) * 4);
+    int smem_data_size = bytes_per_step * col_steps;
+    // Align to 8 bytes for mbarrier placement
+    smem_data_size = (smem_data_size + 7) & ~7;
+    size_t smem_bytes = smem_data_size + 16;
 
     if (verbose) {
         fprintf(stderr, "  throughput: blocks=%d rows=%lu gather4_calls=%d col_steps=%d\n",
                 cfg.num_blocks, num_rows, total_gather4_calls, col_steps);
     }
 
+    // Allow dynamic shared memory beyond the default 48KB limit
+    if (smem_bytes > 48 * 1024) {
+        CUDA_CHECK(cudaFuncSetAttribute(
+            (const void*)throughput_kernel,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)smem_bytes));
+    }
+
     // Warmup
     for (int w = 0; w < 3; w++) {
         throughput_kernel<<<cfg.num_blocks, 1, smem_bytes>>>(
             tmap, d_indices, total_gather4_calls, col_steps,
-            (int)cfg.tm_cfg.box_dim0, bytes_per_step, cfg.cache_hint, d_timer);
+            (int)cfg.tm_cfg.box_dim0, bytes_per_step, smem_data_size,
+            cfg.cache_hint, d_timer);
         CUDA_CHECK(cudaDeviceSynchronize());
     }
 
@@ -114,7 +145,8 @@ static void run_throughput(const BenchConfig& cfg, bool verbose) {
 
         throughput_kernel<<<cfg.num_blocks, 1, smem_bytes>>>(
             tmap, d_indices, total_gather4_calls, col_steps,
-            (int)cfg.tm_cfg.box_dim0, bytes_per_step, cfg.cache_hint, d_timer);
+            (int)cfg.tm_cfg.box_dim0, bytes_per_step, smem_data_size,
+            cfg.cache_hint, d_timer);
         CUDA_CHECK(cudaDeviceSynchronize());
         CUDA_CHECK(cudaPeekAtLastError());
 
@@ -126,8 +158,11 @@ static void run_throughput(const BenchConfig& cfg, bool verbose) {
         ms_throughput.add(gbps);
     }
 
-    printf("throughput,%s,%s,%lu,%u,%zu,%zu,%d,%d,%s,%s,%s,%zu,,,"
-           "%.4f,%.2f,,,%.1f\n",
+    // Compute per-gather4 latency: total_time / total_gather4_calls
+    double avg_latency_ns = ms_elapsed.value() * 1e6 / total_gather4_calls;
+
+    printf("throughput,%s,%s,%lu,%u,%zu,%zu,%d,%d,%s,%s,%s,%zu,,%d,"
+           "%.4f,%.2f,%.1f,,%.1f\n",
            cfg.tm_cfg.name,
            dtype_name(cfg.tm_cfg.data_type),
            cfg.tm_cfg.dim0,
@@ -140,8 +175,10 @@ static void run_throughput(const BenchConfig& cfg, bool verbose) {
            cache_hint_name(cfg.cache_hint),
            swizzle_name(cfg.tm_cfg.swizzle),
            cfg.total_data_MB,
+           total_gather4_calls,
            ms_elapsed.value(),
            ms_throughput.value(),
+           avg_latency_ns,
            ms_throughput.spread() * 100.0);
 
     CUDA_CHECK(cudaFree(d_indices));
@@ -168,7 +205,9 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
     CUDA_CHECK(cudaMalloc(&d_results, 2 * sizeof(int64_t)));
 
     int bytes_per_gather4 = (int)cfg.tm_cfg.bytes_per_gather4();
-    size_t smem_bytes = MAX_SMEM_PER_GATHER4 + 16;
+    // Align data region to 8B for mbarrier placement
+    int smem_data_size = (bytes_per_gather4 + 7) & ~7;
+    size_t smem_bytes = smem_data_size + 16;
 
     if (verbose) {
         fprintf(stderr, "  latency: rows=%lu iters=%d bytes_per_gather4=%d\n",
@@ -207,8 +246,13 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
         ms_net.add(net_ns / num_iters);
     }
 
+    // Compute elapsed_ms and throughput from total latency
+    double total_elapsed_ms = ms_total.value() * num_iters / 1e6;  // ns → ms
+    double total_bytes = (double)num_iters * cfg.tm_cfg.bytes_per_gather4();
+    double gbps = total_bytes / (ms_total.value() * num_iters);  // bytes / ns = GB/s
+
     printf("latency,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,,%d,"
-           ",,,%.1f,%.1f,%.1f\n",
+           "%.4f,%.2f,%.1f,%.1f,%.1f\n",
            cfg.tm_cfg.name,
            dtype_name(cfg.tm_cfg.data_type),
            cfg.tm_cfg.dim0,
@@ -221,6 +265,8 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
            swizzle_name(cfg.tm_cfg.swizzle),
            cfg.total_data_MB,
            num_iters,
+           total_elapsed_ms,
+           gbps,
            ms_total.value(),
            ms_net.value(),
            ms_net.spread() * 100.0);
@@ -250,7 +296,9 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
     int64_t* d_timer = nullptr;
     CUDA_CHECK(cudaMalloc(&d_timer, 3 * sizeof(int64_t)));
 
-    size_t smem_bytes = N * bytes_per_gather4 + 16;
+    int smem_data_size = N * bytes_per_gather4;
+    smem_data_size = (smem_data_size + 7) & ~7;
+    size_t smem_bytes = smem_data_size + 16;
 
     if (verbose) {
         fprintf(stderr, "  pipeline: N=%d rows=%lu outer_iters=%d smem=%zuB\n",
@@ -258,6 +306,14 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
     }
 
     auto kernel_fn = get_pipeline_kernel(N);
+
+    // Allow dynamic shared memory beyond the default 48KB limit
+    if (smem_bytes > 48 * 1024) {
+        CUDA_CHECK(cudaFuncSetAttribute(
+            (const void*)kernel_fn,
+            cudaFuncAttributeMaxDynamicSharedMemorySize,
+            (int)smem_bytes));
+    }
 
     // Warmup
     for (int w = 0; w < 3; w++) {
@@ -289,8 +345,12 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
         ms_per_gather4.add(ns_per_gather4);
     }
 
-    printf("pipeline,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,%d,,"
-           "%.4f,,,%.1f,,%.1f\n",
+    // Compute throughput from elapsed time
+    double total_gather4s = (double)num_outer_iters * N;
+    double pipe_gbps = (total_gather4s * bytes_per_gather4) / (ms_elapsed.value() * 1e6);
+
+    printf("pipeline,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,%d,%d,"
+           "%.4f,%.2f,%.1f,,%.1f\n",
            cfg.tm_cfg.name,
            dtype_name(cfg.tm_cfg.data_type),
            cfg.tm_cfg.dim0,
@@ -303,7 +363,9 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
            swizzle_name(cfg.tm_cfg.swizzle),
            cfg.total_data_MB,
            N,
+           num_outer_iters,
            ms_elapsed.value(),
+           pipe_gbps,
            ms_per_gather4.value(),
            ms_per_gather4.spread() * 100.0);
 
@@ -333,10 +395,12 @@ static void experiment_throughput(bool verbose) {
         {CU_TENSOR_MAP_DATA_TYPE_INT64, 32, CU_TENSOR_MAP_SWIZZLE_NONE},    // 256B/row
         {CU_TENSOR_MAP_DATA_TYPE_INT64, 64, CU_TENSOR_MAP_SWIZZLE_NONE},    // 512B/row
         // BF16 native: dim0=512, box varies
+        // Swizzle constraint: box_dim0 * sizeof(element) <= swizzle_bytes
+        // SWIZZLE_128B max: 128B / 2B = 64 BF16 elements
         {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 32,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 64B/row
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 64,  CU_TENSOR_MAP_SWIZZLE_NONE},   // 128B/row
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 128, CU_TENSOR_MAP_SWIZZLE_128B},   // 256B/row
-        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 256, CU_TENSOR_MAP_SWIZZLE_128B},   // 512B/row
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 64,  CU_TENSOR_MAP_SWIZZLE_128B},   // 128B/row (max for SW128)
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 128, CU_TENSOR_MAP_SWIZZLE_NONE},   // 256B/row (exceeds SW128)
+        {CU_TENSOR_MAP_DATA_TYPE_BFLOAT16, 256, CU_TENSOR_MAP_SWIZZLE_NONE},   // 512B/row (exceeds SW128)
     };
 
     for (auto& s : sweeps) {
@@ -447,6 +511,13 @@ static void experiment_swizzle(bool verbose) {
     }
 
     for (auto& s : sweeps) {
+        // Skip invalid: box_dim0 * sizeof(element) must be <= swizzle_bytes
+        if (!is_valid_swizzle_config(s.dtype, s.box_dim0, s.swizzle)) {
+            if (verbose) fprintf(stderr, "  %s box=%u swizzle=%s... SKIPPED (box exceeds swizzle)\n",
+                                 dtype_name(s.dtype), s.box_dim0, swizzle_name(s.swizzle));
+            continue;
+        }
+
         TensorMapConfig tm = {
             "swizzle_sweep", s.dtype, s.dim0, s.box_dim0,
             s.swizzle, CU_TENSOR_MAP_L2_PROMOTION_L2_128B

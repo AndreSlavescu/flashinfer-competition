@@ -145,10 +145,12 @@ inline TensorMapConfig config_ckv_int64() {
             64, 64, CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_128B};
 }
 
-// Config B: ckv 512d native BF16, 2 col steps (box=256, 256*2=512B per step)
+// Config B: ckv 512d native BF16, 8 col steps (box=64, 64*2=128B per step)
+//   box_dim0=64 fits SWIZZLE_128B (64*2=128B <= 128B)
+//   col_steps = 512/64 = 8
 inline TensorMapConfig config_ckv_bf16() {
     return {"ckv_bf16", CU_TENSOR_MAP_DATA_TYPE_BFLOAT16,
-            512, 256, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_128B};
+            512, 64, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_128B};
 }
 
 // Config C: kpe 64d native BF16, single col step, no swizzle

@@ -1,7 +1,7 @@
 NVCC ?= nvcc
 CUDA_PATH ?= /usr/local/cuda
 
-NVCCFLAGS = -std=c++20 -arch=sm_100a -O3 --expt-relaxed-constexpr
+NVCCFLAGS = -std=c++20 -gencode arch=compute_100a,code=sm_100a -O3 --expt-relaxed-constexpr
 INCLUDES  = -I$(CUDA_PATH)/include
 LDFLAGS   = -lcuda
 
