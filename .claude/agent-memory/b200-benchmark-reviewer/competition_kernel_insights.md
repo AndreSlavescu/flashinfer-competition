@@ -37,11 +37,22 @@ From tma_gather4 ver4 results on B200 Modal hardware:
   - kpe is the bottleneck if HBM-bound; ckv is the bottleneck if L2-resident
 - True HBM-miss TMA latency for a single gather4 is NOT well measured — both L2-hot and cold cases measure ~197 ns which is TMA pipeline overhead, not memory latency.
 
-## What's Still Unknown (requires follow-up benchmarks)
-- TMA bandwidth while UTCMMA runs simultaneously (overlap efficiency)
-- Dual-stream TMA (ckv + kpe simultaneously) interaction at L2/HBM
-- True HBM-miss TMA latency (single access to cold cache line)
-- INT64 smem layout compatibility with tcgen05.mma without reswizzle
+## Updated Timing Model (ver5, incorporating cold latency)
 
-**Why:** These derive from concrete measurements on real B200 hardware, not estimates or paper extrapolations.
+Per query token, 76 CTAs, B_TOPK=64:
+- L2-hot: ckv 16×197ns = 3.15µs, kpe 16×182ns = 2.91µs per block
+- HBM-cold: ckv 16×546ns = 8.74µs, kpe 16×492ns = 7.87µs per block
+- If ckv+kpe issue simultaneously: max(ckv, kpe) = 3.15µs hot, 8.74µs cold per block
+- 32 blocks / 76 SMs: 1.33µs hot or 3.68µs cold total across the GPU per query token
+- UTCMMA compute: ~0.5µs total per query token (38 GFLOPS / 990 TFLOPS = 38µs kernel-wide / 76 SMs)
+- KERNEL IS TMA-BOUND BY 6-7× (hot) TO 50× (cold). Optimize TMA first.
+
+## What's Still Unknown (requires follow-up benchmarks)
+- **Dual-stream TMA (ckv + kpe simultaneously)**: Do the two streams share HBM bandwidth additively or contend? (HIGHEST PRIORITY — new kernel needed)
+- **TMA bandwidth while UTCMMA runs simultaneously**: Does tcgen05.mma degrade TMA throughput? (HIGH PRIORITY)
+- **INT64 smem layout compatibility with tcgen05.mma**: Can tcgen05.mma consume SWIZZLE_NONE INT64-typed smem as BF16 without re-swizzle? If not, the 22% BW gain from INT64 packing may be partially offset. (HIGH PRIORITY)
+- **True cold latency with zero warmup**: Current cold measurement has ~20ns underestimate from warmup pre-warming L2. (MINOR, modification only)
+- **L2 promotion 64B vs 128B**: Confirmed null result in ver5 — no effect on throughput or cliff location.
+
+**Why:** These derive from concrete measurements on real B200 hardware (ver5 CSV), not estimates or paper extrapolations.
 **How to apply:** Use these when making design decisions for tile sizes, pipeline stages, TMA configs in the competition kernel.

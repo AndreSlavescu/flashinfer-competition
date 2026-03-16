@@ -44,5 +44,21 @@ type: project
 
 **Where seen**: tma_gather4/main.cu experiment_throughput, was the cause of ver2 crash.
 
+## Anti-Pattern 6: Warmup before a cold-latency experiment pre-warms L2
+
+**Problem**: Running 3 warmup passes before a "HBM-cold" latency experiment that uses SEQUENTIAL access pre-populates the L2 with the last ~64 MB of the working set. If the measured run starts from row 0 (same as warmup), the first ~62K iterations hit partially warm L2, causing a systematic ~20 ns underestimate of true cold latency.
+
+**Fix**: For cold experiments (`num_iters == 0` sentinel), skip warmup entirely. Or run a cache-invalidating kernel (access a different 256MB+ tensor) immediately before the measured run.
+
+**Where seen**: tma_gather4/main.cu run_latency(), cold variant. The ver5 HBM-cold measurement of 546 ns is a slight lower bound on true cold latency. Effect is small (~3-4%) but systematic.
+
+## Anti-Pattern 7: competition_realistic_page_table still measures L2-resident throughput
+
+**Problem**: The `COMPETITION_REALISTIC_PAGE_TABLE` pattern (added in ver5) correctly models two-level indirection (scattered physical frames) but still generates only 2048 unique rows (2 MB for ckv_int64). At 256 MB declared working set, the pattern tiles these 2048 rows 128×. After warmup, the 2 MB is L2-resident. The pattern shows ~908 GB/s at 256 MB — identical to L2-resident performance — not because page-table scatter is L2-friendly, but because the footprint is small.
+
+**Fix**: To measure real competition workload throughput, generate fresh topk=2048 indices per outer iteration (each set non-repeating with previous sets). Pre-generate `num_runs × 2048` distinct indices uploaded to device; the kernel steps the index pointer by 2048 per outer iteration.
+
+**Where seen**: tma_gather4/index_patterns.cuh, COMPETITION_REALISTIC_PAGE_TABLE case. Same flaw as COMPETITION_REALISTIC (Anti-Pattern 2).
+
 ## Why these matter
 These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify the effective unique data footprint vs L2 size when interpreting latency and throughput numbers.
