@@ -163,6 +163,14 @@ inline TensorMapConfig config_kpe_bf16_sw128() {
             64, 64, CU_TENSOR_MAP_SWIZZLE_128B, CU_TENSOR_MAP_L2_PROMOTION_L2_128B};
 }
 
+// Config A variant: same as config_ckv_int64 but with 64B L2 promotion
+// (vs 128B). Used in Exp 5 to test whether sector-level promotion size
+// affects the L2 cliff location or HBM-bound throughput.
+inline TensorMapConfig config_ckv_int64_l2_64b() {
+    return {"ckv_int64_l2_64", CU_TENSOR_MAP_DATA_TYPE_INT64,
+            128, 128, CU_TENSOR_MAP_SWIZZLE_NONE, CU_TENSOR_MAP_L2_PROMOTION_L2_64B};
+}
+
 // All competition-relevant configs
 inline std::vector<TensorMapConfig> competition_configs() {
     return {config_ckv_int64(), config_ckv_bf16(), config_kpe_bf16(), config_kpe_bf16_sw128()};

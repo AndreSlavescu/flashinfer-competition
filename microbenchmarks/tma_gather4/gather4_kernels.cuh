@@ -150,7 +150,13 @@ throughput_kernel(
                         row_idxs, cache_hint);
         }
 
-        // Signal expected bytes and wait
+        // Signal expected bytes and wait.
+        // Per PTX ISA: mbarrier.expect_tx may be called AFTER the async ops that will fulfill
+        // it, as long as it precedes the try_wait. The TMA engine accumulates transaction
+        // completion credits independently; expect_tx declares the total expected bytes against
+        // which those credits are checked at try_wait time. Issuing expect_tx after the gather4
+        // calls (rather than before) avoids a potential race where expect_tx could be observed
+        // by the mbarrier before the gather4 has issued its completion credit.
         uint32_t total_bytes = bytes_per_step * col_steps;
         mbarrier_expect_tx(mbar, total_bytes);
         mbarrier_arrive(mbar);

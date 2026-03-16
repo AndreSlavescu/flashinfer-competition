@@ -16,11 +16,11 @@ cuda_image = (
         "PATH": "/usr/local/cuda/bin:${PATH}",
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${LD_LIBRARY_PATH}",
     })
-    .add_local_file("common.cuh", "/root/bench/common.cuh", copy=True)
-    .add_local_file("tensor_map_utils.cuh", "/root/bench/tensor_map_utils.cuh", copy=True)
-    .add_local_file("index_patterns.cuh", "/root/bench/index_patterns.cuh", copy=True)
-    .add_local_file("gather4_kernels.cuh", "/root/bench/gather4_kernels.cuh", copy=True)
-    .add_local_file("main.cu", "/root/bench/main.cu", copy=True)
+    .add_local_file("microbenchmarks/tma_gather4/common.cuh", "/root/bench/common.cuh", copy=True)
+    .add_local_file("microbenchmarks/tma_gather4/tensor_map_utils.cuh", "/root/bench/tensor_map_utils.cuh", copy=True)
+    .add_local_file("microbenchmarks/tma_gather4/index_patterns.cuh", "/root/bench/index_patterns.cuh", copy=True)
+    .add_local_file("microbenchmarks/tma_gather4/gather4_kernels.cuh", "/root/bench/gather4_kernels.cuh", copy=True)
+    .add_local_file("microbenchmarks/tma_gather4/main.cu", "/root/bench/main.cu", copy=True)
 )
 
 NVCC_FLAGS = [

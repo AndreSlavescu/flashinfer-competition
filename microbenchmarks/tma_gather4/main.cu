@@ -200,7 +200,9 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
     void* d_tensor = allocate_tensor(cfg.tm_cfg, num_rows);
     CUtensorMap tmap = create_tensor_map_from_config(cfg.tm_cfg, d_tensor, num_rows);
 
-    int num_iters = cfg.num_iters;
+    // num_iters == 0 means "use num_rows/4": each gather4 accesses 4 unique rows,
+    // stepping through the entire working set exactly once (HBM-cold measurement).
+    int num_iters = (cfg.num_iters == 0) ? (int)(num_rows / 4) : cfg.num_iters;
     int num_indices = num_iters * 4;
     int* d_indices = create_device_indices(cfg.pattern, num_indices, (int)num_rows);
 
@@ -227,7 +229,7 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
 
     // Measured runs
     constexpr int NUM_RUNS = 11;
-    MeasurementSeries ms_total, ms_null, ms_net;
+    MeasurementSeries ns_total, ns_null, ns_net;  // store nanoseconds per iteration
 
     for (int r = 0; r < NUM_RUNS; r++) {
         latency_kernel<<<1, 1, smem_bytes>>>(
@@ -240,18 +242,18 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
         CUDA_CHECK(cudaMemcpy(h_results, d_results, 2 * sizeof(int64_t),
                               cudaMemcpyDeviceToHost));
 
-        double total_ns = (double)h_results[0];
-        double null_ns  = (double)h_results[1];
+        double total_ns = (double)h_results[0];  // total nanoseconds for all iters
+        double null_ns  = (double)h_results[1];  // null baseline nanoseconds
         double net_ns   = total_ns - null_ns;
 
-        ms_total.add(total_ns / num_iters);
-        ms_null.add(null_ns / num_iters);
-        ms_net.add(net_ns / num_iters);
+        ns_total.add(total_ns / num_iters);  // nanoseconds per gather4
+        ns_null.add(null_ns / num_iters);
+        ns_net.add(net_ns / num_iters);
     }
 
     // Compute throughput from total latency
     double total_bytes = (double)num_iters * cfg.tm_cfg.bytes_per_gather4();
-    double gbps = total_bytes / (ms_total.value() * num_iters);  // bytes / ns = GB/s
+    double gbps = total_bytes / (ns_total.value() * num_iters);  // bytes / ns = GB/s
 
     printf("%s,%s,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,,%d,"
            "%.2f,%.1f,%.1f,%.1f\n",
@@ -270,9 +272,9 @@ static void run_latency(const BenchConfig& cfg, bool verbose) {
            cfg.total_data_MB,
            num_iters,
            gbps,
-           ms_total.value(),
-           ms_net.value(),
-           ms_net.spread() * 100.0);
+           ns_total.value(),
+           ns_net.value(),
+           ns_net.spread() * 100.0);
 
     CUDA_CHECK(cudaFree(d_indices));
     CUDA_CHECK(cudaFree(d_results));
@@ -461,7 +463,8 @@ static void experiment_patterns(bool verbose) {
     std::vector<IndexPattern> patterns = {
         IndexPattern::SEQUENTIAL, IndexPattern::RANDOM,
         IndexPattern::CLUSTERED_16, IndexPattern::CLUSTERED_64,
-        IndexPattern::CLUSTERED_256, IndexPattern::COMPETITION_REALISTIC
+        IndexPattern::CLUSTERED_256, IndexPattern::COMPETITION_REALISTIC,
+        IndexPattern::COMPETITION_REALISTIC_PAGE_TABLE
     };
     std::vector<size_t> data_sizes = {64, 256, 1024};
 
@@ -553,6 +556,7 @@ static void experiment_l2(bool verbose) {
 
     std::vector<size_t> sizes = {1, 2, 4, 8, 16, 32, 48, 64, 128, 256, 512, 1024, 2048};
 
+    // Sweep 1: L2_PROMOTION_L2_128B (existing baseline)
     for (auto sz : sizes) {
         BenchConfig cfg;
         cfg.experiment = "throughput_l2";
@@ -563,7 +567,23 @@ static void experiment_l2(bool verbose) {
         cfg.cache_hint = HINT_EVICT_LAST;
         cfg.total_data_MB = sz;
 
-        if (verbose) fprintf(stderr, "  sz=%zuMB...\n", sz);
+        if (verbose) fprintf(stderr, "  L2_128B sz=%zuMB...\n", sz);
+        run_throughput(cfg, verbose);
+    }
+
+    // Sweep 2: L2_PROMOTION_L2_64B — test whether smaller promotion sector size
+    // shifts the L2 cliff or changes HBM-bound throughput
+    for (auto sz : sizes) {
+        BenchConfig cfg;
+        cfg.experiment = "throughput_l2_64b";
+        cfg.x_var = "total_data_MB";
+        cfg.tm_cfg = config_ckv_int64_l2_64b();
+        cfg.num_blocks = 76;
+        cfg.pattern = IndexPattern::RANDOM;
+        cfg.cache_hint = HINT_EVICT_LAST;
+        cfg.total_data_MB = sz;
+
+        if (verbose) fprintf(stderr, "  L2_64B sz=%zuMB...\n", sz);
         run_throughput(cfg, verbose);
     }
 }
@@ -577,16 +597,18 @@ static void experiment_latency(bool verbose) {
         IndexPattern    pat;
         int64_t         hint;
         size_t          data_MB;
+        int             num_iters = 1024;  // 0 = use num_rows/4 (HBM-cold, non-repeating)
+        const char*     exp_name  = "latency";
     };
 
     auto cfgs = std::vector<LatencySweep>{
-        // Config A (INT64, 2048B/gather4) — sequential L2-hot
+        // Config A (INT64, 4096B/gather4) — sequential L2-hot (1MB << 64MB L2)
         {config_ckv_int64(), IndexPattern::SEQUENTIAL, HINT_EVICT_LAST, 1},
-        // Config A — random L2-cold
+        // Config A — random, nominally 256MB but only 16MB unique data → still L2-warm
         {config_ckv_int64(), IndexPattern::RANDOM, HINT_EVICT_LAST, 256},
         // Config A — random, no hint
         {config_ckv_int64(), IndexPattern::RANDOM, HINT_NONE, 256},
-        // Config B (BF16 box=256, 2048B/gather4) — sequential
+        // Config B (BF16 box=64, 512B/gather4) — sequential
         {config_ckv_bf16(), IndexPattern::SEQUENTIAL, HINT_EVICT_LAST, 1},
         // Config B — random
         {config_ckv_bf16(), IndexPattern::RANDOM, HINT_EVICT_LAST, 256},
@@ -594,22 +616,29 @@ static void experiment_latency(bool verbose) {
         {config_kpe_bf16(), IndexPattern::SEQUENTIAL, HINT_EVICT_LAST, 1},
         // Config C — random
         {config_kpe_bf16(), IndexPattern::RANDOM, HINT_EVICT_LAST, 256},
+
+        // HBM-cold variants: num_iters=0 → access every row exactly once per run.
+        // 1024MB working set >> 64MB L2; each row is accessed cold on most iterations.
+        // Sequential pattern ensures non-repeating row access (row = 4*iter .. 4*iter+3).
+        // Expected net_latency_ns >> 197ns (L2-hit) → reveals true HBM-miss TMA latency.
+        {config_ckv_int64(), IndexPattern::SEQUENTIAL, HINT_EVICT_LAST, 1024, 0, "latency_cold"},
+        {config_kpe_bf16(),  IndexPattern::SEQUENTIAL, HINT_EVICT_LAST, 1024, 0, "latency_cold"},
     };
 
     for (auto& s : cfgs) {
         BenchConfig cfg;
-        cfg.experiment = "latency";
+        cfg.experiment = s.exp_name;
         cfg.x_var = "config";
         cfg.tm_cfg = s.tm;
         cfg.num_blocks = 1;
         cfg.pattern = s.pat;
         cfg.cache_hint = s.hint;
         cfg.total_data_MB = s.data_MB;
-        cfg.num_iters = 1024;
+        cfg.num_iters = s.num_iters;
 
-        if (verbose) fprintf(stderr, "  %s pat=%s hint=%s sz=%zuMB...\n",
+        if (verbose) fprintf(stderr, "  %s pat=%s hint=%s sz=%zuMB iters=%d...\n",
                              s.tm.name, index_pattern_name(s.pat),
-                             cache_hint_name(s.hint), s.data_MB);
+                             cache_hint_name(s.hint), s.data_MB, s.num_iters);
         run_latency(cfg, verbose);
     }
 }
@@ -640,7 +669,10 @@ static void experiment_pipeline(bool verbose) {
 static void experiment_saturation(bool verbose) {
     if (verbose) fprintf(stderr, "[Experiment 8: Multi-CTA Saturation]\n");
 
-    std::vector<int> block_counts = {1, 2, 4, 8, 16, 32, 48, 64, 76, 96, 114, 128, 144, 152};
+    std::vector<int> block_counts = {
+        1, 2, 4, 8, 16, 32, 48, 64, 76, 96, 114, 128, 144, 152,
+        176, 192, 224, 256, 296  // extended: up to 148 SMs × 2 CTAs/SM
+    };
 
     for (int nb : block_counts) {
         BenchConfig cfg;
@@ -668,14 +700,14 @@ static void usage(const char* prog) {
         "Options:\n"
         "  --experiment=NAME   Run specific experiment:\n"
         "                        throughput  (Exp 1: box size sweep)\n"
-        "                        hints      (Exp 2: cache hints)\n"
-        "                        patterns   (Exp 3: access patterns)\n"
-        "                        swizzle    (Exp 4: swizzle modes)\n"
-        "                        l2         (Exp 5: working set size)\n"
-        "                        latency    (Exp 6: per-gather4 latency)\n"
-        "                        pipeline   (Exp 7: pipeline depth)\n"
-        "                        saturation (Exp 8: multi-CTA saturation)\n"
-        "                        all        (run all experiments)\n"
+        "                        hints       (Exp 2: cache hints)\n"
+        "                        patterns    (Exp 3: access patterns, incl. page_table)\n"
+        "                        swizzle     (Exp 4: swizzle modes)\n"
+        "                        l2          (Exp 5: L2 working set; 128B+64B promotion)\n"
+        "                        latency     (Exp 6: latency, incl. HBM-cold variant)\n"
+        "                        pipeline    (Exp 7: pipeline depth)\n"
+        "                        saturation  (Exp 8: multi-CTA saturation up to 296 CTAs)\n"
+        "                        all         (run all experiments)\n"
         "  --device=N          GPU device index (default: 0)\n"
         "  --verbose           Print progress to stderr\n"
         "  --help              Show this help\n",
