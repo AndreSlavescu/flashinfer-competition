@@ -221,18 +221,18 @@ UMMA swizzle layout helpers: `make_umma_canonical_k_major_layout<MN,K,SWIZZLE,T>
 
 ## Reference Benchmark Suites
 
-- microbenchmarks/gpu-benches — L1/L2/shared/global bandwidth, latency, cache, roofline, stream, strides
-- microbenchmarks/NVIDIA-Hopper-Benchmark — TMA (1D/2D/3D throughput, latency), DSM, DPX, tensor cores, ALU, memory hierarchy
-- microbenchmarks/mem_benchmarks.cu — standalone memory benchmark
-- microbenchmarks/pchase.cu — pointer-chase latency benchmark
-- microbenchmarks/wmma_benchmarks.cu — WMMA (tensor core) benchmark
+- references/gpu-benches — L1/L2/shared/global bandwidth, latency, cache, roofline, stream, strides
+- references/NVIDIA-Hopper-Benchmark — TMA (1D/2D/3D throughput, latency), DSM, DPX, tensor cores, ALU, memory hierarchy
+- references/mem_benchmarks.cu — standalone memory benchmark
+- references/pchase.cu — pointer-chase latency benchmark
+- references/wmma_benchmarks.cu — WMMA (tensor core) benchmark
 
 ## My Benchmarks
 
 - notes/tma_gather4_plan.md — full microbenchmark plan with experiment designs, PTX catalog, and implementation details
 - microbenchmarks/tma_gather4/ — standalone TMA gather4 benchmark suite (main.cu, gather4_kernels.cuh, tensor_map_utils.cuh, index_patterns.cuh, common.cuh, visualize.html)
 - notes/tma_gather4_analysis.md — benchmark results analysis vs B200 specs
-- microbenchmarks/results/tma-gather4-ver*.csv — successive benchmark runs on Modal B200
+- microbenchmarks/tma_gather4/results/tma-gather4-ver*.csv — successive benchmark runs on Modal B200
 
 ## DeepSeek Sparse Attention Notes
 
