@@ -69,6 +69,37 @@ For every candidate instruction/variant, ask:
 
 Discard variants that are clearly irrelevant (e.g., FP8-only paths for the attention kernel, CLC for non-persistent kernels, integer atomics where only float is used).
 
+## Known Pitfalls to Flag in Proposals
+
+When proposing UTCMMA or UMMA layout experiments, always check for these constraints that have caused repeated debugging:
+
+**Swizzle K-atom divisibility (caused 2 separate 20-30 min debug sessions):**
+- SW128: K_TOTAL must be divisible by 64; SW64: divisible by 32; SW32: divisible by 16 (always safe for single MMA tile)
+- Selecting SW128 for K=16 or K=32 causes a tile_to_shape assertion at compile time
+- Rule: propose `SWIZZLE = K_TOTAL % 64 == 0 ? 128 : K_TOTAL % 32 == 0 ? 64 : 32`
+
+**`make_umma_desc<K>` is single-tile only:**
+- Only handles exactly one K-tile (K=16 bf16). Multi-tile K layouts fail with "Not a canonical UMMA_K Layout"
+- For multi-tile experiments: propose pre-computing one descriptor per K-tile via individual smem pointer offsets
+
+**TMEM column budget (caused XID 13 runtime crash):**
+- For M=64 NonInterleaved, max safe k_depth = 32 (K_TOTAL = 512 bf16) with TMEM_COL_A=256
+- Always state the expected TMEM column usage when proposing a new k_depth value
+
+**N=256 SS accumulator TMEM limit:**
+- Single M=64, N=256 float32 accumulator = all 512 TMEM columns; dual-acc is impossible for SV GEMM path
+
+**Competition KV working set and L2 warmth:**
+- TMA gather4 loads only the requested rows — effective KV working set = topk × bytes/token ≈ 2.36 MB, fits in 64 MB L2
+- With fixed sparse_indices across timing runs, L2 is warm after first run
+- FRESH_competition_realistic (1024 MB) is more pessimistic than actual competition evaluation
+- Always distinguish: "fixed indices / L2-warm" (competition baseline) vs "varying indices / HBM-cold" (production baseline)
+
+**UTCMMA throughput vs serialized RAW latency:**
+- Papers report ~11 cy/tile as THROUGHPUT (independent accumulators). Serialized RAW chain = ~54 cy/tile (5× higher)
+- QK GEMM accumulates 32 K-tiles into one C → all RAW-dependent → 932 ns total, not ~190 ns
+- Any experiment proposal involving UTCMMA must specify whether it measures throughput (independent acc) or latency (RAW chain)
+
 ## Output Format
 
 For each exploration session, produce a structured report:

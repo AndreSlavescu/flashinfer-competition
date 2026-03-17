@@ -33,11 +33,12 @@ Competition target: B200 sm100a, CUDA 12.9+. Two kernels to optimize:
 - O-rescale pattern: tmem_ld_32dp32bNx<64> → fence_view_async_tmem_load → tcgen05_before_thread_sync → __syncthreads → tcgen05_after_thread_sync → FMA → tmem_st_32dp32bNx<64> × 4 iterations (for D_V=512 in B_EPI=64 chunks)
 - SM90_BULK_COPY_S2G used for split-KV output accumulation (not TMA reduce; separate combine kernel)
 
-## Benchmark status (2026-03-16)
+## Benchmark status (2026-03-17)
 
 ### Completed benchmarks
 - tma_gather4 (ver6, 8 experiments): HBM-cold latency 546 ns; EVICT_FIRST best at >64MB; gather4 BW linear to 296 CTAs; L2 promotion 64B vs 128B identical
 - dual_tma_stream (ver1): ckv+kpe concurrent interference measured
+- utcmma (ver1, 5 experiments): UTCMMA latency, K-depth scaling, UTCCP, swizzle — full serialized RAW dependency chain
 
 ### dual_tma_stream ver1 KEY FINDINGS
 - HBM-cold (sequential): ckv unaffected (+0.04%); kpe degrades from 466ns to 502ns (+7.6%)
@@ -45,51 +46,63 @@ Competition target: B200 sm100a, CUDA 12.9+. Two kernels to optimize:
 - Interpretation: TMA hardware parallelizes HBM-bound gather4s but SERIALIZES L2-resident gather4s from concurrent streams
 - Design implication: competition kernel should stage kpe issue N nanoseconds AFTER ckv (not simultaneously), especially for L2-warm case. Delay sweep needed (ver2).
 
-### Remaining knowledge gaps (in priority order)
+### utcmma ver1 KEY FINDINGS (2026-03-17)
+- Serialized RAW latency: 54.5 cy/tile for M64N64 and M64N128 (identical!); 76 cy for M64N256; 80 cy for SS M64N256
+- K-depth scaling is PERFECTLY LINEAR at ~53.7-54.6 cy/tile from k_depth=1..32. No pipelining in current loop structure.
+- Competition QK GEMM (M=64, N=128, k_depth=32): 1719 cy = 932 ns (MEASURED)
+- Competition SV GEMM (M=64, N=256, k_depth=4, SS): 320 cy = 173 ns (MEASURED)
+- UTCCP (16 copies, Q load): 1192 cy = 607 ns (MEASURED) — nearly as expensive as QK GEMM!
+- Swizzle has ZERO effect on MMA latency (all 4 modes identical at 218 cy)
+- CRITICAL GAP: paper claims ~11 cy/tile throughput with independent accumulators; we measured 54 cy serialized. True pipelined throughput unknown.
+- If 2-acc throughput = 11 cy: QK GEMM = 352 cy = 190 ns → kernel is TMA-BOUND (TMA=595 ns > GEMM=190 ns)
+- If 2-acc throughput = 54 cy: kernel is COMPUTE-BOUND (GEMM=932 ns > TMA=595 ns)
+- This determines the entire pipeline design strategy.
 
-**Gap 1: UTCMMA benchmark (CRITICAL — zero data)**
-- Competition tiles: QK (M=64,N=128,K=36×16) WS_TS and SV (M=64,N=256,K=4×16) WS_SS
-- Need: cycles per K-tile, K-depth scaling, does CUTE_UNROLL create ILP overlap?
-- If 36×11=396 cycles (189 ns) < TMA cold 1150 cycles → TMA-bound (expected)
-- If GEMM > TMA → pipeline redesign needed
-- Also: UTCCP latency for Q loading (16 calls)
+### utcmma ver1 TMEM COLUMN BUDGET
+- TiledMMA_P: M=64, N=B_TOPK*2=128 (dual-GEMM over 128-wide smem)
+- TiledMMA_O: M=64, N=256, SS, MN-major B
+- TMEM cols: O=0..255, Q=256..399, P=400..463
+- For 2-accumulator throughput experiment: use N=64 (128 cols each) → 4 accumulators fit in 512 cols
 
-**Gap 2: TMEM load/store bandwidth + fence overhead (HIGH)**
-- O-rescale: 10 ld/st+fence roundtrips per block × 32 blocks = 320 fence sequences per token
-- If fence sequence = 50 cycles: 16,000 cycles = 7.6 µs = 25% of estimated decode time
+### Remaining knowledge gaps (in priority order for ver2)
 
-**Gap 3: mbarrier overhead (HIGH)**
-- 18 mbarriers, ~12 barrier ops per block, 384+ roundtrips per token
-- At 50 cycles each: 19,200 cycles = 9.1 µs = 30% of estimated decode time
+**Gap 1: UTCMMA independent-accumulator throughput (CRITICAL)**
+- Use 2 TMEM regions (C0=cols 0..127, C1=cols 128..255 for M64N64), issue alternating MMA
+- Sweep N_acc={1,2,4,8} → find plateau → that's true throughput
+- If plateau=11 cy: design TMA-bound kernel. If plateau=54 cy: design compute-bound kernel.
 
-**Gap 4: TMA + UTCMMA overlap (HIGH)**
-- Does UTCMMA block TMA issue hardware? If yes, need N≥3 pipeline depth
-- Current assumption (double-buffer = 2 stages sufficient) is unverified
+**Gap 2: TMEM ld/st + fence overhead (HIGH)**
+- O-rescale per chunk: tmem_ld<64> → fence_view_async_tmem_load → float2_mul × 32 → tmem_st<64> → fence_view_async_tmem_store
+- 4 chunks × ~28 rescale events per token = 112 roundtrips. Cost unknown.
 
-**Gap 5: LDG.256 cache hint matrix (MEDIUM)**
-- Warp7 index streaming: .nc × L1-hint × L2-prefetch combinations unmeasured
-- Current FlashMLA setting: .nc.L1::no_allocate.L2::evict_normal.L2::256B
-- Competition may benefit from .L1::evict_first since indices used once per block then discarded
+**Gap 3: mbarrier roundtrip overhead (HIGH)**
+- NamedBarrier::arrive_and_wait(128, wg0_sync) appears 3× per block iteration in WG0
+- 32 blocks × 3 × latency per token = dominant if latency > 30 cy
 
-**Gap 6: createpolicy fraction parameter (MEDIUM)**
-- create_fraction_based_cache_policy<EVICT_LAST, EVICT_FIRST>(fraction) unmeasured
-- At topk=2048 with 32 concurrent CTAs, fractional eviction might reduce inter-CTA L2 thrashing
+**Gap 4: tcgen05.commit latency (HIGH)**
+- Called after every QK and SV GEMM: 64 total calls per token
+- isolate by: time(MMA + commit + wait) - time(MMA only)
 
-**Gap 7: cp.reduce.async.bulk.add.f32 for split-KV combine (MEDIUM)**
-- Could eliminate separate combine kernel if throughput sufficient for 4.2 MB float32 accumulation
-- Current design uses SM90_BULK_COPY_S2G + host-launched combine kernel
+**Gap 5: TMA + UTCMMA overlap — pipeline depth decision (HIGH)**
+- Does issuing TMA gather4 while UTCMMA executes serialize on any shared unit?
+- If yes: N≥3 pipeline depth required. If no: double-buffer suffices.
 
-## Pipeline timing model (updated 2026-03-16)
+**Gap 6: LDG.256 cache hint matrix (MEDIUM)** — unchanged
+**Gap 7: createpolicy fraction (MEDIUM)** — unchanged
+**Gap 8: cp.reduce.async.bulk combine (MEDIUM)** — unchanged
+
+## Pipeline timing model (updated 2026-03-17)
 
 | Stage | Est. ns | Source |
 |---|---|---|
-| Per-block ckv TMA (16 gather4, cold) | ~548 ns | ver5 latency |
-| Per-block kpe TMA (16 gather4, concurrent+warm) | ~595 ns | dual_tma ver1 |
-| UTCMMA QK (36 K-tiles × ~11 cycles) | ~189 ns | arxiv (UNVERIFIED) |
-| Softmax + fence sequences | ~100-200 ns | UNKNOWN |
-| mbarrier overhead per block | ~100-500 ns | UNKNOWN |
-| UTCMMA SV (4 K-tiles) | ~21 ns | arxiv (UNVERIFIED) |
-| **TMA-bound block time (L2-warm, concurrent)** | **~595 ns** | dual_tma ver1 |
-| **Estimated per-token with N=2 pipeline** | **~10-50 µs** | model (high uncertainty) |
+| UTCCP for Q (16 copies) | 607 ns | ver1 MEASURED |
+| QK GEMM (k_depth=32, serialized) | 932 ns | ver1 MEASURED |
+| QK GEMM (k_depth=32, 2-acc) | ~190 ns | arxiv, UNVERIFIED |
+| SV GEMM (k_depth=4, SS) | 173 ns | ver1 MEASURED |
+| tcgen05.commit × 2 per block | UNKNOWN | — |
+| O-rescale (4 chunks) | UNKNOWN | — |
+| mbarrier roundtrip per iteration | UNKNOWN | — |
+| TMA ckv per block (L2-cold) | 548 ns | tma ver5 |
+| TMA kpe (L2-warm, concurrent) | 595 ns | dual_tma ver1 |
 
-Key: kpe is the new bottleneck in the L2-warm case (not ckv). Pipeline should prioritize ckv and delay kpe issue.
+Key open question: true 2-acc UTCMMA throughput determines whether kernel is compute-bound or TMA-bound.

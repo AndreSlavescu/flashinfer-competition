@@ -67,6 +67,20 @@ Before running anything, thoroughly audit the benchmark source code. Check:
 - Are all dependencies captured in the Modal image definition?
 - Is the random seed fixed for any data-dependent benchmarks?
 
+### UTCMMA / UMMA Layout Correctness (Known Pitfall Class)
+
+Flag any of the following as MAJOR during review:
+
+**Swizzle K-atom mismatch**: Is the swizzle mode compatible with K_TOTAL? SW128 requires K_TOTAL divisible by 64; SW64 requires divisible by 32; SW32 requires divisible by 16. Using SW128 for K=16 or K=32 fails at compile time. Verify `make_umma_canonical_k_major_layout<MN, K, SWIZZLE>()` is called with a compatible SWIZZLE.
+
+**make_umma_desc multi-tile misuse**: `UMMA::make_umma_desc<K>` only handles single K-tiles (K=16 bf16). For multi-tile K, the benchmark must pre-compute one descriptor per tile with individual smem pointer offsets. Any attempt to pass a `(MN, K_TOTAL > 16)` layout to make_umma_desc will fail with a cryptic runtime error.
+
+**TMEM column overflow**: For M=64 NonInterleaved UTCMMA with TMEM_COL_A=256, k_depth > 32 overflows the 512-column TMEM budget (causes XID 13 crash). Verify k_depth ≤ 32 for any M=64 TS benchmark.
+
+**Throughput vs RAW latency**: If the benchmark accumulates into a single tC_frag across K-tiles (accumulate_ = ScaleOut::One), it measures SERIALIZED RAW latency (~54 cy/tile for M64N128), NOT the paper's ~11 cy/tile throughput figure. Flag if the analysis conflates these.
+
+**L2 warmth of competition scenario**: For memory benchmarks using sparse attention patterns, flag if the unique working set ≤ 64 MB (L2 capacity). topk=2048 KV tokens × 1152 bytes = ~2.36 MB — will be L2-warm with fixed indices. Distinguish "fixed indices (competition evaluator)" from "varying indices (production inference)."
+
 ## Step 2: Run on Modal
 
 Navigate to the benchmark directory and execute:
