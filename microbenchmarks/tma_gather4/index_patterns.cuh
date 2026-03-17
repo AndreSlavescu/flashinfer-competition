@@ -34,6 +34,12 @@ enum class IndexPattern {
                                        // Models two-level block_table indirection: even sorted
                                        // topk indices map to scattered physical rows because
                                        // page frames are randomly assigned (not identity-mapped).
+    FRESH_COMPETITION_REALISTIC,       // Random permutation of ALL rows, grouped into topk=2048
+                                       // blocks sorted within B_TOPK=64 groups. Every row
+                                       // appears exactly once → ~94% HBM-cold in steady state
+                                       // at 1024MB working set (vs COMPETITION_REALISTIC which
+                                       // reuses the same 8MB repeatedly → always L2-warm).
+                                       // Use with 1024MB data_MB + num_iters=0 (num_rows/4).
 };
 
 inline const char* index_pattern_name(IndexPattern p) {
@@ -45,6 +51,7 @@ inline const char* index_pattern_name(IndexPattern p) {
         case IndexPattern::CLUSTERED_256:                    return "clustered_256";
         case IndexPattern::COMPETITION_REALISTIC:            return "competition_realistic";
         case IndexPattern::COMPETITION_REALISTIC_PAGE_TABLE: return "competition_realistic_pt";
+        case IndexPattern::FRESH_COMPETITION_REALISTIC:      return "fresh_competition_realistic";
     }
     return "unknown";
 }
@@ -138,6 +145,46 @@ inline std::vector<int> generate_indices(
                 for (int i = end; i < start + block_size && i < num_indices; i++) {
                     indices[i] = all_tokens[end - 1];
                 }
+            }
+        }
+        break;
+    }
+
+    case IndexPattern::FRESH_COMPETITION_REALISTIC: {
+        // Random permutation of all rows, grouped into topk=2048 blocks sorted within B_TOPK=64.
+        // Every row appears exactly once in the first num_rows indices → true cold scatter.
+        // At 1024MB (262144 rows), steady-state L2 warm fraction ≈ 6% (64MB / 1024MB).
+        //
+        // If num_indices > num_rows: wrap with an independent second shuffled permutation so
+        // no row is reused within a single pass.
+        constexpr int B_TOPK = 64;
+
+        // Build first permutation
+        std::vector<int> perm(num_rows);
+        std::iota(perm.begin(), perm.end(), 0);
+        std::shuffle(perm.begin(), perm.end(), rng);
+
+        // Sort within each B_TOPK block (mirrors kernel's pre-sort for TMA locality)
+        int num_full_blocks = (int)(num_rows / B_TOPK);
+        for (int blk = 0; blk < num_full_blocks; blk++) {
+            std::sort(perm.begin() + blk * B_TOPK,
+                      perm.begin() + (blk + 1) * B_TOPK);
+        }
+
+        int copy_first = std::min(num_indices, (int)num_rows);
+        for (int i = 0; i < copy_first; i++) {
+            indices[i] = perm[i];
+        }
+
+        // If more indices needed, generate a second independent permutation
+        if (num_indices > (int)num_rows) {
+            std::shuffle(perm.begin(), perm.end(), rng);
+            for (int blk = 0; blk < num_full_blocks; blk++) {
+                std::sort(perm.begin() + blk * B_TOPK,
+                          perm.begin() + (blk + 1) * B_TOPK);
+            }
+            for (int i = (int)num_rows; i < num_indices; i++) {
+                indices[i] = perm[i - num_rows];
             }
         }
         break;

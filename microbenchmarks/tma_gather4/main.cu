@@ -434,23 +434,27 @@ static void experiment_cache_hints(bool verbose) {
     std::vector<int64_t> hints = {HINT_EVICT_LAST, HINT_EVICT_FIRST, HINT_EVICT_NORMAL, HINT_NONE};
     std::vector<IndexPattern> patterns = {IndexPattern::SEQUENTIAL, IndexPattern::RANDOM, IndexPattern::CLUSTERED_64};
     std::vector<size_t> data_sizes = {8, 64, 256, 1024};
+    std::vector<TensorMapConfig> configs = {config_ckv_int64(), config_kpe_bf16()};
 
-    for (auto sz : data_sizes) {
-        std::string exp_name = "throughput_hints_" + std::to_string(sz) + "MB";
-        for (auto hint : hints) {
-            for (auto pat : patterns) {
-                BenchConfig cfg;
-                cfg.experiment = exp_name;
-                cfg.x_var = "cache_hint";
-                cfg.tm_cfg = config_ckv_int64();
-                cfg.num_blocks = 76;
-                cfg.pattern = pat;
-                cfg.cache_hint = hint;
-                cfg.total_data_MB = sz;
+    for (auto& tm_cfg : configs) {
+        for (auto sz : data_sizes) {
+            std::string exp_name = "throughput_hints_" + std::to_string(sz) + "MB";
+            for (auto hint : hints) {
+                for (auto pat : patterns) {
+                    BenchConfig cfg;
+                    cfg.experiment = exp_name;
+                    cfg.x_var = "cache_hint";
+                    cfg.tm_cfg = tm_cfg;
+                    cfg.num_blocks = 76;
+                    cfg.pattern = pat;
+                    cfg.cache_hint = hint;
+                    cfg.total_data_MB = sz;
 
-                if (verbose) fprintf(stderr, "  hint=%s pat=%s sz=%zuMB...\n",
-                                     cache_hint_name(hint), index_pattern_name(pat), sz);
-                run_throughput(cfg, verbose);
+                    if (verbose) fprintf(stderr, "  %s hint=%s pat=%s sz=%zuMB...\n",
+                                         tm_cfg.name, cache_hint_name(hint),
+                                         index_pattern_name(pat), sz);
+                    run_throughput(cfg, verbose);
+                }
             }
         }
     }
@@ -586,6 +590,22 @@ static void experiment_l2(bool verbose) {
         if (verbose) fprintf(stderr, "  L2_64B sz=%zuMB...\n", sz);
         run_throughput(cfg, verbose);
     }
+
+    // Sweep 3: num_blocks=32 — competition kernel uses 32 CTAs per token (1 per split).
+    // Reveals L2 cliff location and HBM throughput at the actual competition CTA count.
+    for (auto sz : sizes) {
+        BenchConfig cfg;
+        cfg.experiment = "throughput_l2_32blk";
+        cfg.x_var = "total_data_MB";
+        cfg.tm_cfg = config_ckv_int64();
+        cfg.num_blocks = 32;
+        cfg.pattern = IndexPattern::RANDOM;
+        cfg.cache_hint = HINT_EVICT_LAST;
+        cfg.total_data_MB = sz;
+
+        if (verbose) fprintf(stderr, "  32blk sz=%zuMB...\n", sz);
+        run_throughput(cfg, verbose);
+    }
 }
 
 // Experiment 6: Latency
@@ -616,6 +636,12 @@ static void experiment_latency(bool verbose) {
         {config_kpe_bf16(), IndexPattern::SEQUENTIAL, HINT_EVICT_LAST, 1},
         // Config C — random
         {config_kpe_bf16(), IndexPattern::RANDOM, HINT_EVICT_LAST, 256},
+
+        // Competition-realistic page-table pattern: models two-level block_table indirection.
+        // Still shows L2-warm latency (~197 ns) since footprint is only 8MB (2048 rows × 4096B).
+        // Confirms that access pattern structure has no effect on latency in L2-hot regime.
+        {config_ckv_int64(), IndexPattern::COMPETITION_REALISTIC_PAGE_TABLE, HINT_EVICT_LAST, 256},
+        {config_kpe_bf16(),  IndexPattern::COMPETITION_REALISTIC_PAGE_TABLE, HINT_EVICT_LAST, 256},
 
         // HBM-cold variants: num_iters=0 → access every row exactly once per run.
         // 1024MB working set >> 64MB L2; each row is accessed cold on most iterations.
@@ -648,21 +674,162 @@ static void experiment_pipeline(bool verbose) {
     if (verbose) fprintf(stderr, "[Experiment 7: Pipeline Depth]\n");
 
     std::vector<int> n_values = {1, 2, 4, 8, 16, 32};
+    std::vector<TensorMapConfig> configs = {config_ckv_int64(), config_kpe_bf16()};
+    std::vector<IndexPattern> patterns = {
+        IndexPattern::RANDOM,
+        IndexPattern::COMPETITION_REALISTIC_PAGE_TABLE
+    };
 
-    for (int N : n_values) {
-        BenchConfig cfg;
-        cfg.experiment = "pipeline";
-        cfg.x_var = "n_outstanding";
-        cfg.tm_cfg = config_ckv_int64();
-        cfg.num_blocks = 1;
-        cfg.pattern = IndexPattern::RANDOM;
-        cfg.cache_hint = HINT_EVICT_LAST;
-        cfg.total_data_MB = 256;
-        cfg.n_outstanding = N;
+    for (auto& tm : configs) {
+        for (auto pat : patterns) {
+            for (int N : n_values) {
+                BenchConfig cfg;
+                cfg.experiment = "pipeline";
+                cfg.x_var = "n_outstanding";
+                cfg.tm_cfg = tm;
+                cfg.num_blocks = 1;
+                cfg.pattern = pat;
+                cfg.cache_hint = HINT_EVICT_LAST;
+                cfg.total_data_MB = 256;
+                cfg.n_outstanding = N;
 
-        if (verbose) fprintf(stderr, "  N=%d...\n", N);
-        run_pipeline(cfg, verbose);
+                if (verbose) fprintf(stderr, "  %s pat=%s N=%d...\n",
+                                     tm.name, index_pattern_name(pat), N);
+                run_pipeline(cfg, verbose);
+            }
+        }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment prefetch: TMA prefetch effectiveness (single CTA)
+// ---------------------------------------------------------------------------
+
+static void run_prefetch(const BenchConfig& cfg, bool verbose) {
+    uint64_t num_rows = cfg.num_rows();
+    if (num_rows < 4) { fprintf(stderr, "Too few rows\n"); return; }
+
+    void* d_tensor = allocate_tensor(cfg.tm_cfg, num_rows);
+    CUtensorMap tmap = create_tensor_map_from_config(cfg.tm_cfg, d_tensor, num_rows);
+
+    int num_iters = (cfg.num_iters == 0) ? (int)(num_rows / 4) : cfg.num_iters;
+    int num_indices = num_iters * 4;
+    int* d_indices = create_device_indices(cfg.pattern, num_indices, (int)num_rows);
+
+    int64_t* d_results = nullptr;
+    CUDA_CHECK(cudaMalloc(&d_results, 2 * sizeof(int64_t)));
+
+    int bytes_per_gather4 = (int)cfg.tm_cfg.bytes_per_gather4();
+    int smem_data_size = (bytes_per_gather4 + 7) & ~7;
+    size_t smem_bytes = smem_data_size + 16;
+
+    int dist = cfg.n_outstanding;
+    auto kernel_fn = get_prefetch_kernel(dist);
+
+    if (verbose) {
+        fprintf(stderr, "  prefetch dist=%d: %s rows=%lu iters=%d bytes=%d\n",
+                dist, cfg.tm_cfg.name, num_rows, num_iters, bytes_per_gather4);
+    }
+
+    // Warmup (establishes steady-state L2 contents; ~94% cold in each pass for 1024MB)
+    for (int w = 0; w < 3; w++) {
+        kernel_fn<<<1, 1, smem_bytes>>>(
+            tmap, d_indices, num_iters, bytes_per_gather4,
+            cfg.cache_hint, d_results);
+        CUDA_CHECK(cudaDeviceSynchronize());
+    }
+
+    constexpr int NUM_RUNS = 11;
+    MeasurementSeries ns_per_iter;
+
+    for (int r = 0; r < NUM_RUNS; r++) {
+        kernel_fn<<<1, 1, smem_bytes>>>(
+            tmap, d_indices, num_iters, bytes_per_gather4,
+            cfg.cache_hint, d_results);
+        CUDA_CHECK(cudaDeviceSynchronize());
+        CUDA_CHECK(cudaPeekAtLastError());
+
+        int64_t h_results[2];
+        CUDA_CHECK(cudaMemcpy(h_results, d_results, 2 * sizeof(int64_t),
+                              cudaMemcpyDeviceToHost));
+
+        ns_per_iter.add((double)h_results[0] / num_iters);
+    }
+
+    double total_bytes = (double)num_iters * cfg.tm_cfg.bytes_per_gather4();
+    double gbps = total_bytes / (ns_per_iter.value() * num_iters);
+
+    // Reuse latency CSV row; net_latency_ns = avg_latency_ns (no null baseline)
+    printf("%s,%s,%s,%s,%lu,%u,%zu,%zu,%d,1,%s,%s,%s,%zu,,%d,"
+           "%.2f,%.1f,%.1f,%.1f\n",
+           cfg.experiment.c_str(),
+           cfg.x_var.c_str(),
+           cfg.tm_cfg.name,
+           dtype_name(cfg.tm_cfg.data_type),
+           cfg.tm_cfg.dim0,
+           cfg.tm_cfg.box_dim0,
+           cfg.tm_cfg.bytes_per_row(),
+           cfg.tm_cfg.bytes_per_gather4(),
+           cfg.tm_cfg.col_steps(),
+           index_pattern_name(cfg.pattern),
+           cache_hint_name(cfg.cache_hint),
+           swizzle_name(cfg.tm_cfg.swizzle),
+           cfg.total_data_MB,
+           num_iters,
+           gbps,
+           ns_per_iter.value(),
+           ns_per_iter.value(),  // net = total (no null subtraction)
+           ns_per_iter.spread() * 100.0);
+
+    CUDA_CHECK(cudaFree(d_indices));
+    CUDA_CHECK(cudaFree(d_results));
+    CUDA_CHECK(cudaFree(d_tensor));
+}
+
+// Experiment prefetch: TMA gather4 prefetch effectiveness
+// Tests whether firing tma_gather4_prefetch() DIST steps ahead can hide the 546 ns
+// HBM-cold TMA latency. Uses 1024MB SEQUENTIAL working set with num_iters=0 so every
+// row is unique per run (steady-state: ~94% cold, ~6% warm from last 16384 rows).
+static void experiment_prefetch(bool verbose) {
+    if (verbose) fprintf(stderr, "[Experiment prefetch: TMA Prefetch Effectiveness]\n");
+
+    for (auto tm : {config_ckv_int64(), config_kpe_bf16()}) {
+        for (int dist : {0, 1, 2, 4}) {
+            BenchConfig cfg;
+            cfg.experiment = "prefetch";
+            cfg.x_var = "n_outstanding";  // repurposed: stores prefetch distance
+            cfg.tm_cfg = tm;
+            cfg.num_blocks = 1;
+            cfg.pattern = IndexPattern::SEQUENTIAL;
+            cfg.cache_hint = HINT_EVICT_LAST;
+            cfg.total_data_MB = 1024;
+            cfg.num_iters = 0;  // → num_rows/4 (all unique rows, HBM-cold steady-state)
+            cfg.n_outstanding = dist;
+
+            if (verbose) fprintf(stderr, "  %s dist=%d...\n", tm.name, dist);
+            run_prefetch(cfg, verbose);
+        }
+    }
+}
+
+// Experiment fresh: fresh_competition_realistic pattern throughput
+// Tests HBM-cold scatter with competition-realistic block structure.
+// Every row is unique → ~94% cold in steady state at 1024MB.
+// Expected: ~500+ GB/s (HBM-bound) vs ~900 GB/s for competition_realistic (L2-warm).
+static void experiment_fresh(bool verbose) {
+    if (verbose) fprintf(stderr, "[Experiment fresh: Fresh Competition Scatter]\n");
+
+    BenchConfig cfg;
+    cfg.experiment = "throughput_patterns_fresh_1024MB";
+    cfg.x_var = "pattern";
+    cfg.tm_cfg = config_ckv_int64();
+    cfg.num_blocks = 76;
+    cfg.pattern = IndexPattern::FRESH_COMPETITION_REALISTIC;
+    cfg.cache_hint = HINT_EVICT_LAST;
+    cfg.total_data_MB = 1024;
+
+    if (verbose) fprintf(stderr, "  fresh_competition_realistic 1024MB...\n");
+    run_throughput(cfg, verbose);
 }
 
 // Experiment 8: Multi-CTA saturation
@@ -700,13 +867,15 @@ static void usage(const char* prog) {
         "Options:\n"
         "  --experiment=NAME   Run specific experiment:\n"
         "                        throughput  (Exp 1: box size sweep)\n"
-        "                        hints       (Exp 2: cache hints)\n"
+        "                        hints       (Exp 2: cache hints; ckv + kpe configs)\n"
         "                        patterns    (Exp 3: access patterns, incl. page_table)\n"
         "                        swizzle     (Exp 4: swizzle modes)\n"
-        "                        l2          (Exp 5: L2 working set; 128B+64B promotion)\n"
-        "                        latency     (Exp 6: latency, incl. HBM-cold variant)\n"
-        "                        pipeline    (Exp 7: pipeline depth)\n"
+        "                        l2          (Exp 5: L2 working set; 128B+64B promo + 32-blk)\n"
+        "                        latency     (Exp 6: latency; incl. HBM-cold + comp_pt)\n"
+        "                        pipeline    (Exp 7: pipeline depth; ckv+kpe × rand+comp_pt)\n"
         "                        saturation  (Exp 8: multi-CTA saturation up to 296 CTAs)\n"
+        "                        prefetch    (Exp prefetch: TMA prefetch dist sweep)\n"
+        "                        fresh       (Exp fresh: fresh_competition_realistic scatter)\n"
         "                        all         (run all experiments)\n"
         "  --device=N          GPU device index (default: 0)\n"
         "  --verbose           Print progress to stderr\n"
@@ -770,6 +939,8 @@ int main(int argc, char** argv) {
     run_if("latency",    experiment_latency);
     run_if("pipeline",   experiment_pipeline);
     run_if("saturation", experiment_saturation);
+    run_if("prefetch",   experiment_prefetch);
+    run_if("fresh",      experiment_fresh);
 
     if (verbose) fprintf(stderr, "\nAll experiments complete.\n");
     return 0;

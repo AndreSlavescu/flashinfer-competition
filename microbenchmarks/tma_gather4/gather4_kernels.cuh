@@ -81,6 +81,21 @@ void tma_gather4(const void* desc_ptr, uint64_t* mbar_ptr, void* smem_ptr,
         : "memory");
 }
 
+// TMA gather4 prefetch — fire-and-forget L2 prefetch, no mbarrier needed.
+// Issues cp.async.bulk.prefetch into L2 for 4 rows; use col_idx=0 for single-step configs
+// (ckv_int64 and kpe_bf16 both have exactly 1 column step).
+// Adapted from csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh:26
+__device__ __forceinline__
+void tma_gather4_prefetch(const void* desc_ptr, int col_idx, int4 row_idxs, int64_t cache_hint) {
+    asm volatile(
+        "cp.async.bulk.prefetch.tensor.2d.L2.global.tile::gather4.L2::cache_hint"
+        " [%0, {%1, %2, %3, %4, %5}], %6;\n"
+        :: "l"(desc_ptr), "r"(col_idx),
+           "r"(row_idxs.x), "r"(row_idxs.y), "r"(row_idxs.z), "r"(row_idxs.w),
+           "l"(cache_hint)
+        : "memory");
+}
+
 // Cache hint constants from cutlass/include/cute/arch/copy_sm90_desc.hpp
 constexpr int64_t HINT_EVICT_NORMAL = 0x1000000000000000LL;
 constexpr int64_t HINT_EVICT_FIRST  = 0x12F0000000000000LL;
@@ -233,6 +248,88 @@ latency_kernel(
 
     d_results[0] = t_gather4;
     d_results[1] = t_null;
+}
+
+
+// ===================================================================
+// KERNEL 2b: Prefetch-latency benchmark (single CTA)
+//
+// Issues tma_gather4_prefetch() DIST steps ahead of each gather4 call.
+// Prolog: pre-issue first DIST prefetches before the timed loop begins.
+//
+// Goal: determine whether L2 prefetch hides the 546 ns HBM-cold TMA latency.
+// Best used with SEQUENTIAL pattern + 1024MB working set + num_iters=num_rows/4
+// so every row is unique (no L2 re-warming between iterations).
+//
+// Launch: <<<1, 1, smem_bytes>>>  where smem_bytes = bytes_per_gather4 + 16
+// d_results[0] = total nanoseconds for num_iters gather4 calls (timed)
+// d_results[1] = 0 (no null baseline)
+// ===================================================================
+
+template<int DIST>
+__global__ void __launch_bounds__(1)
+prefetch_kernel(
+    const __grid_constant__ CUtensorMap tensor_map,
+    const int*    __restrict__ d_indices,
+    int           num_iters,
+    int           bytes_per_gather4,
+    int64_t       cache_hint,
+    int64_t*      d_results)
+{
+    extern __shared__ char smem_raw[];
+    char*     smem_data = smem_raw;
+    uint64_t* mbar      = reinterpret_cast<uint64_t*>(smem_raw + bytes_per_gather4);
+
+    mbarrier_init(mbar, 1);
+    fence_proxy_async();
+
+    // Prolog: pre-issue DIST prefetches before the timed section.
+    // These prefetches run concurrently with the timing setup overhead.
+    #pragma unroll
+    for (int d = 0; d < DIST; d++) {
+        if (d < num_iters) {
+            int4 rows = *reinterpret_cast<const int4*>(d_indices + d * 4);
+            tma_gather4_prefetch(&tensor_map, 0, rows, cache_hint);
+        }
+    }
+
+    uint32_t phase = 0;
+    int64_t t_start = globaltimer();
+
+    for (int i = 0; i < num_iters; i++) {
+        int4 rows = *reinterpret_cast<const int4*>(d_indices + i * 4);
+        tma_gather4(&tensor_map, mbar, smem_data, 0, rows, cache_hint);
+
+        // Issue prefetch for rows[i+DIST] while we wait for rows[i]
+        if (i + DIST < num_iters) {
+            int4 pf_rows = *reinterpret_cast<const int4*>(d_indices + (i + DIST) * 4);
+            tma_gather4_prefetch(&tensor_map, 0, pf_rows, cache_hint);
+        }
+
+        mbarrier_expect_tx(mbar, bytes_per_gather4);
+        mbarrier_arrive(mbar);
+        mbarrier_wait(mbar, phase);
+        phase ^= 1;
+    }
+
+    d_results[0] = globaltimer() - t_start;
+    d_results[1] = 0;
+}
+
+typedef void (*prefetch_kernel_fn_t)(
+    const __grid_constant__ CUtensorMap,
+    const int*, int, int, int64_t, int64_t*);
+
+inline prefetch_kernel_fn_t get_prefetch_kernel(int dist) {
+    switch (dist) {
+        case 0: return prefetch_kernel<0>;
+        case 1: return prefetch_kernel<1>;
+        case 2: return prefetch_kernel<2>;
+        case 4: return prefetch_kernel<4>;
+        default:
+            fprintf(stderr, "Unsupported prefetch DIST=%d\n", dist);
+            exit(1);
+    }
 }
 
 
