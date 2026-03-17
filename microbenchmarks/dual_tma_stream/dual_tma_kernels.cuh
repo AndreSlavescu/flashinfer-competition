@@ -121,15 +121,22 @@ dual_tma_kernel(
     // Each elected thread inits its own mbarrier
     if (tid == 0)  mbarrier_init(ckv_mbar, 1);
     if (tid == 32) mbarrier_init(kpe_mbar, 1);
+    // Double sync pattern: first sync ensures both mbarrier_init calls are visible to all
+    // threads before the fence; fence_proxy_async establishes async proxy visibility for
+    // subsequent TMA operations; second sync ensures all threads see the fence before any
+    // TMA instruction is issued.
     __syncthreads();
     fence_proxy_async();
     __syncthreads();
+
+    // Read t0 after synchronization so warp 0 and warp 1 start timing from the same
+    // instruction boundary. In BOTH mode this eliminates warp-scheduling skew from t0.
+    int64_t t0 = globaltimer();
 
     // ---- Warp 0: CKV stream (thread 0) ----
     if (tid == 0) {
         if (mode == 0 || mode == 2) {
             uint32_t phase = 0;
-            int64_t t0 = globaltimer();
             for (int i = 0; i < ckv_num_calls; i++) {
                 int4 rows = *reinterpret_cast<const int4*>(d_ckv_indices + i * 4);
                 tma_gather4(&ckv_map, ckv_mbar, ckv_smem, 0, rows, cache_hint);
@@ -148,7 +155,6 @@ dual_tma_kernel(
     if (tid == 32) {
         if (mode == 1 || mode == 2) {
             uint32_t phase = 0;
-            int64_t t0 = globaltimer();
             for (int i = 0; i < kpe_num_calls; i++) {
                 int4 rows = *reinterpret_cast<const int4*>(d_kpe_indices + i * 4);
                 tma_gather4(&kpe_map, kpe_mbar, kpe_smem, 0, rows, cache_hint);

@@ -1,0 +1,7 @@
+experiment,x_var,mode,pattern,data_MB,kpe_data_MB,ckv_num_calls,kpe_num_calls,ckv_GBps,kpe_GBps,ckv_ns_per_gather4,kpe_ns_per_gather4
+dual_tma,mode,ckv_only,random,256,32.0,65536,65536,7.20,0.00,568.9,0.0
+dual_tma,mode,kpe_only,random,256,32.0,65536,65536,0.00,2.50,0.0,205.0
+dual_tma,mode,both,random,256,32.0,65536,65536,6.96,0.88,588.7,585.1
+dual_tma,mode,ckv_only,sequential,1024,128.0,262144,262144,7.58,0.00,540.3,0.0
+dual_tma,mode,kpe_only,sequential,1024,128.0,262144,262144,0.00,1.12,0.0,458.8
+dual_tma,mode,both,sequential,1024,128.0,262144,262144,7.58,1.04,540.5,492.6

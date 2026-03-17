@@ -41,7 +41,8 @@ static int* create_device_indices(const char* pattern, int num_indices, int num_
 // ---------------------------------------------------------------------------
 
 static void print_csv_header() {
-    printf("mode,pattern,data_MB,"
+    printf("experiment,x_var,"
+           "mode,pattern,data_MB,kpe_data_MB,"
            "ckv_num_calls,kpe_num_calls,"
            "ckv_GBps,kpe_GBps,"
            "ckv_ns_per_gather4,kpe_ns_per_gather4\n");
@@ -85,11 +86,15 @@ static void run_dual(const DualConfig& dc, bool verbose) {
     int bytes_ckv = (int)ckv_cfg.bytes_per_gather4();  // 4096
     int bytes_kpe = (int)kpe_cfg.bytes_per_gather4();  //  512
 
-    // Use same number of gather4 calls for both streams.
-    // At 256MB: ckv has 262144 rows → 65536 calls; kpe has 2097152 rows → 524288 calls.
-    // Using ckv row count (smaller) ensures both streams run for similar wall-clock time.
+    // Use same number of gather4 calls for both streams, synchronized to the ckv row count.
+    // This matches the competition kernel's 8:1 ckv:kpe byte ratio — with num_calls based
+    // on ckv rows, kpe accesses only num_calls × 512B = data_MB/8 of unique data per run.
+    // Example at 256MB random: ckv touches 256MB (L2-cold), kpe touches only 32MB from a
+    // 256MB pool → ~8MB unique = L2-warm. This is intentional: kpe_cache naturally stays
+    // L2-warm in production because its footprint is 8× smaller than ckv_cache.
     int num_calls = (int)(ckv_num_rows / 4);
     if (num_calls < 256) num_calls = 256;
+    double kpe_data_accessed_MB = (double)num_calls * bytes_kpe / (1024.0 * 1024.0);
 
     int* d_ckv_idx = create_device_indices(dc.pattern, num_calls * 4, (int)ckv_num_rows);
     int* d_kpe_idx = create_device_indices(dc.pattern, num_calls * 4, (int)kpe_num_rows);
@@ -144,8 +149,8 @@ static void run_dual(const DualConfig& dc, bool verbose) {
         kpe_ns_ms.add(kpe_ns);
     }
 
-    printf("%s,%s,%zu,%d,%d,%.2f,%.2f,%.1f,%.1f\n",
-           mode_name(dc.mode), dc.pattern, dc.data_MB,
+    printf("dual_tma,mode,%s,%s,%zu,%.1f,%d,%d,%.2f,%.2f,%.1f,%.1f\n",
+           mode_name(dc.mode), dc.pattern, dc.data_MB, kpe_data_accessed_MB,
            num_calls, num_calls,
            ckv_gbps_ms.value(), kpe_gbps_ms.value(),
            ckv_ns_ms.value(), kpe_ns_ms.value());
