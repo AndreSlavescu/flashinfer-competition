@@ -57,5 +57,37 @@ Confirmed B200 (sm_100a) performance from tma_gather4 benchmark, ver5 CSV, CUDA 
 - evict_first: -48% for sequential L2-resident at 64MB. Avoid for cached data.
 - Competition recommendation: use evict_last (never worse, best for L2-resident cases)
 
-**Why:** These values are from actual B200 hardware runs on Modal, ver5 of the benchmark. Use these over CLAUDE.md specs which are literature estimates.
+**TMA gather4 prefetch effectiveness (ver6 NEW)**
+- `tma_gather4_prefetch()` (`cp.async.bulk.prefetch.tensor.2d.L2...tile::gather4`) tested at DIST=0,1,2,4
+- DIST=0 baseline: 537.7 ns (1.2% faster than latency_cold due to spurious same-row prefetch — negligible artifact)
+- DIST=1: ~380 ns (29% latency reduction)
+- DIST=2: ~324 ns (40% latency reduction) — **saturation point**
+- DIST=4: ~324 ns (no improvement over DIST=2)
+- Conclusion: issue prefetch for block i+2 while computing on block i; 2 outstanding requests saturate the TMA prefetch pipeline
+
+**32-CTA competition-scale TMA throughput (ver6 NEW)**
+- At 32 CTAs (competition workload: 1 CTA per split-KV block × 32 blocks):
+  - 64MB (L2-resident): ~393 GB/s
+  - 256MB (HBM-bound): ~174 GB/s
+  - 1024MB (HBM-bound): ~166 GB/s
+- 2.32× slower than 76-CTA results. L2 cliff at same 64-128MB location.
+
+**FRESH competition scatter throughput (ver6 NEW)**
+- FRESH_COMPETITION_REALISTIC at 1024MB: **385.73 GB/s** (within 1.1% of pure random 389.95 GB/s)
+- competition_realistic at 1024MB: ~905 GB/s (L2-warm artifact — only 8MB unique data)
+- B_TOPK=64 sort structure adds zero measurable benefit in HBM-bound regime
+- The 906 GB/s figure is NOT the real competition bandwidth — use 386 GB/s for planning
+
+**Cache hints — kpe update (ver6 NEW)**
+- kpe_bf16 `evict_first` at 64MB (L2 boundary, sequential): **65 GB/s — 47% penalty** vs evict_last (122 GB/s)
+- kpe_bf16 `evict_first` at HBM-bound (256MB+): **+5% faster** than evict_last
+- Updated recommendation: ckv=evict_last (keeps data in L2), kpe=evict_first (frees L2 for ckv, marginal HBM gain)
+
+**Dual TMA stream interference (dual_tma_stream ver1 NEW)**
+- HBM-cold (sequential 1024MB), BOTH mode: ckv **7.58 GB/s isolated = 7.58 GB/s concurrent** (0% interference)
+- L2-warm (random 256MB), BOTH mode: kpe 201 ns isolated → **595 ns concurrent** (≈ HBM cold, 3× slowdown)
+- Root cause: ckv's 256MB working set evicts kpe's 8MB data from L2 → kpe serializes to HBM
+- In production (8MB KV fits in L2), ckv will dominate L2 — kpe must be budgeted at HBM-cold latency (~595 ns)
+
+**Why:** These values are from actual B200 hardware runs on Modal, ver5/ver6 and dual_tma_stream ver1. Use these over CLAUDE.md specs which are literature estimates.
 **How to apply:** When analyzing future benchmarks or designing the competition kernel, use these as ground truth for B200 TMA performance.

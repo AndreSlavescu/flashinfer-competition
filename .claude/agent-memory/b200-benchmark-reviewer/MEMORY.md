@@ -1,10 +1,10 @@
 # Agent Memory Index
 
 ## Performance Values
-- [b200_measured_values.md](b200_measured_values.md) — Empirically confirmed B200 TMA gather4 performance from Modal hardware (ver4 CSV): latency, throughput, L2 size, cache hint effects, pipeline depth
+- [b200_measured_values.md](b200_measured_values.md) — Empirically confirmed B200 TMA gather4 performance (ver5/ver6 + dual_tma_stream ver1): latency, throughput, L2 size, cache hints, pipeline depth, prefetch effectiveness, 32-CTA competition-scale BW, dual-stream interference
 
 ## Methodology
-- [benchmark_antipatterns.md](benchmark_antipatterns.md) — Known sm_100a benchmark pitfalls: L2-warming confounds latency measurement, competition_realistic pattern caps unique addresses, cudaFuncSetAttribute with function pointer fails, wrong dim0 for competition config
+- [benchmark_antipatterns.md](benchmark_antipatterns.md) — Known sm_100a benchmark pitfalls (9 patterns): L2-warming confounds latency, competition_realistic caps unique addresses, cudaFuncSetAttribute pointer failure, wrong dim0, swizzle mismatch, cold-latency warmup pre-warming, page-table pattern still L2-warm, false CRITICAL on valid mbarrier ordering, concurrent stream L2 serialization assumption
 
 ## Design Guidance
-- [competition_kernel_insights.md](competition_kernel_insights.md) — Specific competition kernel recommendations from tma_gather4 results: TMA config, pipeline depth, index sorting, cache hints, working set analysis
+- [competition_kernel_insights.md](competition_kernel_insights.md) — Competition kernel recommendations: TMA config, pipeline depth, prefetch (DIST=2), cache hints (ckv=evict_last/kpe=evict_first), dual-stream findings, updated timing model, unknowns requiring UTCMMA + mbarrier benchmarks

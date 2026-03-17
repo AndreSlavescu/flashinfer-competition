@@ -47,12 +47,33 @@ Per query token, 76 CTAs, B_TOPK=64:
 - UTCMMA compute: ~0.5µs total per query token (38 GFLOPS / 990 TFLOPS = 38µs kernel-wide / 76 SMs)
 - KERNEL IS TMA-BOUND BY 6-7× (hot) TO 50× (cold). Optimize TMA first.
 
+## Updated Timing Model (ver6 + dual_tma_stream ver1, 2026-03-16)
+
+Per block (B_TOPK=64), single CTA:
+- ckv TMA: 16 gather4 × 540 ns HBM-cold = 8,640 ns (no kpe interference when HBM-bound)
+- kpe TMA in BOTH mode: 16 × 595 ns (L2-evicted by ckv) = 9,520 ns — kpe becomes the bottleneck
+- With DIST=2 prefetch: 16 × 324 ns = 5,184 ns ckv; kpe prefetch also effective
+- 32 blocks / 32 CTAs: TMA bottleneck ≈ 9,520 ns per block × (32 blocks serialized in 1 CTA) = 305 µs / token if no pipeline
+
+With N=2 double-buffering + DIST=2 prefetch: bottleneck ≈ max(TMA, compute) per block.
+UTCMMA compute still unknown — measuring this is HIGHEST PRIORITY.
+
+## Cache Hints (updated)
+- ckv_cache: `evict_last` (keeps KV in L2 during computation)
+- kpe_cache: `evict_first` (+5% HBM throughput, frees L2 pressure — kpe gets evicted by ckv anyway)
+
+## Dual-Stream TMA Finding (dual_tma_stream ver1)
+- HBM-cold: ckv+kpe streams run in parallel (0% interference). Safe to issue both simultaneously.
+- L2-warm: kpe serializes to HBM latency when ckv evicts its data. In production, kpe will run at ~595 ns per gather4, not 201 ns.
+- Consider staggering kpe issue ~100-200 ns after ckv to reduce L2 contention (ver2 will test this).
+
 ## What's Still Unknown (requires follow-up benchmarks)
-- **Dual-stream TMA (ckv + kpe simultaneously)**: Do the two streams share HBM bandwidth additively or contend? (HIGHEST PRIORITY — new kernel needed)
-- **TMA bandwidth while UTCMMA runs simultaneously**: Does tcgen05.mma degrade TMA throughput? (HIGH PRIORITY)
-- **INT64 smem layout compatibility with tcgen05.mma**: Can tcgen05.mma consume SWIZZLE_NONE INT64-typed smem as BF16 without re-swizzle? If not, the 22% BW gain from INT64 packing may be partially offset. (HIGH PRIORITY)
-- **True cold latency with zero warmup**: Current cold measurement has ~20ns underestimate from warmup pre-warming L2. (MINOR, modification only)
-- **L2 promotion 64B vs 128B**: Confirmed null result in ver5 — no effect on throughput or cliff location.
+- **UTCMMA latency at competition tile sizes** (M=64, N=128 QK; M=64, N=256 SV): HIGHEST PRIORITY. Is GEMM (est. 189 ns) < TMA (595 ns)? Determines if pipeline is TMA-bound or compute-bound.
+- **mbarrier chain overhead**: ~384 roundtrips per token at ~50 cycles each = 9 µs? Could flip kernel from TMA-bound to compute-bound.
+- **tcgen05 fence sequence overhead**: 128 roundtrips per token in O-rescale loop.
+- **TMA+UTCMMA overlap**: Does issuing TMA while UTCMMA runs preserve full throughput for both?
+- **INT64 smem layout compatibility with tcgen05.mma**: Can tcgen05.mma consume SWIZZLE_NONE INT64-typed smem as BF16 without re-swizzle? (HIGH PRIORITY)
+- **kpe stagger delay**: Optimal delay between ckv and kpe issue to avoid L2 serialization.
 
 **Why:** These derive from concrete measurements on real B200 hardware (ver5 CSV), not estimates or paper extrapolations.
 **How to apply:** Use these when making design decisions for tile sizes, pipeline stages, TMA configs in the competition kernel.

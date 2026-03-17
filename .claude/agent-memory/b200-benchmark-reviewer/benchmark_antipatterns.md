@@ -60,5 +60,41 @@ type: project
 
 **Where seen**: tma_gather4/index_patterns.cuh, COMPETITION_REALISTIC_PAGE_TABLE case. Same flaw as COMPETITION_REALISTIC (Anti-Pattern 2).
 
+## Anti-Pattern 8: Declaring a valid PTX mbarrier ordering as a CRITICAL violation
+
+**Problem**: The reviewer flagged `mbarrier_expect_tx` called AFTER `tma_gather4` as a "CRITICAL
+PTX protocol violation." This is wrong. The PTX ISA explicitly allows `mbarrier.expect_tx` to be
+called after the initiating async operation, as long as it precedes `mbarrier.try_wait`. The TMA
+engine accumulates `complete_tx` credits independently of the `expect_tx` count. The same ordering
+exists in `microbenchmarks/tma_gather4/gather4_kernels.cuh` with an explicit PTX spec comment, and
+produces validated 546 ns HBM-cold results.
+
+**Fix**: Before declaring ANY PTX instruction ordering as CRITICAL or MAJOR, consult the PTX ISA
+documentation (https://docs.nvidia.com/cuda/parallel-thread-execution/) and cite the specific
+section that prohibits it. If no clear prohibition exists in the spec, report as
+**NEEDS_VERIFICATION** with the PTX ISA section to check — do not escalate to CRITICAL without
+a spec citation. Additional sources (arxiv, reference benchmarks) strengthen confidence.
+
+**Rule**: `expect_tx` AFTER async op but BEFORE `try_wait` = VALID per PTX ISA.
+The TMA engine accumulates `complete_tx` credits independently of `expect_tx`.
+
+**Where seen**: dual_tma_stream review, 2026-03-16.
+
+## Anti-Pattern 9: Assuming concurrent TMA streams always run in parallel
+
+**Problem**: Two TMA gather4 warps with separate mbarriers in the same CTA (dual_tma_stream design)
+do NOT always run in parallel. In the L2-warm regime (random 256MB, kpe's 8MB unique footprint fits
+in L2), kpe degrades from 201 ns isolated → 595 ns concurrent when ckv is also running. The two
+streams serialize through the shared L2 bottleneck. In the HBM-bound regime (sequential 1024MB),
+both streams run at full independent bandwidth (ckv: 7.58 GB/s isolated = 7.58 GB/s concurrent,
+zero interference).
+
+**Fix**: When reviewing dual-stream benchmarks, check BOTH regimes separately. The critical
+question for the competition kernel: ckv's large working set evicts kpe's data from L2, so kpe
+effectively runs at HBM-cold latency (~595 ns) in BOTH mode — not its isolated L2-warm latency
+(201 ns). Do NOT assume "separate mbarriers = independent parallel execution."
+
+**Where seen**: dual_tma_stream ver1, 2026-03-16.
+
 ## Why these matter
-These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify the effective unique data footprint vs L2 size when interpreting latency and throughput numbers.
+These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior.

@@ -44,6 +44,7 @@ Before running anything, thoroughly audit the benchmark source code. Check:
 - **Compilation flags**: Verify `-gencode arch=compute_100a,code=sm_100a` is present. SM100 requires `cta_group::1` for UTCMMA.
 - **TMEM instructions**: tcgen05 instructions require correct warp role assignments (elect/noelect). Verify warp 0 acts as elect warp where required.
 - **Barrier usage**: TMA operations require `mbarrier` with correct `expect_tx` byte counts. Are transactional barriers set up correctly?
+  - **REQUIRED before flagging any PTX ordering as CRITICAL or MAJOR**: consult the PTX ISA documentation (https://docs.nvidia.com/cuda/parallel-thread-execution/) and cite the specific section that prohibits the ordering. Do not flag as CRITICAL based on intuition alone. If you cannot find a clear spec prohibition, report as **NEEDS_VERIFICATION** with the specific PTX ISA section to check — this keeps it visible without falsely escalating the severity. Additional sources (arxiv papers, reference benchmark suites) strengthen confidence further.
 - **tcgen05 fences**: Are `tcgen05.fence::before_thread_sync` and `tcgen05.fence::after_thread_sync` placed correctly around `__syncthreads()` in TMEM-heavy paths?
 - **Shared memory configuration**: Is `cudaFuncSetAttribute` used to request sufficient smem (up to 228 KB on B200)?
 - **Cache warm-up**: For memory bandwidth benchmarks, is the working set pre-loaded to avoid cold-cache artifacts?
