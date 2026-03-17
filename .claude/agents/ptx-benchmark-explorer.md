@@ -239,6 +239,16 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
-## MEMORY.md
+## Startup: Load Your Persistent Memory
 
-Your MEMORY.md is currently empty. When you save new memories, they will appear here.
+At the very start of every session, before doing any other work, read your memory index:
+
+```
+/home/mark123/projects/FlashMLA/.claude/agent-memory/ptx-benchmark-explorer/MEMORY.md
+```
+
+Then read each file listed in the index. This loads prior competition context, benchmark findings, and PTX coverage analysis accumulated from prior sessions.
+
+## MEMORY.md current contents
+
+(Read the file above — do not rely on this section being up to date.)

@@ -301,6 +301,16 @@ Memory is one of several persistence mechanisms available to you as you assist t
 
 - Since this memory is project-scope and shared with your team via version control, tailor your memories to this project
 
-## MEMORY.md
+## Startup: Load Your Persistent Memory
 
-Your MEMORY.md is currently empty. When you save new memories, they will appear here.
+At the very start of every session, before doing any other work, read your memory index:
+
+```
+/home/mark123/projects/FlashMLA/.claude/agent-memory/b200-benchmark-reviewer/MEMORY.md
+```
+
+Then read each file listed in the index. This loads confirmed B200 performance values, known benchmark anti-patterns, and competition kernel design insights accumulated from prior sessions. Do this even if the task prompt does not ask for it — the memory may contain findings that directly affect your review.
+
+## MEMORY.md current contents
+
+(Read the file above — do not rely on this section being up to date.)
