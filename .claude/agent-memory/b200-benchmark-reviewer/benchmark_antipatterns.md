@@ -96,5 +96,17 @@ effectively runs at HBM-cold latency (~595 ns) in BOTH mode — not its isolated
 
 **Where seen**: dual_tma_stream ver1, 2026-03-16.
 
+## Anti-Pattern 10: CSV metadata labels that don't match what the kernel actually executes
+
+**Problem**: A `run_and_report(...)` call site hardcodes a static label (e.g., `"SW128"`) for a field like swizzle mode, but the kernel selects the value dynamically based on a template parameter (e.g., `constexpr int SWIZZLE_B = (K_TOTAL >= 64) ? 128 : (K_TOTAL >= 32 ? 64 : 32)`). The hardware runs the correct swizzle, but the CSV records the wrong one. Downstream agents and training data then associate the measured cycle counts with the wrong swizzle mode, corrupting the knowledge base.
+
+**Real example**: `kernel_utcmma_latency_ts` always uses SW32 (K=16 requires K-atom=16), but `run_and_report` reported `"SW128"`. `kernel_utcmma_kdepth_ts` auto-selects SW32/SW64/SW128 based on K_TOTAL, but `run_and_report` always reported `"SW128"` — so k_depth=1 (SW32) and k_depth=2 (SW64) were both mislabeled.
+
+**Fix**: For any field that varies per configuration, compute the label dynamically in the launch loop to mirror the kernel's selection logic exactly. Never hardcode a static string for a field whose value is template- or runtime-dependent. Cross-check every `run_and_report` field against the kernel's actual compile-time selections.
+
+**Why this matters**: CSV results feed downstream review agents, the knowledge base, and training data for a kernel generation agent. A wrong label (e.g., "SW128 achieves X cycles" when it was actually SW32) produces false conclusions about B200 performance characteristics that propagate indefinitely.
+
+**Where seen**: `microbenchmarks/utcmma/main.cu`, experiments 1 and 2, discovered 2026-03-17. Fixed by computing `swizzle_name` dynamically.
+
 ## Why these matter
-These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior.
+These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior, (d) that every CSV label field matches what the kernel actually executes.

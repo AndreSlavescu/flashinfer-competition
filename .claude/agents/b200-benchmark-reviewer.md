@@ -50,6 +50,13 @@ Before running anything, thoroughly audit the benchmark source code. Check:
 - **Cache warm-up**: For memory bandwidth benchmarks, is the working set pre-loaded to avoid cold-cache artifacts?
 - **L2 eviction policy**: Is cache policy (`createpolicy_evict_last` / `createpolicy_evict_first`) set appropriately for the experiment intent?
 
+### CSV Label Accuracy (MANDATORY — flag mismatches as MAJOR)
+For every `run_and_report(...)` call site, trace each metadata field (mode, swizzle, tile shape, etc.) back to the kernel and verify it exactly matches what the kernel actually executes:
+- **Static labels for dynamic values**: If the kernel selects a value based on a template parameter or constexpr expression (e.g., `SWIZZLE_B = K_TOTAL >= 64 ? 128 : ...`), the label must be computed dynamically in the loop — not hardcoded.
+- **Cross-check every field**: Swizzle, mode (ws_ts / ws_ss / non-ws), tile shape, K-depth — all must reflect actual kernel state.
+- **Why this is MAJOR**: CSV results feed downstream review agents, the knowledge base, and training data for a kernel generation agent. A mislabeled row (e.g., "SW128" when the kernel used SW32) causes false conclusions about B200 performance that propagate indefinitely. The hardware ran correctly — the damage is in the metadata.
+- **Known instance**: `utcmma_latency_ts` and `utcmma_kdepth_ts` in `microbenchmarks/utcmma/main.cu` (fixed 2026-03-17): both hardcoded `"SW128"` while the kernels used SW32/SW64/SW128 depending on K_TOTAL.
+
 ### Completeness and Coverage
 - Does the benchmark sweep the relevant parameter space? (tile sizes, occupancy levels, data sizes, strides, concurrency levels)
 - For memory benchmarks: does it cover the L1/L2/HBM hierarchy transition points?

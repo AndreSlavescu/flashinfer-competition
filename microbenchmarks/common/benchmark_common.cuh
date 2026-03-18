@@ -1,5 +1,9 @@
 #pragma once
+// Shared microbenchmark utilities (B200 SM100a)
+// Used by: tma_gather4, dual_tma_stream, utcmma, and future benchmarks
+// Do not duplicate these functions in individual benchmark common.cuh files.
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <cstdio>
@@ -22,6 +26,17 @@ inline void cuda_check_impl(cudaError_t code, const char* file, int line) {
     }
 }
 
+#define CU_CHECK(ans) cu_check_impl((ans), __FILE__, __LINE__)
+
+inline void cu_check_impl(CUresult code, const char* file, int line) {
+    if (code != CUDA_SUCCESS) {
+        const char* err_str = nullptr;
+        cuGetErrorString(code, &err_str);
+        fprintf(stderr, "CUDA driver error: %s  %s:%d\n",
+                err_str ? err_str : "unknown", file, line);
+        exit(1);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Device-side timing (nanosecond resolution via %globaltimer)

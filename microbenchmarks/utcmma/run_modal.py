@@ -17,7 +17,7 @@ cuda_image = (
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${LD_LIBRARY_PATH}",
     })
     # Benchmark source files
-    .add_local_file("microbenchmarks/utcmma/common.cuh", "/root/bench/common.cuh", copy=True)
+    .add_local_file("microbenchmarks/common/benchmark_common.cuh", "/root/common/benchmark_common.cuh", copy=True)
     .add_local_file("microbenchmarks/utcmma/utcmma_kernels.cuh", "/root/bench/utcmma_kernels.cuh", copy=True)
     .add_local_file("microbenchmarks/utcmma/main.cu", "/root/bench/main.cu", copy=True)
     # CUTLASS/CuTe headers (needed for TMEM allocator, UMMA descriptors, MMA traits)

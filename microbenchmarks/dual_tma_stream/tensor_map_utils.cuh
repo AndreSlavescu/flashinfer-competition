@@ -5,7 +5,7 @@
 #include <cstdint>
 #include <cstdio>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 
 // ---------------------------------------------------------------------------
 // Standalone cuTensorMapEncodeTiled wrapper — no CUTLASS dependency.

@@ -6,7 +6,7 @@
 #include <vector>
 #include <algorithm>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 #include "utcmma_kernels.cuh"
 
 // ---------------------------------------------------------------------------
@@ -131,9 +131,10 @@ static void run_utcmma_latency_ts(bool verbose) {
         char x_val[32];
         snprintf(x_val, sizeof(x_val), "%dx%d", cfg.M, cfg.N);
 
+        // latency_ts kernel hardcodes SW32 (K=16 requires K-atom=16, SW32 is the only fit)
         run_and_report(
             "utcmma_latency_ts", x_val,
-            cfg.M, cfg.N, 1, "ws_ts", "SW128", ITERS,
+            cfg.M, cfg.N, 1, "ws_ts", "SW32", ITERS,
             launcher, smem_bytes, RUNS, verbose);
     }
 }
@@ -179,9 +180,15 @@ static void run_utcmma_kdepth_ts(bool verbose) {
         char x_val[16];
         snprintf(x_val, sizeof(x_val), "%d", kd);
 
+        // Swizzle matches kernel: SW128 if K_TOTAL>=64, SW64 if K_TOTAL>=32, else SW32
+        int k_total = kd * 16;
+        int swizzle_bits = (k_total >= 64) ? 128 : (k_total >= 32 ? 64 : 32);
+        char swizzle_name[8];
+        snprintf(swizzle_name, sizeof(swizzle_name), "SW%d", swizzle_bits);
+
         run_and_report(
             "utcmma_kdepth_ts", x_val,
-            M, N, kd, "ws_ts", "SW128", ITERS,
+            M, N, kd, "ws_ts", swizzle_name, ITERS,
             launcher, smem_bytes, RUNS, verbose);
     }
 }
