@@ -28,17 +28,23 @@ The two scenarios represent completely different kernel design spaces. This is t
 
 **Implementation approach**:
 
-For M=64, N=128, one C accumulator uses 256 TMEM columns (exactly half the budget). Two accumulators fill all 512 columns. For N=64, each accumulator uses 128 columns → 4 accumulators fit.
+For the WS C accumulator (`tmem_frg_ws_1sm`, used in all competition UTCMMA), **columns = N/2** per MMA tile. Verified against config.h: P at tmem_cols::P=400..464 = 64 cols for N=128 ✓; O at 0..256 = 256 cols for D_V=512 = 2 tiles × 128 cols ✓.
+
+| N | Columns per accumulator | Max N_acc in 512-col budget |
+|---|---|---|
+| 64 | 32 | 16 |
+| 128 | 64 | 8 |
+| 256 | 128 | 4 |
 
 Use M=64, N=64 for the sweep:
-- C0: columns 0–127 (`tC0.data().get() = 0`)
-- C1: columns 128–255 (`tC1.data().get() = 128`)
-- C2: columns 256–383
-- C3: columns 384–511
+- C0: columns 0–31 (`tC0.data().get() = 0`)
+- C1: columns 32–63 (`tC1.data().get() = 32`)
+- C2: columns 64–95 (`tC2.data().get() = 64`)
+- C3: columns 96–127 (`tC3.data().get() = 96`)
 
 Issue in rotation: `gemm(mma, A, B_k, C[i % N_acc])` for N_acc × K_DEPTH tiles. Separation between consecutive C[i] accesses = N_acc − 1 intervening instructions. Sweep N_acc = {1, 2, 3, 4}.
 
-Also run M=64, N=128 with N_acc=2 as competition-exact (two 256-col accumulators = 512 total, exactly fits).
+Also run M=64, N=128 with N_acc=2 as competition-exact (two 64-col accumulators = 128 total, well within budget).
 
 **Expected result shape**:
 - If true throughput = 11 cy: N_acc=1→54 cy, N_acc=2→~22 cy, N_acc=3→~11 cy, plateau at ≥3
@@ -140,9 +146,9 @@ Subtract (2) from (1), divide by N, subtract known MMA latency → commit cost i
 
 **Question answered**: Does SS UTCMMA (SV GEMM path) also scale linearly with k_depth? Can dual-accumulator pipelining help for N=256?
 
-**Key architectural constraint discovered**: For N=256, one M=64 accumulator uses 64×256 float32 = 512 TMEM columns = the **entire budget**. Dual-accumulator pipelining is **impossible** for SS M=64 N=256 without tile reshaping. The SV GEMM is already fast (173 ns / 4 K-tiles) so this is not critical.
+**Key architectural constraint**: One M=64 N=256 WS MMA tile uses 128 TMEM columns. The full SV GEMM (D_V=512, two tiles) uses 256 columns. Dual-pipelining the full SV GEMM (2×256 = 512 columns) exhausts the entire budget, leaving nothing for Q and P. Dual-acc pipelining is **impossible** for the full SS SV GEMM path. The SV GEMM is already fast (173 ns / 4 K-tiles) so this is not critical.
 
-**Sweep**: k_depth = {1, 2, 4, 8} for SS M=64, N=256. Also attempt N_acc=2 with SS N=128 (each 256 columns, fits) as proxy for throughput measurement.
+**Sweep**: k_depth = {1, 2, 4, 8} for SS M=64, N=256. Also attempt N_acc=2 with SS N=128 (each 64 columns, 128 total — comfortably fits) as proxy for throughput measurement.
 
 ---
 
@@ -154,8 +160,8 @@ Subtract (2) from (1), divide by N, subtract known MMA latency → commit cost i
 | SS, cta_group::1, .ws | same (desc_a from smem) | yes | `SM100_MMA_F16BF16_WS_SS_NOELECT` | Yes |
 | TS, cta_group::1, non-.ws | `tcgen05.mma.cta_group::1.kind::f16` | no | `SM100_MMA_F16BF16_TS_NOELECT` | No → Exp 12 |
 | SS, cta_group::1, non-.ws | same (desc_a from smem) | no | `SM100_MMA_F16BF16_SS_NOELECT` | No → Exp 12 |
-| TS, 2-acc, N=64 | same PTX, two TMEM column ranges | yes | manual column manipulation | No → Exp 6 |
-| TS, 2-acc, N=128 | same, two 256-col accumulators | yes | manual | No → Exp 6 |
+| TS, 2-acc, N=64 | same PTX, two 32-col TMEM ranges | yes | manual column manipulation | No → Exp 6 |
+| TS, 2-acc, N=128 | same, two 64-col accumulators | yes | manual | No → Exp 6 |
 | tcgen05.commit | `tcgen05.commit.cta_group::1.mbarrier::arrive::one` | — | `umma_arrive_noelect()` | No → Exp 9 |
 | tcgen05.ld.32dp32bNx | `tcgen05.ld.32dp32b{N×32}x` | — | `tmem_ld_32dp32bNx<N>` | No → Exp 7 |
 | tcgen05.st.32dp32bNx | `tcgen05.st.32dp32b{N×32}x` | — | `tmem_st_32dp32bNx<N>` | No → Exp 7 |
@@ -166,7 +172,7 @@ Subtract (2) from (1), divide by N, subtract known MMA latency → commit cost i
 
 ## Key Architectural Constraints Discovered
 
-1. **TMEM column budget for N=256 SS accumulator**: One M=64 N=256 float32 accumulator requires exactly 512 TMEM columns (the full TMEM budget). Dual-accumulator pipelining is **impossible** for SV GEMM path without reducing N. This is a hard architectural limit.
+1. **TMEM column budget for full SV GEMM accumulator**: One M=64 N=256 WS float32 MMA tile uses 128 TMEM columns. The full SV GEMM output (D_V=512) requires two N=256 tiles → 2×128 = **256 TMEM columns**. Dual-pipelining the full SV GEMM (2×256 = 512 columns) consumes the entire budget, leaving nothing for Q (~112 cols) and P (~64 cols). Dual-acc pipelining is therefore **impossible** in practice for the full-width SV GEMM path.
 
 2. **TMEM overflow at k_depth=36 (M=64 NonInterleaved)**: Ver1 hit this bug. TMEM column address exceeds 511 at k_depth=36 with NonInterleaved tile_stride=2. Max safe k_depth=32 for M=64. Competition uses k_depth=32 exactly — safely within bounds.
 
