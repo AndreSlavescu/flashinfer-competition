@@ -89,10 +89,17 @@ void kernel_utcmma_latency_ts(BenchResult* result, int iters) {
     auto layout_B = ku::make_umma_canonical_k_major_layout<N, K, 32, bf16>();
     bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
 
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
     // --- TMEM allocation (requires full warp) ---
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -121,12 +128,17 @@ void kernel_utcmma_latency_ts(BenchResult* result, int iters) {
         // B fragment (descriptor in register)
         auto sB_frag = thr_mma.partition_fragment_B(sB);
 
-        // Set accumulate mode (creates RAW dependency for latency measurement)
+        // Set accumulate mode
         tiled_mma.accumulate_ = UMMA::ScaleOut::One;
 
-        // Warmup: a few iterations to stabilize
+        // Warmup with proper sync
+        uint32_t phase = 0;
         for (int i = 0; i < 100; i++) {
             gemm(tiled_mma, tA_frag(_, _, 0), sB_frag(_, _, 0), tC_frag);
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         // --- Timed region ---
@@ -136,6 +148,10 @@ void kernel_utcmma_latency_ts(BenchResult* result, int iters) {
 
         for (int i = 0; i < iters; i++) {
             gemm(tiled_mma, tA_frag(_, _, 0), sB_frag(_, _, 0), tC_frag);
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();
@@ -178,9 +194,15 @@ void kernel_utcmma_kdepth_ts(BenchResult* result, int iters) {
     auto layout_B = ku::make_umma_canonical_k_major_layout<N, K_TOTAL, SWIZZLE_B, bf16>();
     bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
 
+    __shared__ __align__(16) uint64_t smem_bar_storage_kd[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage_kd);
+
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -202,6 +224,7 @@ void kernel_utcmma_kdepth_ts(BenchResult* result, int iters) {
         auto sB_frag = thr_mma.partition_fragment_B(sB);
 
         // Warmup
+        uint32_t phase = 0;
         for (int w = 0; w < 20; w++) {
             tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
             CUTE_UNROLL
@@ -209,6 +232,10 @@ void kernel_utcmma_kdepth_ts(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         // --- Timed region ---
@@ -223,6 +250,10 @@ void kernel_utcmma_kdepth_ts(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();
@@ -275,9 +306,16 @@ void kernel_utcmma_latency_ss(BenchResult* result, int iters) {
     bf16* smem_A = reinterpret_cast<bf16*>(smem_raw);
     bf16* smem_B = smem_A + cosize(layout_A);
 
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -297,6 +335,7 @@ void kernel_utcmma_latency_ss(BenchResult* result, int iters) {
         tC_frag.data().get() = TMEM_COL_C;
 
         // Warmup
+        uint32_t phase = 0;
         for (int w = 0; w < 20; w++) {
             tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
             CUTE_UNROLL
@@ -304,6 +343,10 @@ void kernel_utcmma_latency_ss(BenchResult* result, int iters) {
                 gemm(tiled_mma, sA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         // --- Timed region ---
@@ -318,6 +361,10 @@ void kernel_utcmma_latency_ss(BenchResult* result, int iters) {
                 gemm(tiled_mma, sA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();
@@ -434,6 +481,101 @@ void kernel_utccp_latency(BenchResult* result, int iters) {
 }
 
 // ---------------------------------------------------------------------------
+// Experiment 17: utccp_128dp128b
+// UTCCP 128dp128bit variant (half-width copy: 128 rows × 128 bits = 4 TMEM cols/copy).
+// PTX: tcgen05.cp.cta_group::1.128x128b [tmem_col], smem_desc
+// ---------------------------------------------------------------------------
+template<int NUM_COPIES>
+__global__ __launch_bounds__(128, 1)
+void kernel_utccp_128dp128b(BenchResult* result, int iters) {
+    using namespace cute;
+    namespace ku = kerutils;
+
+    extern __shared__ char smem_raw[];
+    __shared__ __align__(16) uint32_t smem_tmem_addr;
+
+    // Each UTCCP 128dp128bit copies 128×128 bits = 128×8 bf16 → 4 TMEM cols
+    static constexpr int COLS_PER_COPY = 4;
+    static constexpr int K_PER_COPY   = 8;   // 128 bits = 8 bf16 elements
+    static constexpr int ELEMS_PER_COPY = 128 * K_PER_COPY;  // bf16 elements per copy
+    // SW32 has K-atom=16 bf16. K_PER_COPY=8 < 16, so use INTER (no swizzle) to avoid
+    // K-atom divisibility issues (feedback: SW128→64 elems minimum).
+    auto layout_per_copy = ku::make_umma_canonical_k_major_layout<128, K_PER_COPY, 0, bf16>();
+    bf16* smem_src = reinterpret_cast<bf16*>(smem_raw);
+
+    // Barrier for commit synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
+        TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        // Pre-compute per-copy descriptors
+        uint64_t descs[NUM_COPIES];
+        CUTE_UNROLL
+        for (int c = 0; c < NUM_COPIES; c++) {
+            auto sSrc_c = make_tensor(make_smem_ptr(smem_src + c * ELEMS_PER_COPY), layout_per_copy);
+            descs[c] = UMMA::make_umma_desc<UMMA::Major::K>(sSrc_c).desc_;
+        }
+
+        // Warmup
+        uint32_t phase = 0;
+        for (int w = 0; w < 20; w++) {
+            CUTE_UNROLL
+            for (int c = 0; c < NUM_COPIES; c++) {
+                SM100::TMEM::UTCCP::SM100_UTCCP_128dp128bit_1cta::copy(
+                    descs[c],
+                    TMEM_COL_A + c * COLS_PER_COPY
+                );
+            }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
+        }
+
+        // --- Timed region ---
+        int64_t gt_start;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_start) :: "memory");
+        uint64_t c_start = clock64_start();
+
+        for (int i = 0; i < iters; i++) {
+            CUTE_UNROLL
+            for (int c = 0; c < NUM_COPIES; c++) {
+                SM100::TMEM::UTCCP::SM100_UTCCP_128dp128bit_1cta::copy(
+                    descs[c],
+                    TMEM_COL_A + c * COLS_PER_COPY
+                );
+            }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
+        }
+
+        uint64_t c_end = clock64_stop();
+        int64_t gt_end;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_end) :: "memory");
+
+        result->total_cycles = c_end - c_start;
+        result->gt_start_ns  = gt_start;
+        result->gt_end_ns    = gt_end;
+    }
+
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().free(0, 512);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Experiment 5: utcmma_swizzle
 // Compare different swizzle modes for B operand at fixed M=64, N=128, K_DEPTH=4.
 // ---------------------------------------------------------------------------
@@ -454,9 +596,16 @@ void kernel_utcmma_swizzle(BenchResult* result, int iters) {
     auto layout_B = ku::make_umma_canonical_k_major_layout<N, K_TOTAL, SWIZZLE, bf16>();
     bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
 
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -478,6 +627,7 @@ void kernel_utcmma_swizzle(BenchResult* result, int iters) {
         auto sB_frag = thr_mma.partition_fragment_B(sB);
 
         // Warmup
+        uint32_t phase = 0;
         for (int w = 0; w < 20; w++) {
             tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
             CUTE_UNROLL
@@ -485,6 +635,10 @@ void kernel_utcmma_swizzle(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         // --- Timed region ---
@@ -499,6 +653,10 @@ void kernel_utcmma_swizzle(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();

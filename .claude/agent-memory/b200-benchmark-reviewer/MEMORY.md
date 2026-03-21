@@ -8,3 +8,6 @@
 
 ## Design Guidance
 - [competition_kernel_insights.md](competition_kernel_insights.md) — Competition kernel recommendations: TMA config, pipeline depth, prefetch (DIST=2), cache hints (ckv=evict_last/kpe=evict_first), dual-stream findings, updated timing model, unknowns requiring UTCMMA + mbarrier benchmarks
+
+## Reference
+- [reference_local_sm100.md](reference_local_sm100.md) — Local ground-truth sm100 patterns from references/learn-cuda/02e_matmul_sm100/ and arxiv paper access status

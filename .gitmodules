@@ -1,3 +1,9 @@
 [submodule "csrc/cutlass"]
 	path = csrc/cutlass
 	url = https://github.com/NVIDIA/cutlass.git
+[submodule "flashinfer-bench-starter-kit"]
+	path = flashinfer-bench-starter-kit
+	url = https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git
+[submodule "references/learn-cuda"]
+	path = references/learn-cuda
+	url = https://github.com/gau-nernst/learn-cuda.git

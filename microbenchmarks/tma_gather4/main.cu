@@ -75,6 +75,7 @@ struct BenchConfig {
     size_t           total_data_MB;   // working set size in MB
     int              n_outstanding;   // for pipeline experiment
     int              num_iters;       // for latency experiment
+    int              num_outer_iters = 0; // for pipeline_competition: 0 = use default 256
 
     // Derived
     uint64_t num_rows() const {
@@ -294,7 +295,7 @@ static void run_pipeline(const BenchConfig& cfg, bool verbose) {
 
     int N = cfg.n_outstanding;
     int bytes_per_gather4 = (int)cfg.tm_cfg.bytes_per_gather4();
-    int num_outer_iters = 256;  // enough iterations for stable measurement
+    int num_outer_iters = cfg.num_outer_iters > 0 ? cfg.num_outer_iters : 256;
     int num_indices = num_outer_iters * N * 4;
     int* d_indices = create_device_indices(cfg.pattern, num_indices, (int)num_rows);
 
@@ -701,6 +702,52 @@ static void experiment_pipeline(bool verbose) {
     }
 }
 
+// Experiment pipeline_competition: 16-gather4 HBM-cold pipelining
+//
+// The key unknown in the competition timing model: when the kernel issues
+// 16 ckv gather4 calls before a single barrier wait, does the TMA engine
+// pipeline them (total ~546 ns) or serialize them (total ~8,736 ns)?
+//
+// Uses FRESH_COMPETITION_REALISTIC with 1024 MB working set:
+//   - True HBM-cold (~90% miss fraction): working set >> 64 MB L2
+//   - Competition-accurate scatter: random page frames, sorted within B_TOPK=64 groups
+//   - Each outer iteration (N=16) processes exactly one B_TOPK=64 block
+//
+// num_outer_iters is computed per-N to access >= 640 MB per run (10x L2).
+// Analysis: per-block TMA = avg_latency_ns * n_outstanding.
+static void experiment_pipeline_competition(bool verbose) {
+    if (verbose) fprintf(stderr, "[Experiment pipeline_competition: 16-gather4 HBM-cold pipelining]\n");
+
+    // ckv_int64: 128 INT64 elements, 1024 B/row, 4096 B/gather4, 1 col_step.
+    // Competition issues 16 ckv gather4s per block. Test if TMA pipelines them.
+    auto tm = config_ckv_int64();
+    std::vector<int> n_values = {1, 2, 4, 8, 16};
+
+    for (int N : n_values) {
+        int bytes_per_gather4 = (int)tm.bytes_per_gather4();  // 4096
+        int num_rows = (int)(1024LL * 1024 * 1024 / (int)tm.bytes_per_row());  // 1,048,576
+
+        // Target >= 640 MB data accessed per run for ~90% HBM-cold miss fraction
+        int cold_outer = (int)(640LL * 1024 * 1024 / ((int64_t)N * bytes_per_gather4));
+        int max_outer  = num_rows / (N * 4);  // no row repetition (FRESH permutation covers all rows)
+        int outer_iters = std::max(512, std::min(cold_outer, max_outer));
+
+        BenchConfig cfg;
+        cfg.experiment      = "pipeline_competition";
+        cfg.x_var           = "n_outstanding";
+        cfg.tm_cfg          = tm;
+        cfg.num_blocks      = 1;
+        cfg.pattern         = IndexPattern::FRESH_COMPETITION_REALISTIC;
+        cfg.cache_hint      = HINT_EVICT_LAST;
+        cfg.total_data_MB   = 1024;
+        cfg.n_outstanding   = N;
+        cfg.num_outer_iters = outer_iters;
+
+        if (verbose) fprintf(stderr, "  ckv_int64 N=%d outer_iters=%d...\n", N, outer_iters);
+        run_pipeline(cfg, verbose);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Experiment prefetch: TMA prefetch effectiveness (single CTA)
 // ---------------------------------------------------------------------------
@@ -875,8 +922,9 @@ static void usage(const char* prog) {
         "                        pipeline    (Exp 7: pipeline depth; ckv+kpe × rand+comp_pt)\n"
         "                        saturation  (Exp 8: multi-CTA saturation up to 296 CTAs)\n"
         "                        prefetch    (Exp prefetch: TMA prefetch dist sweep)\n"
-        "                        fresh       (Exp fresh: fresh_competition_realistic scatter)\n"
-        "                        all         (run all experiments)\n"
+        "                        fresh                (Exp fresh: fresh_competition_realistic scatter)\n"
+        "                        pipeline_competition (HBM-cold N=1..16 gather4 pipelining)\n"
+        "                        all                  (run all experiments)\n"
         "  --device=N          GPU device index (default: 0)\n"
         "  --verbose           Print progress to stderr\n"
         "  --help              Show this help\n",
@@ -939,8 +987,9 @@ int main(int argc, char** argv) {
     run_if("latency",    experiment_latency);
     run_if("pipeline",   experiment_pipeline);
     run_if("saturation", experiment_saturation);
-    run_if("prefetch",   experiment_prefetch);
-    run_if("fresh",      experiment_fresh);
+    run_if("prefetch",              experiment_prefetch);
+    run_if("fresh",                 experiment_fresh);
+    run_if("pipeline_competition",  experiment_pipeline_competition);
 
     if (verbose) fprintf(stderr, "\nAll experiments complete.\n");
     return 0;

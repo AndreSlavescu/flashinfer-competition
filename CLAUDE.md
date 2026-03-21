@@ -73,10 +73,10 @@ Paste CSV into the UI. Charts are generated dynamically from `experiment` and `x
 | L2 cache | ~64 MB (4 partitions, 2x Hopper) | empirical L2 cliff + arxiv:2512.02189 |
 | Shared memory / SM | up to 228 KB configurable (default 48 KB static) | cudaFuncSetAttribute testing |
 | TMEM (Tensor Memory) / SM | 256 KB (512 cols x 128 lanes x 32-bit) | arxiv:2512.02189 |
-| Register file / SM | 256 KB (65,536 x 32-bit registers) | arxiv:2507.10789 |
+| Register file / SM | 256 KB (65,536 x 32-bit registers) | arxiv:2507.10789 (GB203, may transfer) |
 | Max threads / SM | 2,048 (64 warps) | arxiv:2512.02189 |
-| Warp schedulers / SM | 4 (sub-cores/partitions) | arxiv:2507.10789 |
-| CUDA cores / SM | 128 FP32 (unified INT32/FP32) | arxiv:2507.10789 |
+| Warp schedulers / SM | 4 (sub-cores/partitions) | arxiv:2507.10789 (GB203, may transfer) |
+| CUDA cores / SM | 128 FP32 (unified INT32/FP32) | arxiv:2507.10789 (GB203, may transfer) |
 | Process | TSMC 4NP, 208B transistors (dual-die) | NVIDIA |
 | NVLink | 5th gen, 1.8 TB/s GPU-to-GPU | NVIDIA |
 | Compute capability | sm_100a (datacenter, required for cta_group::1) | NVIDIA |
@@ -87,8 +87,8 @@ Paste CSV into the UI. Charts are generated dynamically from `experiment` and `x
 |---|---|---|
 | HBM sustained BW (STREAM Triad) | ~7.48 TB/s (93.5% of peak) | arxiv:2512.02189 |
 | Global mem latency (cache miss) | ~420 cycles (~200 ns at ~2.1 GHz) | arxiv:2512.02189 |
-| L1 cache hit latency | 30-40 cycles | arxiv:2507.10789 |
-| Shared memory latency | ~20-30 cycles (low warp counts) | arxiv:2507.10789 |
+| L1 cache hit latency | 30-40 cycles | arxiv:2507.10789 (GB203, may transfer to B200) |
+| Shared memory latency | ~20-30 cycles (low warp counts) | arxiv:2507.10789 (GB203, may transfer to B200) |
 | TMEM read BW | ~16 TB/s per SM | arxiv:2512.02189 |
 | TMEM write BW | ~8 TB/s per SM | arxiv:2512.02189 |
 | Optimal TMEM tile | 64x64 elements | arxiv:2512.02189 |
@@ -214,7 +214,7 @@ UMMA swizzle layout helpers: `make_umma_canonical_k_major_layout<MN,K,SWIZZLE,T>
 
 - Dissecting the NVIDIA Hopper Architecture through Microbenchmarking: https://arxiv.org/pdf/2501.12084 — H100 memory hierarchy (HBM/L2/L1/smem latency and BW), wgmma throughput/latency, TMA, mbarrier overhead; Hopper baseline for B200 comparisons
 - Microbenchmarking NVIDIA's Blackwell Architecture (Dec 2025): https://arxiv.org/html/2512.02189v1 — primary B200 reference: HBM BW (~7.48 TB/s), global mem latency (~420 cycles), TMEM BW (read ~16 TB/s, write ~8 TB/s), UTCMMA latency (~11 cycles constant across tile sizes), BF16 tensor core throughput (1,926 TFLOPS)
-- Dissecting the NVIDIA Blackwell Architecture with Microbenchmarks (Jul 2025): https://arxiv.org/html/2507.10789v2 — second B200 reference: L1 latency (30-40 cycles), shared memory latency (~20-30 cycles), register file, warp schedulers, CUDA core count; complements Dec 2025 paper
+- Dissecting the NVIDIA Blackwell Architecture with Microbenchmarks (Jul 2025): https://arxiv.org/html/2507.10789v2 — **NOTE: covers GB203 (RTX 5080 consumer), NOT B200 datacenter**. L1 latency (30-40 cycles), shared memory latency (~20-30 cycles), register file, warp schedulers, CUDA core count — values may transfer to B200 but are not confirmed on B200 hardware
 - Dissecting the NVidia Turing T4 GPU via Microbenchmarking: https://arxiv.org/pdf/1903.07486 — benchmark methodology reference: pointer-chase latency, DRAM/cache BW measurement techniques applicable across GPU generations
 - Dissecting GPU Memory Hierarchy through Microbenchmarking: https://arxiv.org/pdf/1509.02308 — foundational memory hierarchy benchmarking methodology (stride sweeps, working-set sweeps, cache size detection)
 - Dissecting the NVIDIA Volta GPU Architecture via Microbenchmarking: https://arxiv.org/pdf/1804.06826 — Volta tensor core and memory hierarchy baselines; methodology for isolating instruction latency via dependency chains

@@ -198,14 +198,20 @@ With N=2 pipelining, per-call throughput improves but multi-call pipelining effi
 
 All GEMMs are serialized: K-tiles within each GEMM form RAW dependency chains. QK ckv and kpe use separate accumulators but serialize due to single-thread MMA issue. SV tiles 1+2 are independent but each needs 128 TMEM cols → 256 total = full C budget → must serialize.
 
-**Pipeline structure**: With WS N=64 tiles, GEMM needs all 64 KV tokens loaded before processing → TMA and GEMM are **sequential** (no overlap within one split-KV block).
+**Pipeline structure**: With WS N=64 tiles, GEMM needs all 64 KV tokens loaded before processing → TMA and GEMM are **sequential within one block** (true data dependency at N=64 tile granularity).
 
 | Component | ns | Notes |
 |-----------|-----|-------|
 | TMA (prefetched, pipelined) | ~5,000–9,500 | 16 gather4s, depends on pipelining |
 | GEMM (all serial) | ~1,392 | QK ckv + kpe + 2× SV |
 | Softmax (single pass, 64 scores × 16 heads) | ~small | unmeasured |
-| **Per-block total** | **~6,400–10,900** | TMA + GEMM (sequential) |
+| **Per-block total (SERIAL baseline)** | **~6,400–10,900** | TMA + GEMM sequential, superseded by ver8 |
+
+**NOTE (2026-03-20 correction):** This timing model is the **serial baseline for a split-KV design with 1 block/SM** only. Two corrections required for proper kernel design:
+
+1. **Pipelining across blocks**: In a multi-block-per-SM design (double-buffered), TMA for block `i+1` overlaps with GEMM for block `i`. Effective per-block time in steady state = `max(TMA, GEMM)` = max(3,690, 1,392) = **3,690 ns** (27% improvement). This requires >1 block per SM and ping-pong smem buffers.
+
+2. **num_tokens=1-2**: This model covers num_tokens=1 only. For num_tokens=2 (64 total blocks), pure split-KV across 64 SMs keeps latency the same (~5,082 ns, all SMs parallel). M=32 tiles could batch 2 tokens at 50% utilization vs 25% for M=64 (unbenchmarked).
 
 **Bottleneck: TMA-BOUND by ~3.6–6.8×** (TMA ~5,000–9,500 ns >> GEMM ~1,392 ns).
 

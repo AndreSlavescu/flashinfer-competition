@@ -1,0 +1,6 @@
+experiment,x_var,config,data_type,dim0,box_dim0,bytes_per_row,bytes_per_gather4,col_steps,num_blocks,pattern,cache_hint,swizzle,total_data_MB,n_outstanding,num_iters,throughput_GBps,avg_latency_ns,net_latency_ns,spread_pct
+pipeline_competition,n_outstanding,ckv_int64,int64,128,128,1024,4096,1,1,fresh_competition_realistic,evict_last,none,1024,1,163840,6.38,642.4,,0.1
+pipeline_competition,n_outstanding,ckv_int64,int64,128,128,1024,4096,1,1,fresh_competition_realistic,evict_last,none,1024,2,81920,10.17,402.9,,0.1
+pipeline_competition,n_outstanding,ckv_int64,int64,128,128,1024,4096,1,1,fresh_competition_realistic,evict_last,none,1024,4,40960,13.38,306.1,,0.1
+pipeline_competition,n_outstanding,ckv_int64,int64,128,128,1024,4096,1,1,fresh_competition_realistic,evict_last,none,1024,8,20480,15.75,260.1,,0.1
+pipeline_competition,n_outstanding,ckv_int64,int64,128,128,1024,4096,1,1,fresh_competition_realistic,evict_last,none,1024,16,10240,17.76,230.6,,0.1

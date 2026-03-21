@@ -365,6 +365,9 @@ static void run_utcmma_throughput_2acc(bool verbose) {
         // N=64 k_depth=32: competition QK ckv tile (N=64 scores, K=512 head_dim → 32 K-tiles)
         {64, 64, 1, 32, 1000},
         {64, 64, 2, 32, 1000},
+        {64, 64, 3, 32, 1000},   // N_ACC=3: gap=33 cy < 43 cy RAW → predicted still serialized
+        {64, 64, 4, 32, 1000},   // N_ACC=4: gap=44 cy ≥ 43 cy RAW → predicted to break dependency
+        {64, 64, 5, 32, 1000},   // N_ACC=5: gap=55 cy >> 43 cy RAW → should clearly break
         // N=128 k_depth=4: FlashMLA dual-GEMM B smem packing shape (two B_TOPK=64 blocks)
         {64, 128, 1, 4, 1000},
         {64, 128, 2, 4, 1000},
@@ -403,6 +406,9 @@ static void run_utcmma_throughput_2acc(bool verbose) {
                 switch (cfg.n_acc) {
                     case 1: { LAUNCH_2ACC(64, 64, 1, 32); break; }
                     case 2: { LAUNCH_2ACC(64, 64, 2, 32); break; }
+                    case 3: { LAUNCH_2ACC(64, 64, 3, 32); break; }
+                    case 4: { LAUNCH_2ACC(64, 64, 4, 32); break; }
+                    case 5: { LAUNCH_2ACC(64, 64, 5, 32); break; }
                 }
             } else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 32) {
                 switch (cfg.n_acc) {
@@ -657,6 +663,199 @@ static void run_utcmma_non_ws_ts(bool verbose) {
     }
 }
 
+// NOTE: Experiment 13 (M=32 WS-TS) REMOVED — M=32 is valid per PTX ISA for
+// tcgen05.mma.ws.cta_group::1 but CuTe's TMEM fragment code
+// (mma_traits_sm100.hpp:502) has a static_assert blocking M=32.
+// To benchmark M=32, either fix CuTe or use raw PTX inline assembly.
+
+// ---------------------------------------------------------------------------
+// Experiment 15: utcmma_non_ws_ss — Non-WS SS latency
+// ---------------------------------------------------------------------------
+static void run_utcmma_non_ws_ss(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 15: utcmma_non_ws_ss ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+
+    struct NWSSConfig {
+        int M, N, k_depth, iters;
+        const char* label;
+    };
+
+    NWSSConfig configs[] = {
+        {64, 64,  1, 10000, "64x64"},    // Direct comparison with WS-SS
+        {64, 128, 1, 10000, "64x128"},   // Direct comparison with WS-SS
+        {64, 256, 1, 10000, "64x256"},   // Direct comparison with WS-SS
+        {64, 256, 4, 1000,  "kd4"},      // Competition SV tile
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s (M=%d N=%d kd=%d) ...\n",
+                    cfg.label, cfg.M, cfg.N, cfg.k_depth);
+
+        int K_TOTAL = cfg.k_depth * 16;
+        int smem_bytes = (cfg.M * K_TOTAL + cfg.N * K_TOTAL) * sizeof(__nv_bfloat16) + 512;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_NOWS_SS(M_, N_, KD_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utcmma_non_ws_ss<M_, N_, KD_>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_non_ws_ss<M_, N_, KD_><<<1, 128, smem>>>(d_result, iters);
+
+            if (cfg.M == 64 && cfg.N == 64 && cfg.k_depth == 1)  { LAUNCH_NOWS_SS(64, 64, 1); }
+            else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 1) { LAUNCH_NOWS_SS(64, 128, 1); }
+            else if (cfg.M == 64 && cfg.N == 256 && cfg.k_depth == 1) { LAUNCH_NOWS_SS(64, 256, 1); }
+            else if (cfg.M == 64 && cfg.N == 256 && cfg.k_depth == 4) { LAUNCH_NOWS_SS(64, 256, 4); }
+            #undef LAUNCH_NOWS_SS
+        };
+
+        int swizzle_bits = (K_TOTAL >= 64) ? 128 : (K_TOTAL >= 32 ? 64 : 32);
+        char swizzle_name[16];
+        snprintf(swizzle_name, sizeof(swizzle_name), "INTER_MN%d",
+                 (K_TOTAL >= 64) ? 128 : (K_TOTAL >= 32 ? 64 : 32));
+
+        run_and_report(
+            "utcmma_non_ws_ss", cfg.label,
+            cfg.M, cfg.N, cfg.k_depth, "nows_ss", swizzle_name, cfg.iters,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 16: utcmma_non_ws_fine_n — Non-WS fine-grained N sweep (TS + SS)
+// ---------------------------------------------------------------------------
+static void run_utcmma_non_ws_fine_n(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 16: utcmma_non_ws_fine_n ===\n"); fflush(stderr);
+
+    const int ITERS = 10000;
+    const int RUNS = 11;
+    const int M = 64;
+    const int K_DEPTH = 1;
+    const int K_TOTAL = 16;
+
+    int n_values[] = {8, 16, 24, 32, 40, 48, 56, 64};
+
+    // --- Non-WS TS fine N ---
+    for (int n : n_values) {
+        if (verbose)
+            fprintf(stderr, "  TS N=%d ...\n", n);
+
+        int smem_bytes = n * K_TOTAL * sizeof(__nv_bfloat16) + 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_FINE_TS(N_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utcmma_non_ws_ts<64, N_, 1>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_non_ws_ts<64, N_, 1><<<1, 128, smem>>>(d_result, iters);
+
+            switch (n) {
+                case 8:  { LAUNCH_FINE_TS(8);  break; }
+                case 16: { LAUNCH_FINE_TS(16); break; }
+                case 24: { LAUNCH_FINE_TS(24); break; }
+                case 32: { LAUNCH_FINE_TS(32); break; }
+                case 40: { LAUNCH_FINE_TS(40); break; }
+                case 48: { LAUNCH_FINE_TS(48); break; }
+                case 56: { LAUNCH_FINE_TS(56); break; }
+                case 64: { LAUNCH_FINE_TS(64); break; }
+            }
+            #undef LAUNCH_FINE_TS
+        };
+
+        char x_val[16];
+        snprintf(x_val, sizeof(x_val), "N%d", n);
+
+        run_and_report(
+            "utcmma_non_ws_ts_fine_n", x_val,
+            M, n, K_DEPTH, "nows_ts", "SW32", ITERS,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+
+    // --- Non-WS SS fine N ---
+    for (int n : n_values) {
+        if (verbose)
+            fprintf(stderr, "  SS N=%d ...\n", n);
+
+        int smem_bytes = (M * K_TOTAL + n * K_TOTAL) * sizeof(__nv_bfloat16) + 512;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_FINE_SS(N_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utcmma_non_ws_ss<64, N_, 1>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_non_ws_ss<64, N_, 1><<<1, 128, smem>>>(d_result, iters);
+
+            switch (n) {
+                case 8:  { LAUNCH_FINE_SS(8);  break; }
+                case 16: { LAUNCH_FINE_SS(16); break; }
+                case 24: { LAUNCH_FINE_SS(24); break; }
+                case 32: { LAUNCH_FINE_SS(32); break; }
+                case 40: { LAUNCH_FINE_SS(40); break; }
+                case 48: { LAUNCH_FINE_SS(48); break; }
+                case 56: { LAUNCH_FINE_SS(56); break; }
+                case 64: { LAUNCH_FINE_SS(64); break; }
+            }
+            #undef LAUNCH_FINE_SS
+        };
+
+        char x_val[16];
+        snprintf(x_val, sizeof(x_val), "N%d", n);
+
+        run_and_report(
+            "utcmma_non_ws_ss_fine_n", x_val,
+            M, n, K_DEPTH, "nows_ss", "INTER_SW32", ITERS,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 17: utccp_128dp128b — UTCCP half-width variant
+// ---------------------------------------------------------------------------
+static void run_utccp_128dp128b(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 17: utccp_128dp128b ===\n"); fflush(stderr);
+
+    const int ITERS = 5000;
+    const int RUNS = 11;
+
+    int num_copies_list[] = {1, 2, 4, 8, 16, 32};
+
+    for (int nc : num_copies_list) {
+        if (verbose)
+            fprintf(stderr, "  num_copies=%d ...\n", nc);
+
+        // smem: 128 × (nc * 8) bf16 elements + barrier storage
+        // 128dp128bit: 128 rows × 128 bits = 128 × 8 bf16 elements per copy
+        int smem_bytes = 128 * nc * 8 * sizeof(__nv_bfloat16) + 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_UTCCP128(NC_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utccp_128dp128b<NC_>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utccp_128dp128b<NC_><<<1, 128, smem>>>(d_result, iters);
+
+            switch (nc) {
+                case 1:  { LAUNCH_UTCCP128(1);  break; }
+                case 2:  { LAUNCH_UTCCP128(2);  break; }
+                case 4:  { LAUNCH_UTCCP128(4);  break; }
+                case 8:  { LAUNCH_UTCCP128(8);  break; }
+                case 16: { LAUNCH_UTCCP128(16); break; }
+                case 32: { LAUNCH_UTCCP128(32); break; }
+            }
+            #undef LAUNCH_UTCCP128
+        };
+
+        char x_val[16];
+        snprintf(x_val, sizeof(x_val), "%d", nc);
+
+        run_and_report(
+            "utccp_128dp128b", x_val,
+            128, nc * 8, nc, "utccp_128b", "INTER", ITERS,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -722,6 +921,19 @@ int main(int argc, char** argv) {
 
     if (run_all || experiment == "utcmma_non_ws_ts")
         run_utcmma_non_ws_ts(verbose);
+
+    // --- Ver4 experiments ---
+    // NOTE: utcmma_m32_ws_ts removed — CuTe TMEM fragment doesn't support M=32
+    // (PTX ISA allows it for .ws, but CuTe mma_traits_sm100.hpp:502 blocks it)
+
+    if (run_all || experiment == "utcmma_non_ws_ss")
+        run_utcmma_non_ws_ss(verbose);
+
+    if (run_all || experiment == "utcmma_non_ws_fine_n")
+        run_utcmma_non_ws_fine_n(verbose);
+
+    if (run_all || experiment == "utccp_128dp128b")
+        run_utccp_128dp128b(verbose);
 
     CUDA_CHECK(cudaDeviceReset());
     return 0;

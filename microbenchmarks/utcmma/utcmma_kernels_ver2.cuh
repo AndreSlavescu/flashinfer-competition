@@ -1,6 +1,6 @@
 #pragma once
 
-// UTCMMA Ver2 experiment kernels (6, 7, 8+9, 10, 12)
+// UTCMMA Ver2 experiment kernels (6, 7, 8+9, 10, 12, 15)
 // Requires utcmma_kernels.cuh to be included first (for BenchResult, timing helpers, TMEM_COL_*)
 
 // =========================================================================
@@ -31,9 +31,16 @@ void kernel_utcmma_throughput_2acc(BenchResult* result, int iters) {
     auto layout_B = ku::make_umma_canonical_k_major_layout<N, K_TOTAL, SWIZZLE_B, bf16>();
     bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
 
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -54,6 +61,7 @@ void kernel_utcmma_throughput_2acc(BenchResult* result, int iters) {
         auto sB_frag = thr_mma.partition_fragment_B(sB);
 
         // Warmup: fill all accumulators with valid data
+        uint32_t phase = 0;
         for (int w = 0; w < 20; w++) {
             tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
             CUTE_UNROLL
@@ -62,6 +70,10 @@ void kernel_utcmma_throughput_2acc(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         // --- Timed region: all accumulate=One (steady-state throughput) ---
@@ -77,6 +89,10 @@ void kernel_utcmma_throughput_2acc(BenchResult* result, int iters) {
                 tC_frag.data().get() = TMEM_COL_C + (k % N_ACC) * COLS_PER_ACC;
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();
@@ -514,9 +530,16 @@ void kernel_utcmma_dual_gemm_layout(BenchResult* result, int iters) {
 
     bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
 
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -537,6 +560,7 @@ void kernel_utcmma_dual_gemm_layout(BenchResult* result, int iters) {
 
         auto sB_frag = thr_mma.partition_fragment_B(sB);
 
+        uint32_t phase = 0;
         for (int w = 0; w < 20; w++) {
             tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
             CUTE_UNROLL
@@ -544,6 +568,10 @@ void kernel_utcmma_dual_gemm_layout(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         int64_t gt_start;
@@ -557,6 +585,10 @@ void kernel_utcmma_dual_gemm_layout(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();
@@ -596,9 +628,16 @@ void kernel_utcmma_non_ws_ts(BenchResult* result, int iters) {
     auto layout_B = ku::make_umma_canonical_k_major_layout<N, K_TOTAL, SWIZZLE_B, bf16>();
     bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
 
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
     if (threadIdx.x < 32) {
         TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
         TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
     }
     __syncthreads();
 
@@ -620,6 +659,7 @@ void kernel_utcmma_non_ws_ts(BenchResult* result, int iters) {
 
         auto sB_frag = thr_mma.partition_fragment_B(sB);
 
+        uint32_t phase = 0;
         for (int w = 0; w < 20; w++) {
             tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
             CUTE_UNROLL
@@ -627,6 +667,10 @@ void kernel_utcmma_non_ws_ts(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         int64_t gt_start;
@@ -640,6 +684,148 @@ void kernel_utcmma_non_ws_ts(BenchResult* result, int iters) {
                 gemm(tiled_mma, tA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
                 tiled_mma.accumulate_ = UMMA::ScaleOut::One;
             }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
+        }
+
+        uint64_t c_end = clock64_stop();
+        int64_t gt_end;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_end) :: "memory");
+
+        result->total_cycles = c_end - c_start;
+        result->gt_start_ns  = gt_start;
+        result->gt_end_ns    = gt_end;
+    }
+
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().free(0, 512);
+    }
+}
+
+// =========================================================================
+// Experiment 15: kernel_utcmma_non_ws_ss
+// Non-WS SS (Shared×Shared, no .ws) — comparison with WS-SS (Exp 3)
+// C accumulator uses N full TMEM columns (not N/2 like WS)
+// =========================================================================
+template<int M, int N, int K_DEPTH>
+__global__ __launch_bounds__(128, 1)
+void kernel_utcmma_non_ws_ss(BenchResult* result, int iters) {
+    using namespace cute;
+    namespace ku = kerutils;
+
+    static constexpr int K_PER_TILE = 16;
+    static constexpr int K_TOTAL = K_DEPTH * K_PER_TILE;
+
+    extern __shared__ char smem_raw[];
+    __shared__ __align__(16) uint32_t smem_tmem_addr;
+
+    // A operand: [M x K_TOTAL] in K-major INTER layout (same as WS-SS Exp 3)
+    auto layout_A = coalesce(tile_to_shape(
+        UMMA::Layout_K_INTER_Atom<bf16>{},
+        Shape<Int<M>, Int<K_TOTAL>>{},
+        Step<_1, _2>{}
+    ), Shape<_1, _1>{});
+
+    // B operand: [N x K_TOTAL] in MN-major layout with appropriate swizzle
+    // MN-atom sizes: INTER=8, SW32=16, SW64=32, SW128=64. N must be divisible by atom.
+    // Cascade: pick largest swizzle where both K and N constraints are met.
+    constexpr int SWIZZLE_B = (K_TOTAL >= 64 && N % 64 == 0) ? 128 :
+                              (K_TOTAL >= 32 && N % 32 == 0) ? 64  :
+                              (N % 16 == 0)                  ? 32  : 0;
+    auto layout_B = [&]() {
+        if constexpr (SWIZZLE_B == 128) {
+            return coalesce(tile_to_shape(
+                UMMA::Layout_MN_SW128_Atom<bf16>{},
+                Shape<Int<N>, Int<K_TOTAL>>{},
+                Step<_2, _1>{}
+            ), Shape<_1, _1>{});
+        } else if constexpr (SWIZZLE_B == 64) {
+            return coalesce(tile_to_shape(
+                UMMA::Layout_MN_SW64_Atom<bf16>{},
+                Shape<Int<N>, Int<K_TOTAL>>{},
+                Step<_2, _1>{}
+            ), Shape<_1, _1>{});
+        } else if constexpr (SWIZZLE_B == 32) {
+            return coalesce(tile_to_shape(
+                UMMA::Layout_MN_SW32_Atom<bf16>{},
+                Shape<Int<N>, Int<K_TOTAL>>{},
+                Step<_2, _1>{}
+            ), Shape<_1, _1>{});
+        } else {
+            return coalesce(tile_to_shape(
+                UMMA::Layout_MN_INTER_Atom<bf16>{},
+                Shape<Int<N>, Int<K_TOTAL>>{},
+                Step<_2, _1>{}
+            ), Shape<_1, _1>{});
+        }
+    }();
+
+    bf16* smem_A = reinterpret_cast<bf16*>(smem_raw);
+    bf16* smem_B = smem_A + cosize(layout_A);
+
+    // Barrier for MMA completion synchronization
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
+        TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        // Non-WS SS atom: tcgen05.mma.cta_group::1.kind::f16 (no .ws)
+        using MMA_Atom = SM100_MMA_F16BF16_SS_NOELECT<
+            bf16, bf16, float, M, N, UMMA::Major::K, UMMA::Major::MN>;
+        auto tiled_mma = make_tiled_mma(MMA_Atom{});
+
+        auto sA = make_tensor(make_smem_ptr(smem_A), layout_A);
+        auto sB = make_tensor(make_smem_ptr(smem_B), layout_B);
+
+        auto thr_mma = tiled_mma.get_slice(_0{});
+        auto sA_frag = thr_mma.partition_fragment_A(sA);
+        auto sB_frag = thr_mma.partition_fragment_B(sB);
+
+        auto tC_frag = partition_fragment_C(tiled_mma, Shape<Int<M>, Int<N>>{});
+        tC_frag.data().get() = TMEM_COL_C;
+
+        // Warmup
+        uint32_t phase = 0;
+        for (int w = 0; w < 20; w++) {
+            tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
+            CUTE_UNROLL
+            for (int k = 0; k < K_DEPTH; ++k) {
+                gemm(tiled_mma, sA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
+                tiled_mma.accumulate_ = UMMA::ScaleOut::One;
+            }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
+        }
+
+        // Timed region
+        int64_t gt_start;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_start) :: "memory");
+        uint64_t c_start = clock64_start();
+
+        for (int i = 0; i < iters; i++) {
+            tiled_mma.accumulate_ = UMMA::ScaleOut::Zero;
+            CUTE_UNROLL
+            for (int k = 0; k < K_DEPTH; ++k) {
+                gemm(tiled_mma, sA_frag(_, _, k), sB_frag(_, _, k), tC_frag);
+                tiled_mma.accumulate_ = UMMA::ScaleOut::One;
+            }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
         }
 
         uint64_t c_end = clock64_stop();
