@@ -8,6 +8,7 @@
 
 #include "../common/benchmark_common.cuh"
 #include "utcmma_kernels.cuh"
+#include "utcmma_kernels_ver2.cuh"
 
 // ---------------------------------------------------------------------------
 // CSV header
@@ -56,6 +57,7 @@ static void run_and_report(
             fprintf(stderr, "  run %d/%d: %lu cycles, %.1f ns (globaltimer)\n",
                     run + 1, num_runs, h_result.total_cycles,
                     (double)(h_result.gt_end_ns - h_result.gt_start_ns));
+            fflush(stderr);
         }
     }
 
@@ -343,6 +345,319 @@ static void run_utcmma_swizzle(bool verbose) {
 }
 
 // ---------------------------------------------------------------------------
+// Experiment 6: utcmma_throughput_2acc — Multi-accumulator throughput
+// ---------------------------------------------------------------------------
+static void run_utcmma_throughput_2acc(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 6: utcmma_throughput_2acc ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+
+    struct AccConfig {
+        int M, N, n_acc, k_depth, iters;
+    };
+
+    AccConfig configs[] = {
+        // N=64 k_depth=4: baseline throughput sweep (QK kpe tile: N=64, K=64)
+        {64, 64, 1, 4, 1000},
+        {64, 64, 2, 4, 1000},
+        {64, 64, 3, 4, 1000},
+        {64, 64, 4, 4, 1000},
+        // N=64 k_depth=32: competition QK ckv tile (N=64 scores, K=512 head_dim → 32 K-tiles)
+        {64, 64, 1, 32, 1000},
+        {64, 64, 2, 32, 1000},
+        // N=128 k_depth=4: FlashMLA dual-GEMM B smem packing shape (two B_TOPK=64 blocks)
+        {64, 128, 1, 4, 1000},
+        {64, 128, 2, 4, 1000},
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose) {
+            fprintf(stderr, "  M=%d N=%d n_acc=%d k_depth=%d ...\n",
+                    cfg.M, cfg.N, cfg.n_acc, cfg.k_depth);
+            fflush(stderr);
+        }
+
+        int k_total = cfg.k_depth * 16;
+        int smem_bytes = cfg.N * k_total * sizeof(__nv_bfloat16) + 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_2ACC(M_, N_, NA_, KD_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utcmma_throughput_2acc<M_, N_, NA_, KD_>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_throughput_2acc<M_, N_, NA_, KD_><<<1, 128, smem>>>(d_result, iters);
+
+            if (cfg.M == 64 && cfg.N == 64 && cfg.k_depth == 4) {
+                switch (cfg.n_acc) {
+                    case 1: { LAUNCH_2ACC(64, 64, 1, 4); break; }
+                    case 2: { LAUNCH_2ACC(64, 64, 2, 4); break; }
+                    case 3: { LAUNCH_2ACC(64, 64, 3, 4); break; }
+                    case 4: { LAUNCH_2ACC(64, 64, 4, 4); break; }
+                }
+            } else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 4) {
+                switch (cfg.n_acc) {
+                    case 1: { LAUNCH_2ACC(64, 128, 1, 4); break; }
+                    case 2: { LAUNCH_2ACC(64, 128, 2, 4); break; }
+                }
+            } else if (cfg.M == 64 && cfg.N == 64 && cfg.k_depth == 32) {
+                switch (cfg.n_acc) {
+                    case 1: { LAUNCH_2ACC(64, 64, 1, 32); break; }
+                    case 2: { LAUNCH_2ACC(64, 64, 2, 32); break; }
+                }
+            } else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 32) {
+                switch (cfg.n_acc) {
+                    case 1: { LAUNCH_2ACC(64, 128, 1, 32); break; }
+                    case 2: { LAUNCH_2ACC(64, 128, 2, 32); break; }
+                }
+            }
+            #undef LAUNCH_2ACC
+        };
+
+        char x_val[32];
+        snprintf(x_val, sizeof(x_val), "nacc%d", cfg.n_acc);
+
+        int k_total_sw = cfg.k_depth * 16;
+        int swizzle_bits = (k_total_sw >= 64) ? 128 : (k_total_sw >= 32 ? 64 : 32);
+        char swizzle_name[8];
+        snprintf(swizzle_name, sizeof(swizzle_name), "SW%d", swizzle_bits);
+
+        run_and_report(
+            "utcmma_throughput_2acc", x_val,
+            cfg.M, cfg.N, cfg.k_depth, "ws_ts", swizzle_name, cfg.iters,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 7: tmem_ld_st_fence — TMEM load/store/fence overhead
+// ---------------------------------------------------------------------------
+static void run_tmem_ld_st_fence(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 7: tmem_ld_st_fence ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+
+    struct TmemConfig {
+        int mode;
+        int tmem_width;
+        const char* label;
+        int iters;
+    };
+
+    TmemConfig configs[] = {
+        // MODE=0: tmem_ld chain
+        {0, 1,  "ld_1",  5000},
+        {0, 4,  "ld_4",  5000},
+        {0, 8,  "ld_8",  5000},
+        {0, 16, "ld_16", 5000},
+        {0, 32, "ld_32", 5000},
+        {0, 64, "ld_64", 5000},
+        // MODE=1: tmem_st chain
+        {1, 1,  "st_1",  5000},
+        {1, 4,  "st_4",  5000},
+        {1, 8,  "st_8",  5000},
+        {1, 16, "st_16", 5000},
+        {1, 32, "st_32", 5000},
+        {1, 64, "st_64", 5000},
+        // MODE=2: fence-only baselines
+        {2, 0, "fence_tmem",    10000},
+        {2, 1, "fence_tcgen05", 10000},
+        // MODE=3: full rescale roundtrip
+        {3, 1, "rescale_1chunk", 1000},
+        {3, 4, "rescale_4chunk", 1000},
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s ...\n", cfg.label);
+
+        // MODE=3 needs smem for the float2 arrays; others only need TMEM
+        int smem_bytes = 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_TMEM(M_, W_) \
+                kernel_tmem_ld_st_fence<M_, W_><<<1, 128, smem>>>(d_result, iters);
+
+            switch (cfg.mode * 1000 + cfg.tmem_width) {
+                case 0*1000 + 1:  { LAUNCH_TMEM(0, 1);  break; }
+                case 0*1000 + 4:  { LAUNCH_TMEM(0, 4);  break; }
+                case 0*1000 + 8:  { LAUNCH_TMEM(0, 8);  break; }
+                case 0*1000 + 16: { LAUNCH_TMEM(0, 16); break; }
+                case 0*1000 + 32: { LAUNCH_TMEM(0, 32); break; }
+                case 0*1000 + 64: { LAUNCH_TMEM(0, 64); break; }
+                case 1*1000 + 1:  { LAUNCH_TMEM(1, 1);  break; }
+                case 1*1000 + 4:  { LAUNCH_TMEM(1, 4);  break; }
+                case 1*1000 + 8:  { LAUNCH_TMEM(1, 8);  break; }
+                case 1*1000 + 16: { LAUNCH_TMEM(1, 16); break; }
+                case 1*1000 + 32: { LAUNCH_TMEM(1, 32); break; }
+                case 1*1000 + 64: { LAUNCH_TMEM(1, 64); break; }
+                case 2*1000 + 0:  { LAUNCH_TMEM(2, 0);  break; }
+                case 2*1000 + 1:  { LAUNCH_TMEM(2, 1);  break; }
+                case 3*1000 + 1:  { LAUNCH_TMEM(3, 1);  break; }
+                case 3*1000 + 4:  { LAUNCH_TMEM(3, 4);  break; }
+            }
+            #undef LAUNCH_TMEM
+        };
+
+        run_and_report(
+            "tmem_ld_st_fence", cfg.label,
+            0, 0, 1, "tmem", "N/A", cfg.iters,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 8+9: mbarrier_commit — Barrier and commit overhead
+// ---------------------------------------------------------------------------
+static void run_mbarrier_commit(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 8+9: mbarrier_commit ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+
+    struct BarConfig {
+        int mode;
+        const char* label;
+        int iters;
+    };
+
+    BarConfig configs[] = {
+        {0, "named_bar_128",  10000},
+        {1, "named_bar_32",   10000},
+        {2, "mbarrier_tx",    10000},
+        {3, "mma_commit_wait", 5000},
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s ...\n", cfg.label);
+
+        // MODE=3 needs smem for B tensor (64 × 16 bf16)
+        int smem_bytes = (cfg.mode == 3) ? (64 * 16 * sizeof(__nv_bfloat16) + 256) : 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            switch (cfg.mode) {
+                case 0: kernel_mbarrier_commit<0><<<1, 128, smem>>>(d_result, iters); break;
+                case 1: kernel_mbarrier_commit<1><<<1, 128, smem>>>(d_result, iters); break;
+                case 2: kernel_mbarrier_commit<2><<<1, 128, smem>>>(d_result, iters); break;
+                case 3: kernel_mbarrier_commit<3><<<1, 128, smem>>>(d_result, iters); break;
+            }
+        };
+
+        run_and_report(
+            "mbarrier_commit", cfg.label,
+            (cfg.mode == 3) ? 64 : 0,
+            (cfg.mode == 3) ? 64 : 0,
+            (cfg.mode == 3) ? 1 : 0,
+            "sync", "N/A", cfg.iters,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 10: utcmma_dual_gemm_layout — Layout validation
+// ---------------------------------------------------------------------------
+static void run_utcmma_dual_gemm_layout(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 10: utcmma_dual_gemm_layout ===\n"); fflush(stderr);
+
+    const int ITERS = 1000;
+    const int RUNS = 11;
+
+    struct LayoutConfig {
+        int k_depth;
+        int layout_mode;
+        const char* label;
+    };
+
+    LayoutConfig configs[] = {
+        {4,  0, "canonical_kd4"},
+        {4,  1, "competition_kd4"},
+        {32, 0, "canonical_kd32"},
+        {32, 1, "competition_kd32"},
+    };
+
+    const int M = 64, N = 128;
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s ...\n", cfg.label);
+
+        int k_total = cfg.k_depth * 16;
+        int smem_bytes = N * k_total * sizeof(__nv_bfloat16) + 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_LAYOUT(KD_, LM_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utcmma_dual_gemm_layout<64, 128, KD_, LM_>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_dual_gemm_layout<64, 128, KD_, LM_><<<1, 128, smem>>>(d_result, iters);
+
+            if (cfg.k_depth == 4 && cfg.layout_mode == 0) { LAUNCH_LAYOUT(4, 0); }
+            else if (cfg.k_depth == 4 && cfg.layout_mode == 1) { LAUNCH_LAYOUT(4, 1); }
+            else if (cfg.k_depth == 32 && cfg.layout_mode == 0) { LAUNCH_LAYOUT(32, 0); }
+            else if (cfg.k_depth == 32 && cfg.layout_mode == 1) { LAUNCH_LAYOUT(32, 1); }
+            #undef LAUNCH_LAYOUT
+        };
+
+        run_and_report(
+            "utcmma_dual_gemm_layout", cfg.label,
+            M, N, cfg.k_depth, "ws_ts", "SW128", ITERS,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 12: utcmma_non_ws_ts — Non-WS MMA comparison
+// ---------------------------------------------------------------------------
+static void run_utcmma_non_ws_ts(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 12: utcmma_non_ws_ts ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+
+    struct NWConfig {
+        int M, N, k_depth, iters;
+        const char* label;
+    };
+
+    NWConfig configs[] = {
+        {64, 64,  1,  10000, "64x64"},
+        {64, 128, 1,  10000, "64x128"},
+        {64, 128, 4,  1000,  "kd4"},
+        {64, 128, 32, 1000,  "kd32"},
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s (M=%d N=%d kd=%d) ...\n",
+                    cfg.label, cfg.M, cfg.N, cfg.k_depth);
+
+        int k_total = cfg.k_depth * 16;
+        int smem_bytes = cfg.N * k_total * sizeof(__nv_bfloat16) + 256;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_NOWS(M_, N_, KD_) \
+                if (smem > 48*1024) cudaFuncSetAttribute( \
+                    kernel_utcmma_non_ws_ts<M_, N_, KD_>, \
+                    cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_non_ws_ts<M_, N_, KD_><<<1, 128, smem>>>(d_result, iters);
+
+            if (cfg.M == 64 && cfg.N == 64 && cfg.k_depth == 1) { LAUNCH_NOWS(64, 64, 1); }
+            else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 1)  { LAUNCH_NOWS(64, 128, 1); }
+            else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 4)  { LAUNCH_NOWS(64, 128, 4); }
+            else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 32) { LAUNCH_NOWS(64, 128, 32); }
+            #undef LAUNCH_NOWS
+        };
+
+        int swizzle_bits = (k_total >= 64) ? 128 : (k_total >= 32 ? 64 : 32);
+        char swizzle_name[8];
+        snprintf(swizzle_name, sizeof(swizzle_name), "SW%d", swizzle_bits);
+
+        run_and_report(
+            "utcmma_non_ws_ts", cfg.label,
+            cfg.M, cfg.N, cfg.k_depth, "nows_ts", swizzle_name, cfg.iters,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 int main(int argc, char** argv) {
@@ -391,6 +706,22 @@ int main(int argc, char** argv) {
 
     if (run_all || experiment == "utcmma_swizzle")
         run_utcmma_swizzle(verbose);
+
+    // --- Ver2 experiments ---
+    if (run_all || experiment == "utcmma_throughput_2acc")
+        run_utcmma_throughput_2acc(verbose);
+
+    if (run_all || experiment == "tmem_ld_st_fence")
+        run_tmem_ld_st_fence(verbose);
+
+    if (run_all || experiment == "mbarrier_commit")
+        run_mbarrier_commit(verbose);
+
+    if (run_all || experiment == "utcmma_dual_gemm_layout")
+        run_utcmma_dual_gemm_layout(verbose);
+
+    if (run_all || experiment == "utcmma_non_ws_ts")
+        run_utcmma_non_ws_ts(verbose);
 
     CUDA_CHECK(cudaDeviceReset());
     return 0;

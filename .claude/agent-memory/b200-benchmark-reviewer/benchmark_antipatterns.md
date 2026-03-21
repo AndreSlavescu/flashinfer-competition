@@ -108,5 +108,27 @@ effectively runs at HBM-cold latency (~595 ns) in BOTH mode — not its isolated
 
 **Where seen**: `microbenchmarks/utcmma/main.cu`, experiments 1 and 2, discovered 2026-03-17. Fixed by computing `swizzle_name` dynamically.
 
+## Anti-Pattern 11: UTCMMA multi-accumulator rotation with N_ACC < latency/throughput ratio
+
+**Problem**: Rotating accumulator TMEM column addresses across k_depth inner iterations (k % N_ACC)
+provides zero benefit if N_ACC × throughput_cycles < structural latency. For B200 tcgen05.mma with
+~54-cycle structural initiation interval and suspected 11-cycle paper throughput, you need N_ACC ≥
+54/11 ≈ 5 to fully pipeline. Testing N_ACC=1,2,3,4 and observing flat performance does NOT prove
+the paper's 11-cycle figure is wrong — it only proves the rotation is insufficient to hide the
+latency at those values of N_ACC. Similarly, it does NOT definitively prove that N_ACC ≥ 5 WOULD
+work. Both conclusions require testing N_ACC ≥ 5.
+
+**Observed**: utcmma_throughput_2acc experiment (ver3): N_ACC=1..4 all produce identical
+54.60 cy/K-tile for M=64 N=64 k_depth=4. Consistent with structural 54-cycle floor OR insufficient
+rotation depth. Follow-up with N_ACC=8 required.
+
+**Why this matters**: The "2-accumulator pipelining → 5× throughput improvement" optimization
+hypothesis was the key unknown that ver3 was designed to resolve. The zero-speedup result at
+N_ACC ≤ 4 changes the competition kernel's compute model, but the ambiguity about N_ACC ≥ 5
+leaves open a potential optimization path.
+
+**Fix**: Always test N_ACC up to and beyond latency/throughput_estimate (i.e., N_ACC ≥ 5 for
+UTCMMA). Use M=64 N=64 with N_ACC=8 (8×32=256 TMEM cols, fits in budget) as the definitive test.
+
 ## Why these matter
 These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior, (d) that every CSV label field matches what the kernel actually executes.

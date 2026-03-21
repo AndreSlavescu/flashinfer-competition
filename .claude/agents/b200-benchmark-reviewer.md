@@ -43,6 +43,7 @@ Before running anything, thoroughly audit the benchmark source code. Check:
 ### Hardware Correctness for SM100
 - **Compilation flags**: Verify `-gencode arch=compute_100a,code=sm_100a` is present. SM100 requires `cta_group::1` for UTCMMA.
 - **TMEM instructions**: tcgen05 instructions require correct warp role assignments (elect/noelect). Verify warp 0 acts as elect warp where required.
+- **tcgen05 warp-collective requirement**: `tcgen05.ld/st.sync.aligned.32x32b` and `tcgen05.wait::ld/st.sync.aligned` are WARP-COLLECTIVE — all 32 lanes must participate. If any of these are called inside `if (threadIdx.x == 0)` (single-thread guard), flag as **CRITICAL**: it causes an indefinite hardware deadlock. The fix is `if (threadIdx.x < 32)` with timing/result writes gated by `if (threadIdx.x == 0)` inside. `tcgen05.fence::before/after_thread_sync` (no `.sync.aligned` suffix) are per-thread and are fine under a single-thread guard.
 - **Barrier usage**: TMA operations require `mbarrier` with correct `expect_tx` byte counts. Are transactional barriers set up correctly?
   - **REQUIRED before flagging any PTX ordering as CRITICAL or MAJOR**: consult the PTX ISA documentation (https://docs.nvidia.com/cuda/parallel-thread-execution/) and cite the specific section that prohibits the ordering. Do not flag as CRITICAL based on intuition alone. If you cannot find a clear spec prohibition, report as **NEEDS_VERIFICATION** with the specific PTX ISA section to check — this keeps it visible without falsely escalating the severity. Additional sources (arxiv papers, reference benchmark suites) strengthen confidence further.
 - **tcgen05 fences**: Are `tcgen05.fence::before_thread_sync` and `tcgen05.fence::after_thread_sync` placed correctly around `__syncthreads()` in TMEM-heavy paths?
@@ -191,6 +192,39 @@ Always conclude your analysis with implications for the competition kernel. Key 
 - Does this suggest a particular L2 cache eviction policy for ckv_cache vs kpe_cache?
 - Does this affect the split-KV strategy (how many SMs to use, how to partition topk=2048)?
 - Does this validate the expected memory-bound vs compute-bound regime for the kernel?
+
+### MANDATORY: Competition Algorithm Context for Timing Models
+
+**Split-KV execution model** (required reading before building any timing model):
+
+The competition kernel uses split-KV: topk=2048, B_TOPK=64 → **32 SMs**, each handling one B_TOPK=64 chunk independently. Each SM:
+1. TMA-loads 64 KV tokens via 16 gather4 calls each (ckv: 4096B/call, kpe: 512B/call)
+2. Runs QK GEMM: M=64, N=64, K_DEPTH=32 (ckv, reduction=head_dim_ckv=512) + K_DEPTH=4 (kpe, reduction=head_dim_kpe=64)
+3. Runs **one local softmax** over its 64 scores per head (16 heads) — no online rescaling
+4. Runs SV GEMM: 2 tiles × M=64, N=256, K_DEPTH=4 (reduction=B_TOPK=64, output=head_dim_ckv=512)
+5. Writes partial output (combine kernel merges across SMs later)
+
+K_DEPTH = number of K-tiles (each 16 BF16 elements) along the GEMM reduction dimension.
+
+**Consequences for timing models:**
+
+| Cost | Per-SM or Per-token? | Measured value | Notes |
+|------|---------------------|---------------|-------|
+| TMA gather (ckv + kpe) | Per-SM | 16 calls × 546-595 ns/call = **~5,000-9,500 ns/block** | All TMA latencies are per-gather4-call, NOT per-block |
+| QK GEMM (K=32 + K=4) | Per-SM | ~928 + ~118 = **~1,046 ns** | Serialized RAW chains |
+| SV GEMM (2 × K=4) | Per-SM | 2 × 173 = **~346 ns** | 2 tiles for N=512 output, serialized |
+| O-rescale | **NOT applicable** | 0 per SM | Split-KV: one local softmax, no cross-block rescaling |
+| mbarrier | Part of TMA time | ~32 waits per SM | Synchronize TMA completion, not additive overhead |
+
+**O-rescale (rescale_4chunk, 622 cy) applies only to online softmax designs** where one SM accumulates across multiple KV chunks. In split-KV, each SM processes one chunk — no rescale needed.
+
+**Common timing model errors to avoid:**
+- Using per-gather4 TMA latency (546/595 ns) as per-block total. Per-block = 16 calls × per-call.
+- Using single SV tile (173 ns) as full SV cost. Competition needs 2 tiles (N=256×2=512) = 346 ns.
+- Summing costs across parallel SMs to get per-token totals. In split-KV, 32 SMs run simultaneously.
+- Treating mbarrier waits as additive overhead. They synchronize TMA — they're part of TMA time.
+
+**Bottleneck**: TMA (~5,000-9,500 ns/block) >> GEMM (~1,392 ns/block) → kernel is **TMA-BOUND by ~3.6-6.8×**. With WS N=64 tiles, TMA and GEMM are sequential (GEMM needs all 64 KV tokens loaded).
 
 ## Quality Standards
 

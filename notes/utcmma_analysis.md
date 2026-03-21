@@ -10,7 +10,7 @@
 
 ## Summary
 
-The UTCMMA benchmark measures serialized dependency-chain latency for tcgen05.mma on B200. The primary finding is a stark discrepancy between this benchmark's measured ~54 cycles/GEMM and arxiv:2512.02189's reported ~11 cycles latency — a discrepancy that is fully explained by methodology: arxiv:2512.02189 measures throughput-mode occupancy (independent MMAs, initiation interval), while this benchmark measures the full RAW dependency chain including TMEM read-back. The true structural pipeline latency per K-tile is ~54 cycles (small N tiles) to ~80 cycles (N=256), which is what matters for competition kernel design. The K-depth sweep reveals essentially perfect linear scaling (~53–54 cycles/K-tile), and the UTCCP Q-load path shows a pipeline-initiating cost of ~168 cycles for the first copy that amortizes to ~74 cycles/copy at 16-copy batches. A critical finding: with measured UTCMMA data, the competition kernel may be **compute-bound** (not TMA-bound) in the common L2-hot scenario where the 2 MB KV working set fits entirely in L2.
+The UTCMMA benchmark measures serialized dependency-chain latency for tcgen05.mma on B200. The primary finding is a stark discrepancy between this benchmark's measured ~54 cycles/GEMM and arxiv:2512.02189's reported ~11 cycles latency — a discrepancy that is fully explained by methodology: arxiv:2512.02189 measures throughput-mode occupancy (independent MMAs, initiation interval), while this benchmark measures the full RAW dependency chain including TMEM read-back. The true structural pipeline latency per K-tile is ~54 cycles (small N tiles) to ~80 cycles (N=256), which is what matters for competition kernel design. The K-depth sweep reveals essentially perfect linear scaling (~53–54 cycles/K-tile), and the UTCCP Q-load path shows a pipeline-initiating cost of ~168 cycles for the first copy that amortizes to ~74 cycles/copy at 16-copy batches. **NOTE (2026-03-19 correction):** The ver1 timing model below incorrectly used per-gather4 TMA latencies as per-block totals. Per-block TMA = 16 gather4 calls × per-call latency = ~5,000–9,500 ns, far exceeding GEMM (~1,392 ns). The kernel is **TMA-bound**, not compute-bound. See notes/utcmma_review.md for the corrected model.
 
 ---
 
@@ -77,7 +77,7 @@ From 64x128 latency_ts: 544,594 cycles / 10,000 iters = 54.46 cycles/iter = 29.5
 | 16 | 53.8 | 0.985 |
 | 32 | 53.7 | 0.983 |
 
-**Perfect linearity (±2.4%) from k=1 to k=32.** Competition QK GEMM (M=64, N=128, K_DEPTH=32): **1,719 cycles = 931 ns**.
+**Perfect linearity (±2.4%) from k=1 to k=32.** QK GEMM at M=64 N=128 K_DEPTH=32: **1,719 cycles = 931 ns**. (Note: benchmark uses N=128; competition QK is N=64 but per-K-tile cost is identical.)
 
 ### Experiment 3: utcmma_latency_ss — SS (Shared×Shared, SV path)
 
@@ -109,32 +109,23 @@ All four modes (INTER/SW32/SW64/SW128) produce identical 218.4 cycles/4 K-tiles 
 
 ## Full Per-Block Timing Model (Updated with Measured Data)
 
-| Operation | Cycles | ns | Source |
-|---|---|---|---|
-| UTCCP Q load (32 copies, extrapolated) | ~2,276 | ~1,234 | utcmma ver1 (extrapolated) |
-| QK GEMM (M=64, N=128, K_DEPTH=32) | **1,719** | **931** | utcmma ver1 MEASURED |
-| SV GEMM (M=64, N=256, K_DEPTH=4) | **320** | **173** | utcmma ver1 MEASURED |
-| mbarrier overhead (32×~52 cyc est.) | ~1,664 | ~902 | estimate |
-| Softmax + tcgen05.ld/st | unknown | ~190–500? | UNMEASURED |
-| **Total compute (excl. softmax)** | **~5,979** | **~3,240** | |
+**SUPERSEDED by ver3 timing model in notes/utcmma_review.md. Key corrections since ver1:**
+- TMA "budget" values below were per-gather4-call, not per-block. Per-block TMA = 16 calls × per-call = ~5,000–9,500 ns.
+- SV GEMM needs 2 tiles (N=256×2) for full D=512 output: 2 × 173 = 346 ns, not 173 ns.
+- mbarrier waits synchronize TMA completion — part of TMA time, not additive overhead.
+- Kernel is **TMA-BOUND** in all regimes, not compute-bound.
 
-| Regime | TMA budget (ns) | Compute (ns) | Bottleneck | TMA/Compute ratio |
-|---|---|---|---|---|
-| L2-hot (2 MB KV in L2) | ~1,891 | ~3,240 | **COMPUTE-BOUND** | 0.58 |
-| HBM-cold | ~5,187 | ~3,240 | **TMA-BOUND** | 1.60 |
-| BOTH mode (kpe evicted from L2) | ~5,714 | ~3,240 | **TMA-BOUND** | 1.76 |
-
-**Critical revision**: The prior estimate of the kernel being TMA-bound by 6–7× was based on an unknown UTCMMA cost. With measured data, compute costs ~3,240 ns/block. In the likely production scenario (topk=2048 × 1024B ckv = 2 MB total, fits in 64 MB L2), the kernel is **compute-bound**. This inverts the optimization priority.
+See notes/utcmma_review.md "Competition Kernel Timing Model" for corrected values.
 
 ---
 
 ## Implications for Competition Kernel
 
-1. **Pipeline depth**: In the compute-bound (L2-hot) regime, a 3-stage pipeline may help: issue TMA for block i+2 while computing block i, so two TMA operations complete during one compute window. In the HBM-cold regime, 2-stage double-buffer is sufficient.
+1. **Pipeline depth**: Kernel is TMA-bound (corrected). N=2 pipeline is sufficient for TMA. Key optimization is reducing per-block TMA time (prefetch, cache hints, pipelining multiple gather4 calls).
 
 2. **Q loading overlap**: UTCCP (~1,234 ns extrapolated, 32 copies) can be pipelined with the SV GEMM (173 ns) and softmax. If UTCCP is async and can overlap with UTCMMA, the effective cost is much lower. The UTCCP startup cost (~91 ns) is the irreducible minimum before QK GEMM can start.
 
-3. **Tile sizes confirmed**: M=64, N=128 for QK (no latency penalty vs N=64, but double FLOPs). M=64, N=256 for SV. Both match `csrc/sm100/decode/head64/config.h` (B_TOPK=64, B_H=64).
+3. **Tile sizes**: M=64, N=64 for competition QK (B_TOPK=64). M=64, N=256×2 for SV (2 tiles for D=512 output). N=128 in benchmark is the FlashMLA shape (two B_TOPK=64 blocks packed), not competition-exact.
 
 4. **Swizzle confirmed**: SW128 for all smem layouts — zero UTCMMA performance impact.
 
@@ -151,7 +142,7 @@ All four modes (INTER/SW32/SW64/SW128) produce identical 218.4 cycles/4 K-tiles 
 2. **TMA+UTCMMA concurrent execution**: Does issuing TMA while UTCMMA runs preserve independent throughput for both? Critical for confirming whether pipelining actually works.
 3. **Softmax TMEM readback overhead**: tcgen05.ld latency, P extraction, and O rescaling path are unmeasured. Could add 500–1,000 ns/block.
 4. **UTCCP + UTCMMA overlap**: If UTCCP and UTCMMA can execute concurrently, the 1,234 ns Q load cost is hidden behind compute.
-5. **Compute-bound confirmation**: The L2-hot compute-bound hypothesis needs direct confirmation via a full pipelined kernel at 32 CTAs.
+5. **TMA pipelining efficiency**: Measure per-block TMA time for 16 consecutive HBM-cold gather4 calls with N=2 pipeline. This determines where in the 5,000–9,500 ns range the per-block TMA falls.
 
 ---
 

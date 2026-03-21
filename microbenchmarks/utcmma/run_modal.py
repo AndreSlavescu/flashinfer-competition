@@ -19,6 +19,7 @@ cuda_image = (
     # Benchmark source files
     .add_local_file("microbenchmarks/common/benchmark_common.cuh", "/root/common/benchmark_common.cuh", copy=True)
     .add_local_file("microbenchmarks/utcmma/utcmma_kernels.cuh", "/root/bench/utcmma_kernels.cuh", copy=True)
+    .add_local_file("microbenchmarks/utcmma/utcmma_kernels_ver2.cuh", "/root/bench/utcmma_kernels_ver2.cuh", copy=True)
     .add_local_file("microbenchmarks/utcmma/main.cu", "/root/bench/main.cu", copy=True)
     # CUTLASS/CuTe headers (needed for TMEM allocator, UMMA descriptors, MMA traits)
     .add_local_dir("csrc/cutlass/include", "/root/bench/include", copy=True)
@@ -52,7 +53,7 @@ NVCC_FLAGS = [
 @app.function(
     image=cuda_image,
     gpu="B200",
-    timeout=900,
+    timeout=300,
 )
 def run_benchmark(experiment: str = "all"):
     import subprocess
@@ -78,11 +79,22 @@ def run_benchmark(experiment: str = "all"):
 
     # Run
     print(f"\nRunning experiment: {experiment}")
-    run_result = subprocess.run(
-        ["/root/bench/utcmma_bench", f"--experiment={experiment}", "--verbose"],
-        capture_output=True, text=True,
-        timeout=600,
-    )
+    try:
+        run_result = subprocess.run(
+            ["/root/bench/utcmma_bench", f"--experiment={experiment}", "--verbose"],
+            capture_output=True, text=True,
+            timeout=240,
+        )
+    except subprocess.TimeoutExpired as e:
+        # Show partial output so we know exactly which experiment/config hung
+        partial_stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+        partial_stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        print("=== TIMEOUT after 600s — partial stderr (shows last experiment before hang) ===")
+        print(partial_stderr[-8000:] if len(partial_stderr) > 8000 else partial_stderr)
+        print("=== partial stdout (CSV so far) ===")
+        print(partial_stdout)
+        return {"success": False, "error": "timeout_600s", "stderr": partial_stderr, "csv": partial_stdout}
+
     if run_result.returncode != 0:
         print(f"Execution failed:\n{run_result.stderr}")
         return {"success": False, "error": run_result.stderr, "stderr": run_result.stderr}

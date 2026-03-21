@@ -212,12 +212,15 @@ UMMA swizzle layout helpers: `make_umma_canonical_k_major_layout<MN,K,SWIZZLE,T>
 
 ## Microbenchmarking Research
 
-- Dissecting the NVIDIA Hopper Architecture through Microbenchmarking: https://arxiv.org/pdf/2501.12084
-- Microbenchmarking NVIDIA's Blackwell Architecture (Dec 2025): https://arxiv.org/html/2512.02189v1
-- Dissecting the NVIDIA Blackwell Architecture with Microbenchmarks (Jul 2025): https://arxiv.org/html/2507.10789v2
-- Dissecting the NVidia Turing T4 GPU via Microbenchmarking: https://arxiv.org/pdf/1903.07486
-- Dissecting GPU Memory Hierarchy through Microbenchmarking: https://arxiv.org/pdf/1509.02308
-- Dissecting the NVIDIA Volta GPU Architecture via Microbenchmarking: https://arxiv.org/pdf/1804.06826
+- Dissecting the NVIDIA Hopper Architecture through Microbenchmarking: https://arxiv.org/pdf/2501.12084 — H100 memory hierarchy (HBM/L2/L1/smem latency and BW), wgmma throughput/latency, TMA, mbarrier overhead; Hopper baseline for B200 comparisons
+- Microbenchmarking NVIDIA's Blackwell Architecture (Dec 2025): https://arxiv.org/html/2512.02189v1 — primary B200 reference: HBM BW (~7.48 TB/s), global mem latency (~420 cycles), TMEM BW (read ~16 TB/s, write ~8 TB/s), UTCMMA latency (~11 cycles constant across tile sizes), BF16 tensor core throughput (1,926 TFLOPS)
+- Dissecting the NVIDIA Blackwell Architecture with Microbenchmarks (Jul 2025): https://arxiv.org/html/2507.10789v2 — second B200 reference: L1 latency (30-40 cycles), shared memory latency (~20-30 cycles), register file, warp schedulers, CUDA core count; complements Dec 2025 paper
+- Dissecting the NVidia Turing T4 GPU via Microbenchmarking: https://arxiv.org/pdf/1903.07486 — benchmark methodology reference: pointer-chase latency, DRAM/cache BW measurement techniques applicable across GPU generations
+- Dissecting GPU Memory Hierarchy through Microbenchmarking: https://arxiv.org/pdf/1509.02308 — foundational memory hierarchy benchmarking methodology (stride sweeps, working-set sweeps, cache size detection)
+- Dissecting the NVIDIA Volta GPU Architecture via Microbenchmarking: https://arxiv.org/pdf/1804.06826 — Volta tensor core and memory hierarchy baselines; methodology for isolating instruction latency via dependency chains
+- FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling (Mar 2026): https://arxiv.org/abs/2603.05451 — B200 attention at 1613 TFLOPs (71% utilization); "asymmetric hardware scaling" finding (tensor core 2x, SFU/SMEM did not); sm100 pipeline co-design with TMEM and 2-CTA MMA
+- NVIDIA CUTLASS Blackwell SM100 GEMMs documentation: https://docs.nvidia.com/cutlass/media/docs/cpp/blackwell_functionality.html — authoritative reference for valid tcgen05.mma shapes, SS vs TS operand modes, TMEM allocation lifecycle, and `--g-tensor-memory-access-check` debug flag
+- Colfax Research — CUDA/CUTLASS tutorials including Blackwell GEMM with TMEM, cluster GEMM (cta_group::2), and sub-byte (FP4/FP6/FP8) on sm100: https://research.colfax-intl.com/research/
 
 ## Reference Benchmark Suites
 

@@ -145,25 +145,11 @@ at working sets {8KB, 256KB, 8MB}. Plus `__ldg` baseline.
 
 ---
 
-## Competition Pipeline Timing Model (Updated)
+## Competition Pipeline Timing Model (SUPERSEDED — see notes/utcmma_review.md)
 
-| Stage | Cycles (est.) | ns (est.) | Data source |
-|---|---|---|---|
-| ckv TMA per block (16 gather4, cold) | 1,150+ | 548+ | ver5 measured |
-| kpe TMA per block (concurrent, L2-warm) | 1,250 | 595 | dual_tma ver1 |
-| **TMA bottleneck per block** | **~1,250** | **~595** | kpe-limited when L2-warm |
-| UTCMMA QK (36 K-tiles × 11 cyc) | 396 | 189 | arxiv:2512.02189 (unverified) |
-| UTCMMA SV (4 K-tiles × 11 cyc) | 44 | 21 | arxiv:2512.02189 (unverified) |
-| Softmax + fence sequences | 400? | 190? | unknown |
-| mbarrier overhead per block | 600? | 285? | unknown |
-| **Compute bottleneck per block** | **~1,040?** | **~495?** | mostly unknown |
+**NOTE (2026-03-19):** This timing model contains errors. TMA values (548/595 ns) are per-gather4-call, NOT per-block. Per-block TMA = 16 calls × per-call = ~5,000-9,500 ns. SV GEMM needs 2 tiles = 346 ns, not 21 ns. See notes/utcmma_review.md for the corrected model.
 
-If TMA (595 ns) > compute (495 ns): double-buffering (N=2) → `max(595, 495) × 32 = 19 µs/token`.
-If fences/barriers dominate: compute may exceed TMA → deeper pipeline or concurrent warpgroups needed.
-
-**Single most important experiment**: Priority 1 (UTCMMA latency) + Priority 3 (mbarrier overhead)
-will determine whether the pipeline is TMA-bound or compute-bound. Every other design decision
-follows from that answer.
+**Corrected conclusion:** Kernel is **TMA-BOUND by ~3.6-6.8×** (TMA ~5,000-9,500 ns >> GEMM ~1,392 ns per block). The key unmeasured parameter is TMA pipelining efficiency for 16 consecutive HBM-cold gather4 calls.
 
 ---
 
