@@ -7,7 +7,7 @@
 #include <vector>
 #include <algorithm>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 #include "tensor_map_utils.cuh"
 #include "index_patterns.cuh"
 #include "gather4_kernels.cuh"

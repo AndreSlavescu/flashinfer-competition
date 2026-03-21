@@ -91,3 +91,80 @@ Confirmed B200 (sm_100a) performance from tma_gather4 benchmark, ver5 CSV, CUDA 
 
 **Why:** These values are from actual B200 hardware runs on Modal, ver5/ver6 and dual_tma_stream ver1. Use these over CLAUDE.md specs which are literature estimates.
 **How to apply:** When analyzing future benchmarks or designing the competition kernel, use these as ground truth for B200 TMA performance.
+
+---
+
+## UTCMMA and TMEM Performance (utcmma-ver3.csv, 2026-03-19)
+
+**Sustained clock rate**: 1.854 GHz (stable across ver1 and ver3; 18% below 2.25 GHz advertised boost).
+
+**UTCMMA RAW latency (single accumulator, dependency chain)**
+
+| Tile | cy/K-tile | ns/K-tile |
+|---|---|---|
+| M=64 N=64 k16 | 54.5 | 29.4 |
+| M=64 N=128 k16 | 54.5 | 29.4 |
+| M=64 N=256 k16 | 76.0 | 41.0 |
+| M=128 N=128 k16 | 74.0 | 39.9 |
+| M=128 N=256 k16 | 138.0 | 74.5 |
+- K-depth linearity: ±2% from k=1 to k=32 (M=64 N=128)
+- K_DEPTH = number of K-tiles (each 16 BF16 elements) along the GEMM reduction dimension
+- QK GEMM (M=64 N=128 k_depth=32): **1,719 cycles = 928 ns** (competition QK is N=64, but per-K-tile cost is identical to N=128)
+- SV GEMM single tile (M=64 N=256 k_depth=4 SS): **320 cycles = 173 ns**; competition SV needs 2 tiles (N=256×2=512 output) = **640 cy = 346 ns**
+
+**CRITICAL: The arxiv:2512.02189 figure of ~11 cycles is for independent-accumulator throughput
+(initiation interval), NOT the RAW dependency chain. Competition kernel serialized RAW chain
+is ~54 cycles/K-tile — 5× slower than the paper's figure.**
+
+**UTCMMA multi-accumulator throughput** (N_ACC=1..4, all identical):
+- Rotating accumulator TMEM columns provides ZERO speedup for N_ACC ≤ 4.
+- Structural initiation interval appears to be ~54 cycles.
+- N_ACC ≥ 5 still untested; N_ACC=8 (M=64 N=64) needed for definitive conclusion.
+
+**WS vs non-WS**:
+- M=64 N=64: identical (54.5 cy both)
+- M=64 N=128: WS=54.5 cy, non-WS=64.0 cy (+17%). Always use .ws variants for N≥128.
+
+**TMEM load latency** (stable TMEM, no pending MMA): ~1.8 cycles (clock-read floor; functionally free)
+
+**TMEM store latency** (N=64 + fence): **49.8 cycles = 26.8 ns** (linear: 12 + 0.59×N cy)
+
+**Fence costs**:
+- Warp-collective TMEM wait pair (load+store fence, nothing in flight): **12.83 cycles**
+- Per-thread tcgen05 fence pair (before/after_thread_sync): **2.83 cycles**
+
+**Full O-rescale roundtrip** (isolated measurement):
+- 1 chunk (N=64 ld + 32×float2_mul + N=64 st): **168.1 cycles = 85.6 ns**
+- 4 chunks (full D=512 width): **622.1 cycles = 316.6 ns**
+- NOTE: O-rescale applies only to online softmax designs where one SM processes multiple KV chunks sequentially. In split-KV (competition design), each SM processes one B_TOPK=64 chunk with a single softmax pass — no O-rescale needed.
+
+**Synchronization costs**:
+- named_bar.sync(128 threads): **20.67 cycles = 10.5 ns**
+- named_bar.sync(32 threads): **14.65 cycles = 7.5 ns**
+- mbarrier arrive+wait (expect_tx=0): **88.51 cycles = 45.0 ns**
+- Full MMA + commit + wait (M=64 N=64): **173.03 cycles = 93.4 ns**
+- tcgen05.commit overhead: ~30 cycles
+- NOTE: In a pipelined kernel, mbarrier waits synchronize TMA completion — they're part of TMA latency, not additive overhead. Per-SM mbarrier count = ~32 waits (one per gather4 call: 16 ckv + 16 kpe).
+
+**UTCCP (smem→TMEM copy) latency**:
+- 1 copy (128×16 bf16 tile): 168.3 cy = 85.6 ns (startup cost)
+- Marginal cost at 16 copies: ~74.7 cy/copy = 38.0 ns/copy
+- Competition Q load (32 copies extrapolated): ~2,276 cycles = ~1,228 ns
+
+**Competition kernel per-SM timing model (split-KV, B_TOPK=64, ver3 corrected)**:
+
+TMA per block (16 gather4 calls each for ckv and kpe):
+- NOTE: all TMA latency values above (546/595 ns) are PER-GATHER4-CALL, not per-block total
+- HBM-cold sequential (no pipelining): 16 × 595 = ~9,520 ns per stream
+- With N=2 pipelining + DIST=2 prefetch: ~16 × 324 = ~5,184 ns per stream (estimated)
+- ckv and kpe run in parallel (verified zero HBM interference) → per-block TMA = max(ckv, kpe)
+- **Per-block TMA: ~5,000-9,500 ns** (range depends on pipelining efficiency; unmeasured for multi-call)
+
+GEMM per block (serialized RAW chain, all values measured):
+- QK ckv (M=64 N=64 K_DEPTH=32): ~1,719 cy = ~928 ns
+- QK kpe (M=64 N=64 K_DEPTH=4): ~218 cy = ~118 ns
+- SV (2 × M=64 N=256 K_DEPTH=4): 2 × 320 = ~640 cy = ~346 ns
+- **Per-block GEMM total: ~2,577 cy = ~1,392 ns**
+
+With N=64 WS tiles (split-KV, 1 block/SM): GEMM needs all 64 KV tokens loaded → TMA and GEMM sequential.
+**Per-block total = TMA + GEMM = ~6,400-10,900 ns. Kernel is TMA-BOUND (~3.6-6.8×).**

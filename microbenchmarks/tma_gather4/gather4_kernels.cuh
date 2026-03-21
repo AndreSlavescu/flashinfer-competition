@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 
 // ---------------------------------------------------------------------------
 // Standalone PTX wrappers — no CuTe/CUTLASS dependency

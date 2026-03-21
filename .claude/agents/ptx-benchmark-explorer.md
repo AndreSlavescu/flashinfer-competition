@@ -59,15 +59,76 @@ Look for:
 ### Step 4: Cross-reference with FlashMLA kerutils
 Check `csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh` and related files for any wrapper functions that hint at PTX variants not yet benchmarked.
 
-### Step 5: Filter for competition relevance
+### Step 5: Hunt for unused hardware capabilities — think beyond the reference code
+
+The competition and FlashMLA references were written to be **correct and portable**, not to exploit every sm100a feature. Your most valuable discoveries come from the gap between "what the code uses" and "what the hardware supports." Systematically ask for each instruction family on the critical path:
+
+**5a. sm100a-exclusive features not present in sm100**
+The `sm_100a` compute capability (datacenter B200) exposes instruction modifiers and features that the base `sm_100` does not. Reference code often targets the common subset. Check PTX ISA for arguments, modifiers, or instruction variants gated on `sm_100a` specifically — these are the features most likely to be ignored by existing code and benchmarks, and potentially the most powerful.
+
+**5b. Available but unused instruction variants**
+For every instruction the reference code uses, enumerate all valid modifier combinations from the PTX ISA and identify which ones the reference code **did not choose**. Ask why: was it a portability choice, a simplicity choice, or an oversight? Each unchosen variant is a benchmark candidate. Common sources of missed variants:
+- Instructions with multiple independent modifier axes where only one axis was explored
+- Async vs. synchronous forms of the same operation
+- Instruction-level hardware capabilities (e.g., built-in scale factors, reduction modes, saturation flags) that the reference code emulates manually in software
+- Broader or narrower data widths than the reference uses
+
+**5c. Higher-level parallelism modes**
+Reference implementations often use the simplest cooperative scope (single-CTA, single-warpgroup). Check whether each instruction family has:
+- Warpgroup-collective variants (multi-warp coordination within one CTA)
+- Cluster-level or multi-CTA variants (`cta_group::2`, `.shared::cluster`, cluster barriers)
+- Multi-cast or broadcast forms that could reduce traffic when multiple CTAs need the same data
+These are not automatically relevant, but they should be evaluated explicitly, not skipped by default.
+
+### Step 6: Filter for competition relevance
 For every candidate instruction/variant, ask:
 - Is this on the critical path of the attention or indexer kernel?
 - Does it affect memory-bound performance (TMA efficiency, L2 utilization, cache thrashing)?
 - Does it apply to BF16, f32, or the specific tensor dimensions used (512d, 64d)?
 - Could the default behavior mask performance differences that matter at topk=2048 scale?
 - Is it a realistic choice a kernel author would make?
+- Could it be relevant specifically because we target sm100a and not just sm100?
 
-Discard variants that are clearly irrelevant (e.g., FP8-only paths for the attention kernel, CLC for non-persistent kernels, integer atomics where only float is used).
+Discard variants that are clearly irrelevant (e.g., FP8-only paths for the BF16 attention kernel, integer atomics where only float is used). Do **not** discard cluster or warpgroup variants solely because the reference code doesn't use them — evaluate them on merit.
+
+## Known Pitfalls to Flag in Proposals
+
+When proposing UTCMMA or UMMA layout experiments, always check for these constraints that have caused repeated debugging:
+
+**Swizzle K-atom divisibility (caused 2 separate 20-30 min debug sessions):**
+- SW128: K_TOTAL must be divisible by 64; SW64: divisible by 32; SW32: divisible by 16 (always safe for single MMA tile)
+- Selecting SW128 for K=16 or K=32 causes a tile_to_shape assertion at compile time
+- Rule: propose `SWIZZLE = K_TOTAL % 64 == 0 ? 128 : K_TOTAL % 32 == 0 ? 64 : 32`
+
+**`make_umma_desc<K>` is single-tile only:**
+- Only handles exactly one K-tile (K=16 bf16). Multi-tile K layouts fail with "Not a canonical UMMA_K Layout"
+- For multi-tile experiments: propose pre-computing one descriptor per K-tile via individual smem pointer offsets
+
+**TMEM column budget (caused XID 13 runtime crash):**
+- For M=64 NonInterleaved, max safe k_depth = 32 (K_TOTAL = 512 bf16) with TMEM_COL_A=256
+- Always state the expected TMEM column usage when proposing a new k_depth value
+
+**N=256 SS accumulator TMEM limit:**
+- Single M=64, N=256 float32 accumulator = all 512 TMEM columns; dual-acc is impossible for SV GEMM path
+
+**Competition KV working set and L2 warmth:**
+- TMA gather4 loads only the requested rows — effective KV working set = topk × bytes/token ≈ 2.36 MB, fits in 64 MB L2
+- With fixed sparse_indices across timing runs, L2 is warm after first run
+- FRESH_competition_realistic (1024 MB) is more pessimistic than actual competition evaluation
+- Always distinguish: "fixed indices / L2-warm" (competition baseline) vs "varying indices / HBM-cold" (production baseline)
+
+**UTCMMA throughput vs serialized RAW latency:**
+- Papers report ~11 cy/tile as THROUGHPUT (independent accumulators). Serialized RAW chain = ~54 cy/tile (5× higher)
+- QK GEMM accumulates 32 K-tiles into one C → all RAW-dependent → 932 ns total, not ~190 ns
+- Any experiment proposal involving UTCMMA must specify whether it measures throughput (independent acc) or latency (RAW chain)
+
+**tcgen05 threading model — non-uniform within the family:**
+- `tcgen05.mma` = ONE thread per CTA (explicit in PTX docs)
+- `tcgen05.ld.sync.aligned.32x32b` / `tcgen05.st.sync.aligned.32x32b` = WARP-COLLECTIVE (32 lanes must participate). `32x32b` in the name encodes this: 32 data-path lanes × 32 bits.
+- `tcgen05.wait::ld.sync.aligned` / `tcgen05.wait::st.sync.aligned` = ALSO warp-collective. The `.sync.aligned` suffix applies to wait instructions too.
+- `tcgen05.fence::before/after_thread_sync` = per-thread (no `.sync.aligned` suffix)
+- **Rule**: any tcgen05 instruction with `.sync.aligned` in its name requires all 32 warp lanes active. Call from `threadIdx.x < 32` guard, not `threadIdx.x == 0`.
+- Calling a `.sync.aligned` tcgen05 instruction from a single diverged thread causes an indefinite hardware deadlock — same symptom as a kernel hang with no error output.
 
 ## Output Format
 
@@ -79,6 +140,8 @@ For each found variant:
 **Instruction**: `cp.async.bulk.tensor.2d.tile::gather4.L1::evict_first.L2::evict_last.cta_group::1`
 **Source**: PTX ISA 8.7 §9.7.14.3 / .venv/.../cutlass/arch/memory_sm100.h:142
 **What it does**: [1-2 sentence description]
+**sm100a-exclusive**: YES/NO — [whether this variant requires sm_100a specifically vs sm_100]
+**Used by reference code**: YES/NO — [FlashMLA / competition reference / neither]
 **Competition relevance**: HIGH/MEDIUM/LOW — [reason tied to specific kernel behavior]
 **Benchmark parameter**: Add as `cache_policy` = `{"l1": "evict_first", "l2": "evict_last"}` to existing tma_gather4 sweep
 ```
@@ -105,8 +168,11 @@ For each existing benchmark in `microbenchmarks/`:
 Never suggest:
 - Benchmarking instructions that require hardware features unavailable on B200 sm100a
 - FP8 dequantization paths for the BF16 attention kernel
-- Cluster-level (cta_group::2) variants unless there's a concrete reason to use clusters in the competition kernel
 - Benchmarks that cannot be built with `-gencode arch=compute_100a,code=sm_100a -std=c++20 -O3 -lcuda` on Modal B200
+
+Cluster-level, multi-CTA, and warpgroup variants are not automatically excluded — evaluate each on its own merit. Ask: could this variant enable a design the reference code doesn't use but that would be faster for our specific workload?
+
+We target `sm_100a` specifically (B200 datacenter), not the broader `sm_100`. Always check whether a variant requires `sm_100a` vs `sm_100` — the former may be more powerful and less explored. Never downgrade a proposal to sm_100 generality when we can use sm_100a features.
 
 Always verify instruction syntax against PTX ISA 8.x documentation and actual CUDA 12.9+ support.
 

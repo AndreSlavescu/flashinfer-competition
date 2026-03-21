@@ -1,6 +1,6 @@
 import modal
 
-app = modal.App("tma-gather4-bench")
+app = modal.App("utcmma-bench")
 
 cuda_image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -16,11 +16,15 @@ cuda_image = (
         "PATH": "/usr/local/cuda/bin:${PATH}",
         "LD_LIBRARY_PATH": "/usr/local/cuda/lib64:${LD_LIBRARY_PATH}",
     })
+    # Benchmark source files
     .add_local_file("microbenchmarks/common/benchmark_common.cuh", "/root/common/benchmark_common.cuh", copy=True)
-    .add_local_file("microbenchmarks/tma_gather4/tensor_map_utils.cuh", "/root/bench/tensor_map_utils.cuh", copy=True)
-    .add_local_file("microbenchmarks/tma_gather4/index_patterns.cuh", "/root/bench/index_patterns.cuh", copy=True)
-    .add_local_file("microbenchmarks/tma_gather4/gather4_kernels.cuh", "/root/bench/gather4_kernels.cuh", copy=True)
-    .add_local_file("microbenchmarks/tma_gather4/main.cu", "/root/bench/main.cu", copy=True)
+    .add_local_file("microbenchmarks/utcmma/utcmma_kernels.cuh", "/root/bench/utcmma_kernels.cuh", copy=True)
+    .add_local_file("microbenchmarks/utcmma/utcmma_kernels_ver2.cuh", "/root/bench/utcmma_kernels_ver2.cuh", copy=True)
+    .add_local_file("microbenchmarks/utcmma/main.cu", "/root/bench/main.cu", copy=True)
+    # CUTLASS/CuTe headers (needed for TMEM allocator, UMMA descriptors, MMA traits)
+    .add_local_dir("csrc/cutlass/include", "/root/bench/include", copy=True)
+    # kerutils headers (gemm.cuh, helpers.cuh, intrinsics.cuh)
+    .add_local_dir("csrc/kerutils/include", "/root/bench/kerutils_include", copy=True)
 )
 
 NVCC_FLAGS = [
@@ -35,19 +39,21 @@ NVCC_FLAGS = [
     "-Xptxas", "-v",
     # Line info for profiling (negligible overhead, enables ncu source correlation)
     "-lineinfo",
-    # Flush denormals to zero (avoids slow FP corner cases)
+    # Flush denormals to zero
     "--ftz=true",
-    # Link
-    "-o", "/root/bench/tma_gather4_bench",
+    # Include paths for CuTe/CUTLASS and kerutils
+    "-I/root/bench/include",
+    "-I/root/bench/kerutils_include",
+    # Output
+    "-o", "/root/bench/utcmma_bench",
     "/root/bench/main.cu",
-    "-lcuda",
 ]
 
 
 @app.function(
     image=cuda_image,
     gpu="B200",
-    timeout=900,
+    timeout=300,
 )
 def run_benchmark(experiment: str = "all"):
     import subprocess
@@ -64,7 +70,7 @@ def run_benchmark(experiment: str = "all"):
 
     # Compile
     print(f"\nCompiling with: {' '.join(NVCC_FLAGS)}")
-    compile_result = subprocess.run(NVCC_FLAGS, capture_output=True, text=True)
+    compile_result = subprocess.run(NVCC_FLAGS, capture_output=True, text=True, timeout=300)
     if compile_result.returncode != 0:
         print(f"Compilation failed:\n{compile_result.stderr}")
         return {"success": False, "error": compile_result.stderr}
@@ -73,11 +79,22 @@ def run_benchmark(experiment: str = "all"):
 
     # Run
     print(f"\nRunning experiment: {experiment}")
-    run_result = subprocess.run(
-        ["/root/bench/tma_gather4_bench", f"--experiment={experiment}", "--verbose"],
-        capture_output=True, text=True,
-        timeout=600,
-    )
+    try:
+        run_result = subprocess.run(
+            ["/root/bench/utcmma_bench", f"--experiment={experiment}", "--verbose"],
+            capture_output=True, text=True,
+            timeout=240,
+        )
+    except subprocess.TimeoutExpired as e:
+        # Show partial output so we know exactly which experiment/config hung
+        partial_stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+        partial_stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
+        print("=== TIMEOUT after 600s — partial stderr (shows last experiment before hang) ===")
+        print(partial_stderr[-8000:] if len(partial_stderr) > 8000 else partial_stderr)
+        print("=== partial stdout (CSV so far) ===")
+        print(partial_stdout)
+        return {"success": False, "error": "timeout_600s", "stderr": partial_stderr, "csv": partial_stdout}
+
     if run_result.returncode != 0:
         print(f"Execution failed:\n{run_result.stderr}")
         return {"success": False, "error": run_result.stderr, "stderr": run_result.stderr}
@@ -96,14 +113,17 @@ def run_benchmark(experiment: str = "all"):
 
 @app.local_entrypoint()
 def main(experiment: str = "all"):
-    """Run TMA gather4 benchmarks on B200 GPU.
+    """Run UTCMMA benchmarks on B200 GPU.
 
     Usage:
-        modal run run_modal.py                          # all experiments
-        modal run run_modal.py --experiment throughput   # single experiment
-        modal run run_modal.py --experiment latency
+        modal run run_modal.py                                    # all experiments
+        modal run run_modal.py --experiment utcmma_latency_ts     # single experiment
+        modal run run_modal.py --experiment utcmma_kdepth_ts
+        modal run run_modal.py --experiment utcmma_latency_ss
+        modal run run_modal.py --experiment utccp_latency
+        modal run run_modal.py --experiment utcmma_swizzle
     """
-    print(f"Launching TMA gather4 benchmark (experiment={experiment}) on B200...")
+    print(f"Launching UTCMMA benchmark (experiment={experiment}) on B200...")
     result = run_benchmark.remote(experiment)
 
     if result["success"]:

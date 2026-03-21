@@ -10,7 +10,7 @@
 #include <cassert>
 #include <cstring>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 
 // ---------------------------------------------------------------------------
 // Host-side index generation for gather4 benchmarks.

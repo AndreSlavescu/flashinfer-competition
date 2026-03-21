@@ -8,7 +8,7 @@
 #include <algorithm>
 #include <random>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 #include "tensor_map_utils.cuh"
 #include "dual_tma_kernels.cuh"
 

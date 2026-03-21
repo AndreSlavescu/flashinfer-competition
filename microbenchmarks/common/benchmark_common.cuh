@@ -1,5 +1,9 @@
 #pragma once
+// Shared microbenchmark utilities (B200 SM100a)
+// Used by: tma_gather4, dual_tma_stream, utcmma, and future benchmarks
+// Do not duplicate these functions in individual benchmark common.cuh files.
 
+#include <cuda.h>
 #include <cuda_runtime.h>
 #include <cstdint>
 #include <cstdio>

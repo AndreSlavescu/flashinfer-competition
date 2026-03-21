@@ -96,5 +96,39 @@ effectively runs at HBM-cold latency (~595 ns) in BOTH mode — not its isolated
 
 **Where seen**: dual_tma_stream ver1, 2026-03-16.
 
+## Anti-Pattern 10: CSV metadata labels that don't match what the kernel actually executes
+
+**Problem**: A `run_and_report(...)` call site hardcodes a static label (e.g., `"SW128"`) for a field like swizzle mode, but the kernel selects the value dynamically based on a template parameter (e.g., `constexpr int SWIZZLE_B = (K_TOTAL >= 64) ? 128 : (K_TOTAL >= 32 ? 64 : 32)`). The hardware runs the correct swizzle, but the CSV records the wrong one. Downstream agents and training data then associate the measured cycle counts with the wrong swizzle mode, corrupting the knowledge base.
+
+**Real example**: `kernel_utcmma_latency_ts` always uses SW32 (K=16 requires K-atom=16), but `run_and_report` reported `"SW128"`. `kernel_utcmma_kdepth_ts` auto-selects SW32/SW64/SW128 based on K_TOTAL, but `run_and_report` always reported `"SW128"` — so k_depth=1 (SW32) and k_depth=2 (SW64) were both mislabeled.
+
+**Fix**: For any field that varies per configuration, compute the label dynamically in the launch loop to mirror the kernel's selection logic exactly. Never hardcode a static string for a field whose value is template- or runtime-dependent. Cross-check every `run_and_report` field against the kernel's actual compile-time selections.
+
+**Why this matters**: CSV results feed downstream review agents, the knowledge base, and training data for a kernel generation agent. A wrong label (e.g., "SW128 achieves X cycles" when it was actually SW32) produces false conclusions about B200 performance characteristics that propagate indefinitely.
+
+**Where seen**: `microbenchmarks/utcmma/main.cu`, experiments 1 and 2, discovered 2026-03-17. Fixed by computing `swizzle_name` dynamically.
+
+## Anti-Pattern 11: UTCMMA multi-accumulator rotation with N_ACC < latency/throughput ratio
+
+**Problem**: Rotating accumulator TMEM column addresses across k_depth inner iterations (k % N_ACC)
+provides zero benefit if N_ACC × throughput_cycles < structural latency. For B200 tcgen05.mma with
+~54-cycle structural initiation interval and suspected 11-cycle paper throughput, you need N_ACC ≥
+54/11 ≈ 5 to fully pipeline. Testing N_ACC=1,2,3,4 and observing flat performance does NOT prove
+the paper's 11-cycle figure is wrong — it only proves the rotation is insufficient to hide the
+latency at those values of N_ACC. Similarly, it does NOT definitively prove that N_ACC ≥ 5 WOULD
+work. Both conclusions require testing N_ACC ≥ 5.
+
+**Observed**: utcmma_throughput_2acc experiment (ver3): N_ACC=1..4 all produce identical
+54.60 cy/K-tile for M=64 N=64 k_depth=4. Consistent with structural 54-cycle floor OR insufficient
+rotation depth. Follow-up with N_ACC=8 required.
+
+**Why this matters**: The "2-accumulator pipelining → 5× throughput improvement" optimization
+hypothesis was the key unknown that ver3 was designed to resolve. The zero-speedup result at
+N_ACC ≤ 4 changes the competition kernel's compute model, but the ambiguity about N_ACC ≥ 5
+leaves open a potential optimization path.
+
+**Fix**: Always test N_ACC up to and beyond latency/throughput_estimate (i.e., N_ACC ≥ 5 for
+UTCMMA). Use M=64 N=64 with N_ACC=8 (8×32=256 TMEM cols, fits in budget) as the definitive test.
+
 ## Why these matter
-These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior.
+These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior, (d) that every CSV label field matches what the kernel actually executes.

@@ -4,7 +4,7 @@
 #include <cuda_runtime.h>
 #include <cstdint>
 
-#include "common.cuh"
+#include "../common/benchmark_common.cuh"
 
 // ---------------------------------------------------------------------------
 // Standalone PTX wrappers (copied from tma_gather4/gather4_kernels.cuh)
