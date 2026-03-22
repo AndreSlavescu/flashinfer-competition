@@ -102,24 +102,31 @@ This JIT-compiles the CuTeDSL kernel, extracts the cubin, and produces a classif
 Before writing any kernel code, read and internalize:
 
 **CuTeDSL references (primary — this is the implementation language):**
-1. **CUTLASS Blackwell FMHA** — `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/fmha.py` (fetch from GitHub — nearest architectural match)
-2. **CUTLASS Blackwell GEMM** — `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/dense_gemm_persistent.py` (persistent kernel pattern)
-3. **CuTeDSL docs** — https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/overview.html
-4. **CuTeDSL API** — `cute.arch`, `cute_nvgpu.tcgen05`, pipeline utilities
+1. **FA4 sm100 forward** — `references/flash-attention/flash_attn/cute/flash_fwd_sm100.py` — **nearest architectural match**: CuTeDSL attention on B200, warp specialization, TMA gather, TMEM, softmax pipeline
+2. **FA4 sm100 backward** — `references/flash-attention/flash_attn/cute/flash_bwd_sm100.py`
+3. **FA4 Blackwell helpers** — `references/flash-attention/flash_attn/cute/blackwell_helpers.py` + `mma_sm100_desc.py` — sm100-specific layout helpers
+4. **CuTeDSL GEMM (quack)** — `references/CuTeDSL-kernels/quack/gemm_sm100.py` — production sm100 GEMM with epilogue pipeline and autotuner
+5. **CUTLASS Blackwell FMHA** — `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/fmha.py` (fetch from GitHub if local unavailable)
+6. **CuTeDSL docs** — https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/overview.html
+7. **CuTeDSL API** — `cute.arch`, `cute_nvgpu.tcgen05`, pipeline utilities
 
 **Algorithm and architecture references (read for understanding, don't copy the C++):**
-5. **CLAUDE.md** — competition specs, hardware specs, PTX catalog
-6. **Reference kernel** — `references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py`
-7. **FlashMLA decode kernel** — `csrc/sm100/decode/head64/kernel.cuh` (architectural template — understand the algorithm flow, warp specialization, barrier choreography, then translate to CuTeDSL)
-8. **FlashMLA config** — `csrc/sm100/decode/head64/config.h` (tile sizes, TMEM assignments, barriers)
-9. **FlashMLA kernel launch** — `csrc/sm100/decode/head64/kernel.h` (TMA tensor map construction)
-10. **PTX intrinsics** — `csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh`
-11. **UTCMMA wrappers** — `csrc/kerutils/include/kerutils/device/sm100/gemm.cuh`
-12. **Softmax building blocks** — `csrc/sm100/prefill/sparse/common_subroutine.h`
-13. **SM partitioning** — `csrc/smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu`
-14. **Combine kernel** — `csrc/smxx/decode/combine/combine.cu`
-15. **Agent memories** from ptx-benchmark-explorer and b200-benchmark-reviewer
-16. **Benchmark results** in `microbenchmarks/*/results/`
+8. **CLAUDE.md** — competition specs, hardware specs, PTX catalog
+9. **Reference kernel** — `references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py`
+10. **learn-cuda attention** — `references/learn-cuda/07_attention/` — progressive attention implementations v1–v5
+11. **learn-cuda sm100 matmul** — `references/learn-cuda/02e_matmul_sm100/` — ground-truth tcgen05/TMEM/warp-spec patterns (v0–v7)
+12. **FlashMLA decode kernel** — `csrc/sm100/decode/head64/kernel.cuh` (architectural template — understand the algorithm flow, warp specialization, barrier choreography, then translate to CuTeDSL)
+13. **FlashMLA decode config** — `csrc/sm100/decode/head64/config.h` (tile sizes, TMEM assignments, barriers)
+14. **FlashMLA decode kernel launch** — `csrc/sm100/decode/head64/kernel.h` (TMA tensor map construction)
+15. **FlashMLA sm100 sparse prefill (head64)** — `csrc/sm100/prefill/sparse/fwd/head64/phase1.cuh` + `config.h` — sparse prefill kernel for head_dim=64; shows sparse index handling and phase1 tile scheduling
+16. **FlashMLA sm100 sparse prefill (head128)** — `csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh` + `config.h` — sparse prefill for head_dim=128; also see `fwd_for_small_topk/head128/phase1.cuh` for small-topk variant
+17. **FlashMLA sm100 sparse common subroutines** — `csrc/sm100/prefill/sparse/common_subroutine.h` — softmax building blocks: `load_indices_and_generate_mask()`, `retrieve_mask_and_reduce_p()`, `rescale_O()`, `get_max()`, `get_s_from_p()`
+18. **PTX intrinsics** — `csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh`
+19. **UTCMMA wrappers** — `csrc/kerutils/include/kerutils/device/sm100/gemm.cuh`
+20. **SM partitioning** — `csrc/smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu`
+21. **Combine kernel** — `csrc/smxx/decode/combine/combine.cu`
+22. **Agent memories** from ptx-benchmark-explorer and b200-benchmark-reviewer
+23. **Benchmark results** in `microbenchmarks/*/results/`
 
 ### Phase 2: Design
 

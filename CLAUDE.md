@@ -70,13 +70,15 @@ Paste CSV into the UI. Charts are generated dynamically from `experiment` and `x
 | SMs | 148 (across 8 GPCs, dual-die via NV-HBI) | arxiv:2512.02189 |
 | HBM3e capacity | 192 GB | arxiv:2512.02189 |
 | HBM3e peak BW | 8 TB/s | NVIDIA product page |
-| L2 cache | ~64 MB (4 partitions, 2x Hopper) | empirical L2 cliff + arxiv:2512.02189 |
-| Shared memory / SM | up to 228 KB configurable (default 48 KB static) | cudaFuncSetAttribute testing |
+| L2 cache | 126.5 MB (132,644,864 B) | **deviceQuery on Modal B200** (corrected from ~64 MB) |
+| Shared memory / SM | up to 228 KB configurable (default 48 KB static) | deviceQuery confirmed |
 | TMEM (Tensor Memory) / SM | 256 KB (512 cols x 128 lanes x 32-bit) | arxiv:2512.02189 |
-| Register file / SM | 256 KB (65,536 x 32-bit registers) | arxiv:2507.10789 (GB203, may transfer) |
-| Max threads / SM | 2,048 (64 warps) | arxiv:2512.02189 |
-| Warp schedulers / SM | 4 (sub-cores/partitions) | arxiv:2507.10789 (GB203, may transfer) |
-| CUDA cores / SM | 128 FP32 (unified INT32/FP32) | arxiv:2507.10789 (GB203, may transfer) |
+| Register file / SM | 256 KB (65,536 x 32-bit registers) | deviceQuery confirmed (GB203 value transfers) |
+| Max threads / SM | 2,048 (64 warps) | deviceQuery confirmed |
+| Warp schedulers / SM | 4 (sub-cores/partitions), warp_id % 4 mapping | warp_scheduler benchmark confirmed |
+| CUDA cores / SM | 128 FP32 (32 per sub-core, unified INT32/FP32) | arxiv:2507.10789 (GB203 value, inferred from warp_scheduler scaling) |
+| SM clock rate | 1,965 MHz (1.965 GHz) | deviceQuery on Modal B200 |
+| HBM3e clock / bus | 3,996 MHz / 7,680 bits | deviceQuery on Modal B200 |
 | Process | TSMC 4NP, 208B transistors (dual-die) | NVIDIA |
 | NVLink | 5th gen, 1.8 TB/s GPU-to-GPU | NVIDIA |
 | Compute capability | sm_100a (datacenter, required for cta_group::1) | NVIDIA |
@@ -230,12 +232,22 @@ UMMA swizzle layout helpers: `make_umma_canonical_k_major_layout<MN,K,SWIZZLE,T>
 - references/pchase.cu — pointer-chase latency benchmark
 - references/wmma_benchmarks.cu — WMMA (tensor core) benchmark
 
+## Reference Code Libraries
+
+- references/cuda-samples — NVIDIA official CUDA samples (0_Introduction through 8_Platform_Specific); useful for CUDA API patterns, feature demos, and helper utilities (Common/)
+- references/learn-cuda — Progressive CUDA tutorial series (01 vector add → 12 megakernel); especially useful: 02e_matmul_sm100 (tcgen05/TMEM patterns on B200, v0–v7), 07_attention (attention kernel implementations v1–v5)
+- references/CuTeDSL-kernels — CuTeDSL kernel implementations; quack/ has production-quality sm100/sm90 GEMM kernels (gemm_sm100.py, gemm_sm90.py, epilogue pipeline, autotuner); AI/ has sm100 TMA debugging notes and register spilling docs
+- references/flash-attention — FlashAttention repo; hopper/ has FA3 (sm90 warp-specialized TMA/WGMMA CUDA C++); flash_attn/cute/ has FA4 written in CuTeDSL for sm100 (flash_fwd_sm100.py, flash_bwd_sm100.py, blackwell_helpers.py, mma_sm100_desc.py) — primary reference for CuTeDSL attention on B200
+
 ## My Benchmarks
 
 - notes/tma_gather4_plan.md — full microbenchmark plan with experiment designs, PTX catalog, and implementation details
 - microbenchmarks/tma_gather4/ — standalone TMA gather4 benchmark suite (main.cu, gather4_kernels.cuh, tensor_map_utils.cuh, index_patterns.cuh, common.cuh, visualize.html)
 - notes/tma_gather4_analysis.md — benchmark results analysis vs B200 specs
 - microbenchmarks/tma_gather4/results/tma-gather4-ver*.csv — successive benchmark runs on Modal B200
+- microbenchmarks/device_query/ — standalone B200 deviceQuery (CUDA Runtime + Driver API), confirms L2=126.5MB, regs=65536/SM, SM clock=1.965GHz
+- microbenchmarks/warp_scheduler/ — sub-core partitioning benchmark (Citadel FFMA contention method), confirms warp_id%4 mapping on B200
+- notes/b200_device_query_and_warp_scheduler.md — full analysis of device_query + warp_scheduler results
 
 ## DeepSeek Sparse Attention Notes
 

@@ -7,3 +7,18 @@
 [submodule "references/learn-cuda"]
 	path = references/learn-cuda
 	url = https://github.com/gau-nernst/learn-cuda.git
+[submodule "references/cuda-samples"]
+	path = references/cuda-samples
+	url = https://github.com/NVIDIA/cuda-samples.git
+[submodule "references/flash-attention"]
+	path = references/flash-attention
+	url = https://github.com/Dao-AILab/flash-attention.git
+[submodule "CuTeDSL-kernels"]
+	path = CuTeDSL-kernels
+	url = https://github.com/Dao-AILab/quack
+[submodule "references/CuTeDSL-kernels"]
+	path = references/CuTeDSL-kernels
+	url = https://github.com/Dao-AILab/quack
+[submodule "competition-dataset"]
+	path = competition-dataset
+	url = https://huggingface.co/datasets/flashinfer-ai/mlsys26-contest

@@ -1,0 +1,50 @@
+=== B200 Device Query — Hardware Spec Verification ===
+Device count: 1
+
+Device 0: NVIDIA B200
+  Compute Capability:      10.0
+  CUDA Driver Version:     13.0
+  CUDA Runtime Version:    13.0
+
+--- SM / Compute ---
+  multiProcessorCount:     148        (CLAUDE.md claim: 148)
+  maxThreadsPerMultiProc:  2048     (CLAUDE.md claim: 2048)
+  warpSize:                32
+  maxWarpsPerSM:           64
+  SM Clock Rate:           1965 MHz  (1.965 GHz)
+
+--- Register File ---
+  regsPerBlock:            65536
+  regsPerMultiprocessor:   65536    (CLAUDE.md claim: 65536, from GB203 not B200!)
+  Register file / SM:      256.0 KB  (65536 regs x 4 bytes)
+
+--- Shared Memory ---
+  sharedMemPerBlock:       49152 bytes  (48.0 KB)
+  sharedMemPerMultiproc:   233472 bytes  (228.0 KB)  (CLAUDE.md claim: 228 KB)
+
+--- Memory ---
+  totalGlobalMem:          178.351 GB  (CLAUDE.md claim: 192 GB)
+  l2CacheSize:             132644864 bytes  (126.5 MB)  (CLAUDE.md claim: ~64 MB)
+  Memory Clock Rate:       3996 MHz
+  Memory Bus Width:        7680 bits
+  Peak Mem BW (formula):   7.67 TB/s  (CLAUDE.md claim: 8 TB/s)
+
+--- Other ---
+  totalConstMem:           65536 bytes
+  maxThreadsPerBlock:      1024
+  asyncEngineCount:        4
+  unifiedAddressing:       Yes
+  managedMemory:           Yes
+  cooperativeLaunch:       Yes
+  computePreemption:       Yes
+
+--- Driver API Cross-check ---
+  SM count  (CU_DEVICE_ATTR): 148
+  Regs/SM   (CU_DEVICE_ATTR): 65536  (256.0 KB)
+  Threads/SM (CU_DEVICE_ATTR): 2048
+
+  Runtime and Driver API agree on all cross-checked properties.
+
+--- CSV Summary ---
+device_name,sm_count,regs_per_sm,regfile_kb,max_threads_per_sm,max_warps_per_sm,l2_mb,total_mem_gb,smem_per_sm_kb,sm_clock_mhz,mem_clock_mhz,mem_bus_bits,peak_bw_tbps,compute_cap_major,compute_cap_minor
+NVIDIA B200,148,65536,256.0,2048,64,126.5,178.351,228.0,1965,3996,7680,7.67,10,0
