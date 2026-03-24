@@ -45,7 +45,7 @@ When implementing kernels, write CuTeDSL Python code, NOT raw CUDA C++. The Flas
 
 | Parameter | Value |
 |-----------|-------|
-| num_tokens | 1-2 (pure decode, tiny batch) |
+| num_tokens | 1-8 (competition values: [1, 2, 6, 7, 8]) |
 | num_pages | 8462 (~541K KV tokens, page_size=64) |
 | topk | 2048 (sparse selection per query token) |
 | h_q | 16 query heads |
@@ -66,14 +66,14 @@ When implementing kernels, write CuTeDSL Python code, NOT raw CUDA C++. The Flas
 | KV layout | **Separate** ckv + kpe | Single interleaved 656B/token |
 | Dequantization | **None** | FP8→BF16 with per-tile scales |
 | Warpgroups | **2 (256 threads)** — no dequant WG needed | 3 (384 threads) |
-| Batch size | **1-2 tokens** | Typically larger batches |
+| Batch size | **1-8 tokens** (competition values: [1,2,6,7,8]) | Typically larger batches |
 | LSE base | **log2** | Natural log internally |
 
 **Implications:**
 1. Eliminate WG2 (dequant warpgroup) entirely — save 128 threads
 2. Two independent TMA gather streams for ckv and kpe
 3. BF16 data goes directly from TMA → smem → UTCMMA (no conversion)
-4. Split-KV across SMs is essential: topk=2048 / B_TOPK=64 = 32 blocks, only 1-2 tokens
+4. Split-KV across SMs is essential: topk=2048 / B_TOPK=64 = 32 blocks per token, up to 8 tokens
 5. SV GEMM uses ckv_cache values (512d), same data already gathered for QK
 
 ## Development Loop

@@ -746,6 +746,34 @@ static void experiment_pipeline_competition(bool verbose) {
         if (verbose) fprintf(stderr, "  ckv_int64 N=%d outer_iters=%d...\n", N, outer_iters);
         run_pipeline(cfg, verbose);
     }
+
+    // kpe_bf16: 64 BF16 elements, 128 B/row, 512 B/gather4, 1 col_step.
+    // Competition issues 16 kpe gather4s per block alongside ckv.
+    // 8x smaller per-gather4 than ckv → 8x more outer_iters for same working set.
+    auto tm_kpe = config_kpe_bf16();
+
+    for (int N : n_values) {
+        int bytes_per_gather4 = (int)tm_kpe.bytes_per_gather4();  // 512
+        int num_rows = (int)(1024LL * 1024 * 1024 / (int)tm_kpe.bytes_per_row());  // 8,388,608
+
+        int cold_outer = (int)(640LL * 1024 * 1024 / ((int64_t)N * bytes_per_gather4));
+        int max_outer  = num_rows / (N * 4);
+        int outer_iters = std::max(512, std::min(cold_outer, max_outer));
+
+        BenchConfig cfg;
+        cfg.experiment      = "pipeline_competition";
+        cfg.x_var           = "n_outstanding";
+        cfg.tm_cfg          = tm_kpe;
+        cfg.num_blocks      = 1;
+        cfg.pattern         = IndexPattern::FRESH_COMPETITION_REALISTIC;
+        cfg.cache_hint      = HINT_EVICT_LAST;
+        cfg.total_data_MB   = 1024;
+        cfg.n_outstanding   = N;
+        cfg.num_outer_iters = outer_iters;
+
+        if (verbose) fprintf(stderr, "  kpe_bf16 N=%d outer_iters=%d...\n", N, outer_iters);
+        run_pipeline(cfg, verbose);
+    }
 }
 
 // ---------------------------------------------------------------------------

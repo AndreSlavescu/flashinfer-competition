@@ -842,3 +842,215 @@ void kernel_utcmma_non_ws_ss(BenchResult* result, int iters) {
         TMEM::Allocator1Sm().free(0, 512);
     }
 }
+
+// =========================================================================
+// Experiment 13: utcmma_m32_ws_ts — M=32 WS-TS latency via raw PTX
+//
+// CuTe's MMA_Traits uses FrgTypeA = UMMA::tmem_frg_1sm which static_asserts
+// M >= 64. The PTX instruction tcgen05.mma.ws.cta_group::1 supports M=32.
+// We bypass CuTe TiledMMA entirely, calling SM100_MMA_F16BF16_WS_TS_NOELECT
+// ::fma() directly with manually constructed descriptors.
+//
+// B smem descriptor: created via UMMA::make_umma_desc (M-independent).
+// Instruction descriptor: UMMA::make_instr_desc with M=32 (m_dim_=2).
+// TMEM columns: C at col 0 (N/4 cols for WS M=32), A at col 256.
+// =========================================================================
+template<int N, int K_DEPTH>
+__global__ __launch_bounds__(128, 1)
+void kernel_utcmma_m32_ws_ts(BenchResult* result, int iters) {
+    using namespace cute;
+    namespace ku = kerutils;
+
+    static constexpr int M = 32;
+    static constexpr int K_PER_TILE = 16;  // bf16: 256 bits / 16 bits = 16 elements
+    static constexpr int K_TOTAL = K_DEPTH * K_PER_TILE;
+
+    extern __shared__ char smem_raw[];
+    __shared__ __align__(16) uint32_t smem_tmem_addr;
+
+    // B operand in shared memory: K_DEPTH tiles of [N x 16] bf16.
+    // Use SW32 for per-tile descriptors (K-atom=16 = K_PER_TILE).
+    // Swizzle doesn't affect MMA latency (confirmed by experiment 5).
+    bf16* smem_B = reinterpret_cast<bf16*>(smem_raw);
+
+    __shared__ __align__(16) uint64_t smem_bar_storage[2];
+    auto* bar = reinterpret_cast<cutlass::arch::ClusterTransactionBarrier*>(smem_bar_storage);
+
+    // TMEM allocation (full warp required)
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
+        TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    if (threadIdx.x == 0) {
+        bar->init(1);
+    }
+    __syncthreads();
+
+    // --- Only thread 0 runs the benchmark ---
+    if (threadIdx.x == 0) {
+        // Create per-K-tile smem descriptors for B
+        auto tile_layout = ku::make_umma_canonical_k_major_layout<N, K_PER_TILE, 32, bf16>();
+        uint64_t desc_b[K_DEPTH];
+        for (int k = 0; k < K_DEPTH; k++) {
+            auto sB_k = make_tensor(make_smem_ptr(smem_B + k * N * K_PER_TILE), tile_layout);
+            desc_b[k] = UMMA::make_umma_desc<UMMA::Major::K>(sB_k);
+        }
+
+        // M=32 instruction descriptor (m_dim_ = 32>>4 = 2, valid for .ws)
+        constexpr auto idesc_struct = UMMA::make_instr_desc<
+            bf16, bf16, float, M, N, UMMA::Major::K, UMMA::Major::K>();
+        uint64_t idescE = UMMA::make_runtime_instr_desc<>(idesc_struct);
+
+        // TMEM addresses
+        uint32_t tmem_a = TMEM_COL_A;  // 256
+        uint32_t tmem_c = TMEM_COL_C;  // 0
+
+        // Warmup with proper sync
+        uint32_t phase = 0;
+        for (int w = 0; w < 100; w++) {
+            uint32_t scaleC = 0;  // clear on first K-tile
+            for (int k = 0; k < K_DEPTH; k++) {
+                SM100_MMA_F16BF16_WS_TS_NOELECT<
+                    bf16, bf16, float, M, N,
+                    UMMA::Major::K, UMMA::Major::K
+                >::fma(tmem_a, desc_b[k], tmem_c, scaleC, idescE);
+                scaleC = 1;
+            }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
+        }
+
+        // --- Timed region ---
+        int64_t gt_start;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_start) :: "memory");
+        uint64_t c_start = clock64_start();
+
+        for (int i = 0; i < iters; i++) {
+            uint32_t scaleC = 0;
+            for (int k = 0; k < K_DEPTH; k++) {
+                SM100_MMA_F16BF16_WS_TS_NOELECT<
+                    bf16, bf16, float, M, N,
+                    UMMA::Major::K, UMMA::Major::K
+                >::fma(tmem_a, desc_b[k], tmem_c, scaleC, idescE);
+                scaleC = 1;
+            }
+            ku::umma_arrive_noelect(*bar);
+            bar->wait(phase);
+            ku::tcgen05_after_thread_sync();
+            phase ^= 1;
+        }
+
+        uint64_t c_end = clock64_stop();
+        int64_t gt_end;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_end) :: "memory");
+
+        result->total_cycles = c_end - c_start;
+        result->gt_start_ns  = gt_start;
+        result->gt_end_ns    = gt_end;
+    }
+
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().free(0, 512);
+    }
+}
+
+// =========================================================================
+// Experiment 19: tmem_ld_modes — compare TMEM load addressing modes
+//
+// ADDR_MODE 0: tcgen05.ld.32dp32bNx  (WIDTH = N replications, each 32b per lane)
+// ADDR_MODE 1: tcgen05.ld.16dp128bNx (WIDTH = N replications, each 128b = 4 regs)
+// ADDR_MODE 2: tcgen05.ld.16dp256bNx (WIDTH = N replications, each 256b = 8 regs)
+//
+// Measures serialized load+fence latency per call at various data widths.
+// Compare at equal data sizes: 32dp32b×4 vs 16dp128b×1 (both 128 bits).
+// =========================================================================
+template<int ADDR_MODE, int WIDTH>
+__global__ __launch_bounds__(128, 1)
+void kernel_tmem_ld_modes(BenchResult* result, int iters) {
+    using namespace cute;
+    namespace ku = kerutils;
+
+    __shared__ __align__(16) uint32_t smem_tmem_addr;
+
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().allocate(512, &smem_tmem_addr);
+        TMEM::Allocator1Sm().release_allocation_lock();
+    }
+    __syncthreads();
+
+    if (threadIdx.x < 32) {
+        // Compute number of uint32_t values per call
+        constexpr int REGS_PER_CALL =
+            (ADDR_MODE == 0) ? WIDTH :       // 32dp32b: 1 reg per replication
+            (ADDR_MODE == 1) ? WIDTH * 2 :   // 16dp128b: 2 regs per replication
+                               WIDTH * 4;    // 16dp256b: 4 regs per replication
+
+        // Initialize TMEM with non-zero data (warp-collective st)
+        uint32_t init_data[REGS_PER_CALL];
+        for (int j = 0; j < REGS_PER_CALL; j++) init_data[j] = j + 1;
+        ku::tmem_st_32dp32bNx<REGS_PER_CALL>(TMEM_COL_C, init_data);
+        cutlass::arch::fence_view_async_tmem_store();
+
+        uint32_t data[REGS_PER_CALL];
+        uint32_t col = TMEM_COL_C;
+
+        // Warmup (with RAW dependency)
+        for (int w = 0; w < 200; w++) {
+            if constexpr (ADDR_MODE == 0) {
+                ku::tmem_ld_32dp32bNx<WIDTH>(col, data);
+            } else if constexpr (ADDR_MODE == 1) {
+                ku::tmem_ld_16dp128bNx<WIDTH>(col, data);
+            } else {
+                ku::tmem_ld_16dp256bNx<WIDTH>(col, data);
+            }
+            cutlass::arch::fence_view_async_tmem_load();
+            // RAW dependency: force wait for data[0] before computing next col.
+            // PTX and.b32 tmp, data[0], 0 → tmp = 0 (runtime), but creates true
+            // data dependency. add.u32 col, tmp, TMEM_COL_C restores original col.
+            asm volatile("{ .reg .u32 tmp; and.b32 tmp, %1, 0; add.u32 %0, tmp, %2; }"
+                         : "=r"(col) : "r"(data[0]), "r"((uint32_t)TMEM_COL_C));
+        }
+
+        // Timed region
+        int64_t gt_start;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_start) :: "memory");
+        uint64_t c_start = clock64_start();
+
+        for (int i = 0; i < iters; i++) {
+            if constexpr (ADDR_MODE == 0) {
+                ku::tmem_ld_32dp32bNx<WIDTH>(col, data);
+            } else if constexpr (ADDR_MODE == 1) {
+                ku::tmem_ld_16dp128bNx<WIDTH>(col, data);
+            } else {
+                ku::tmem_ld_16dp256bNx<WIDTH>(col, data);
+            }
+            cutlass::arch::fence_view_async_tmem_load();
+            // RAW dependency chain — serializes load-to-use latency
+            asm volatile("{ .reg .u32 tmp; and.b32 tmp, %1, 0; add.u32 %0, tmp, %2; }"
+                         : "=r"(col) : "r"(data[0]), "r"((uint32_t)TMEM_COL_C));
+        }
+
+        uint64_t c_end = clock64_stop();
+        int64_t gt_end;
+        asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(gt_end) :: "memory");
+
+        // Anti-DCE: prevent compiler from removing data loads
+        if (data[0] == 0xDEADDEADu) {
+            result->total_cycles = data[1];
+        }
+
+        if (threadIdx.x == 0) {
+            result->total_cycles = c_end - c_start;
+            result->gt_start_ns  = gt_start;
+            result->gt_end_ns    = gt_end;
+        }
+    }
+
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        TMEM::Allocator1Sm().free(0, 512);
+    }
+}

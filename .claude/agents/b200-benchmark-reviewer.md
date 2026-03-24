@@ -87,7 +87,7 @@ Flag any of the following as MAJOR during review:
 
 **Throughput vs RAW latency**: If the benchmark accumulates into a single tC_frag across K-tiles (accumulate_ = ScaleOut::One), it measures SERIALIZED RAW latency (~54 cy/tile for M64N128), NOT the paper's ~11 cy/tile throughput figure. Flag if the analysis conflates these.
 
-**L2 warmth of competition scenario**: For memory benchmarks using sparse attention patterns, flag if the unique working set ≤ 64 MB (L2 capacity). topk=2048 KV tokens × 1152 bytes = ~2.36 MB — will be L2-warm with fixed indices. Distinguish "fixed indices (competition evaluator)" from "varying indices (production inference)."
+**L2 warmth of competition scenario**: For memory benchmarks using sparse attention patterns, flag if the unique working set ≤ 126.5 MB (L2 capacity, confirmed by deviceQuery on Modal B200). topk=2048 KV tokens × 1152 bytes = ~2.36 MB — will be L2-warm with fixed indices. Distinguish "fixed indices (competition evaluator)" from "varying indices (production inference)."
 
 ## Step 2: Run on Modal
 
@@ -116,7 +116,9 @@ Compare measured values against these authoritative sources (in priority order):
 - **arxiv:1903.07486** — Dissecting Turing T4
 - **arxiv:1509.02308** — GPU Memory Hierarchy Microbenchmarking
 - **arxiv:1804.06826** — Dissecting Volta
-- Reference benchmark suites: `microbenchmarks/gpu-benches`, `microbenchmarks/NVIDIA-Hopper-Benchmark`
+- Reference benchmark suites: `references/gpu-benches`, `references/NVIDIA-Hopper-Benchmark`
+- **Local B200 ground-truth**: `microbenchmarks/device_query/` (L2=126.5 MB, regs=65536/SM, SM clock=1.965 GHz, HBM 3996 MHz/7680 bits); `microbenchmarks/warp_scheduler/` (confirms warp_id%4 sub-core mapping); results in `notes/b200_device_query_and_warp_scheduler.md`
+- Reference code: `references/cuda-samples/` (NVIDIA CUDA samples), `references/learn-cuda/` (progressive CUDA tutorials, 02e_matmul_sm100 is B200 sm100 ground-truth), `references/CuTeDSL-kernels/` (production CuTeDSL GEMM), `references/flash-attention/flash_attn/cute/` (FA4 in CuTeDSL for sm100)
 
 ### Analysis Framework
 For each measured metric:

@@ -19,11 +19,11 @@ Your job is to explore PTX ISA documentation, CUTLASS/CUDA headers installed und
 ## Competition Kernel Context
 
 All suggestions must be grounded in what would realistically matter for these two competition kernels:
-- **Attention kernel**: `/home/mark123/projects/FlashMLA/references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py` — batched sparse decode attention, BF16, separate ckv_cache [num_pages, 64, 512] + kpe_cache [num_pages, 64, 64], topk=2048, 1-2 tokens, output [num_tokens, 16, 512], LSE in log2 base
+- **Attention kernel**: `/home/mark123/projects/FlashMLA/references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py` — batched sparse decode attention, BF16, separate ckv_cache [num_pages, 64, 512] + kpe_cache [num_pages, 64, 64], topk=2048, num_tokens=[1,2,6,7,8] (from competition-dataset), output [num_tokens, 16, 512], LSE in log2 base
 - **Indexer kernel**: `/home/mark123/projects/FlashMLA/references/dsa_topk_indexer_fp8_h64_d128_topk2048_ps64.py` — sparse index selection, FP8 input, 64 heads, dim=128, topk=2048, page_size=64
 
 The workload is **memory-bound** on B200 with:
-- `num_tokens` = 1-2, `topk` = 2048, `num_pages` = 8462, `h_q` = 16
+- `num_tokens` = [1, 2, 6, 7, 8] (from competition-dataset/workloads/dsa_paged/), `topk` = 2048, `num_pages` = 8462, `h_q` = 16
 - Two separate TMA gather streams (ckv 512d + kpe 64d)
 - No FP8 dequantization needed for attention kernel (BF16 only)
 - Split-KV across SMs is essential for parallelism
@@ -112,7 +112,7 @@ When proposing UTCMMA or UMMA layout experiments, always check for these constra
 - Single M=64, N=256 float32 accumulator = all 512 TMEM columns; dual-acc is impossible for SV GEMM path
 
 **Competition KV working set and L2 warmth:**
-- TMA gather4 loads only the requested rows — effective KV working set = topk × bytes/token ≈ 2.36 MB, fits in 64 MB L2
+- TMA gather4 loads only the requested rows — effective KV working set = topk × bytes/token ≈ 2.36 MB per token, fits in 126.5 MB L2 (confirmed by deviceQuery on Modal B200)
 - With fixed sparse_indices across timing runs, L2 is warm after first run
 - FRESH_competition_realistic (1024 MB) is more pessimistic than actual competition evaluation
 - Always distinguish: "fixed indices / L2-warm" (competition baseline) vs "varying indices / HBM-cold" (production baseline)

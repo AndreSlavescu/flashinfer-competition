@@ -33,10 +33,11 @@ Confirmed B200 (sm_100a) performance from tma_gather4 benchmark, ver5 CSV, CUDA 
 - 1511 GB/s = 18.9% of 8 TB/s HBM peak — serial-issue TMA is latency-bound, not BW-bound
 - Slight superlinear efficiency improvement at 176+ CTAs (memory controller operates more efficiently under higher concurrency)
 
-**B200 L2 cache size (empirical, confirmed ver5)**
-- Cliff between 64MB (902 GB/s) and 128MB (540 GB/s)
-- L2 size: ~64-80 MB (not sharp, set-associative)
-- Consistent with arxiv:2512.02189 spec of ~64 MB
+**B200 L2 cache size (empirical, confirmed ver5 + deviceQuery)**
+- Cliff between 64MB (902 GB/s) and 128MB (540 GB/s) in TMA gather4 benchmark
+- deviceQuery on Modal B200 confirms: **L2 = 126.5 MB** (132,644,864 bytes) — corrects earlier ~64 MB estimate
+- The 64/128 MB cliff is consistent: 64 MB working set fits in L2, 128 MB does not (126.5 MB capacity)
+- Results: `microbenchmarks/device_query/results/device-query-b200-ver1.txt`
 
 **L2 promotion size effect (ver5 NEW)**
 - L2_PROMOTION_L2_128B vs L2_PROMOTION_L2_64B: ~0% difference at all working set sizes
@@ -92,6 +93,19 @@ Confirmed B200 (sm_100a) performance from tma_gather4 benchmark, ver5 CSV, CUDA 
 **Why:** These values are from actual B200 hardware runs on Modal, ver5/ver6 and dual_tma_stream ver1. Use these over CLAUDE.md specs which are literature estimates.
 **How to apply:** When analyzing future benchmarks or designing the competition kernel, use these as ground truth for B200 TMA performance.
 
+**TMA gather4 competition-realistic RANDOM SCATTER (ver9 NEW — 2026-03-23)**
+- Pattern: fresh_competition_realistic, 1024 MB, single CTA
+- ckv_int64 (4096B/gather4) N=1: **650.9 ns** (vs 546 ns sequential — +19% random scatter overhead)
+- kpe_bf16 (512B/gather4) N=1: **609.9 ns** (vs 492 ns sequential — +24% random scatter overhead)
+- ckv N=16 pipelining: 234.5 ns (2.77× speedup vs N=1); 17.47 GB/s throughput
+- kpe N=16 pipelining: 229.3 ns (2.66× speedup vs N=1); 2.23 GB/s throughput
+- Pipeline saturation for random scatter does NOT plateau at N=2 (unlike sequential); continues to N=16
+- 16-call ckv block (N=16): **~3,752 ns** (vs 3,690 ns ver8 sequential — similar but random is ~1.7% slower)
+- 16-call kpe block (N=16): **~3,673 ns** (extrapolated)
+- kpe latency ≈ ckv latency at N=1 despite 8× smaller payload: confirms TMA overhead-dominated regime
+- Throughput ratio ckv:kpe = 7.84× ≈ bytes_per_call ratio (8×): throughput scales linearly with box size
+- UPDATED COMPETITION BASELINE: Use N=16 pipelining with random scatter. Competition TMA-to-GEMM ratio = 2.49× (revised from 3.6-6.8×)
+
 ---
 
 ## UTCMMA and TMEM Performance (utcmma-ver3.csv, 2026-03-19)
@@ -125,7 +139,13 @@ is ~54 cycles/K-tile — 5× slower than the paper's figure.**
 - M=64 N=64: identical (54.5 cy both)
 - M=64 N=128: WS=54.5 cy, non-WS=64.0 cy (+17%). Always use .ws variants for N≥128.
 
-**TMEM load latency** (stable TMEM, no pending MMA): ~1.8 cycles (clock-read floor; functionally free)
+**TMEM load RAW-serialized latency (utcmma-ver8, 2026-03-23 — confirmed valid)**:
+- Model (32dp32b mode): **cy = 1.74 + 0.031 × WIDTH** (R² ≈ 0.999), where WIDTH = number of 32-bit replications per call
+- 32dp32b×1: 1.80 cy (near loop floor, effectively free); 32dp32b×64: 3.73 cy; 16dp256b×16: 9.74 cy
+- Cross-mode consistency: 32dp32b×W and 16dp128b×(W/2) produce identical cycle counts at equal bit volumes (validation of measurement correctness)
+- 16dp256b×1 (2.23 cy) > 16dp128b×2 (1.98 cy) at equal 256-bit output: 16dp256b has higher per-instruction overhead (reads 2 TMEM columns per replication vs 1)
+- Competition: large accumulator reads (32dp32b×128 = 4096 bits) cost ~5.72 cy (interpolated); dominated by surrounding MMA latency (173+ cy)
+- Prior "~1.8 cycles floor" remains correct for small W; the model now explains the scaling behavior
 
 **TMEM store latency** (N=64 + fence): **49.8 cycles = 26.8 ns** (linear: 12 + 0.59×N cy)
 
@@ -151,14 +171,96 @@ is ~54 cycles/K-tile — 5× slower than the paper's figure.**
 - Marginal cost at 16 copies: ~74.7 cy/copy = 38.0 ns/copy
 - Competition Q load (32 copies extrapolated): ~2,276 cycles = ~1,228 ns
 
+**UTCMMA M=32 WS-TS latency (ver6 NEW — 2026-03-23)**:
+- M=32 N=64 k=1: **173.0 cy = 93.9 ns** (identical to M=64 N=64)
+- M=32 N=128 k=1: **173.0 cy = 93.9 ns** (38% faster than M=64 N=128 at 238.5 cy)
+- M=32 N=256 k=1: **238.5 cy = 129.5 ns** (identical to M=64 N=256)
+- M=32 N=64 k=4: 310.4 cy = 168.5 ns; 77.59 cy/K-tile
+- M=32 N=64 k=32: **1,814 cy = 984 ns**; 56.69 cy/K-tile (vs M=64: 60.16 cy/tile — 5.8% faster)
+- Clock check: 173.0 / 93.9e-9 = 1.842 GHz (consistent with prior 1.844 GHz)
+- N=64 and N=128 have identical completion at M=32 (same output element count: 32×64 = 32×64... wait, they differ. M=32 N=64=2048 ops, M=32 N=128=4096 ops — yet same latency. Confirmed N-independence holds for N≤128 at M=32.)
+- M=32 saves only 110 cy (59 ns) vs M=64 for k=32. With TMA at 3,752 ns, saving is negligible (1.6% end-to-end).
+
+**cp.async.bulk S2G performance (bulk-copy-s2g-ver1 NEW — 2026-03-23)**:
+- Plain copy latency: 67.3 cy (512B) to 4,147 cy (128KB); startup ~34 ns; marginal BW ~15.9 GB/s
+- reduce_add latency: +18–25% vs plain copy across all sizes (read-modify-write overhead)
+- Single-CTA throughput ceiling: **~62.6 GB/s** (32KB, N_PIPE=16 — essentially identical to N_PIPE=1 at 60.3 GB/s)
+- Pipelining N_PIPE 1→16 gives only **+3.8%** — cp.async.bulk.global does NOT benefit from pipelining (unlike TMA gather)
+- True async: copy hides completely within compute with only ~11 cy issue overhead when compute >> copy time
+- At c1000 FMA iters: +1,029 ns overhead from bulk_wait_group flushing memory pipeline (even if copy is done)
+- Conclusion: Issue S2G reduce_add early; 18-25% cost is fixed and must be accepted for accumulation
+
+**LDG.256 Memory Hierarchy — absolute-pointer p-chase, iters=max(num_slots,20000) (ldg-pchase-sweep-ver1 — 2026-03-23)**:
+
+SUPERSEDES ldg-hints-ver1 latency values which had ~160 cy of ALU overhead (% and & on critical path)
+AND wrong iters (too few to traverse full WS ring — measured L1/L2 cached subset, not declared WS).
+
+Corrected B200 memory hierarchy (en_en_128B = coherent, L1+L2 normal caching):
+
+| WS       | cy    | ns    | Level                                |
+|----------|-------|-------|--------------------------------------|
+| 4–8 KB   | ~36   | ~18   | **L1 hit** (floor)                   |
+| 16 KB    | 40    | 20    | L1 spilling                          |
+| 32 KB    | 47    | 24    | L1 partial miss                      |
+| 48 KB    | 54    | 27    | L1 boundary region                   |
+| 64 KB    | 60    | 31    | L1/L2 mix                            |
+| 128 KB   | 87    | 45    | L1→L2 transition                     |
+| 256 KB   | 255   | 130   | L2 hit (approaching steady-state)    |
+| 512KB–32MB | ~300 | ~153  | **L2 steady-state** (plateau)        |
+| 64 MB    | 327   | 167   | L2 capacity pressure                 |
+| 128 MB   | 535   | 273   | **L2→HBM transition**                |
+| 192 MB   | 640–655 | 326–333 | HBM                               |
+| 256 MB   | **689–707** | **351–360** | **HBM deep cold** (two independent Modal runs: ver1=707 cy, ver4=689 cy, ~2.5% variation) |
+
+Clock validation: cy/ns = 1.961–1.967 GHz (matches deviceQuery 1965 MHz). ✓
+
+L1-bypass (na_ef_128B) penalty:
+- At 4 KB: 36 cy → 279 cy (7.7× penalty)
+- At 32 KB: 47 cy → 278 cy (5.9× penalty)
+- At 512 KB+: IDENTICAL to en_en (L2/HBM regime — hint irrelevant)
+
+nc_en_en_128B = en_en_128B at ALL sizes (0% difference on B200).
+
+Competition recommendation: use `en_en_128B` for all index loads. NEVER `na_ef`.
+- sparse_indices per block (256 B – 8 KB): pure L1 hit, 36 cy / 18 ns
+- Full topk=2048 indices (8 KB): L1 hit, 36 cy vs 279 cy with na_ef (7.7× worse)
+
+Cross-reference vs arxiv:2512.02189 "~420 cy global memory latency": Their figure is L2 latency (WS fits L2);
+our L2 = ~300 cy (~153 ns); their 420 cy/200 ns at 2.1 GHz likely reflects ~256-512 KB WS, not deep HBM.
+Our HBM = 689–707 cy / 351–360 ns across two independent Modal runs — more rigorous (random Hamiltonian p-chase,
+full ring traversal, no prefetcher). Range represents B200 instance-to-instance variation (~2.5%).
+
+**LDG.256 single-CTA L2 streaming BW (32-thread sequential, 256 MB, ver2/ver3)**: ~1,049–1,072 GB/s.
+All 18 hints identical for sequential streaming (prefetcher dominates, hints irrelevant).
+For HBM-bound hint differentiation at streaming, need multi-block loads saturating HBM.
+
+**Ver5 UTCMMA completion latency (full dataset, corrected sync):**
+- WS-TS M64N256 k=1: 238.5 cy = 129.3 ns
+- WS-TS M128N128 k=1: 238.5 cy = 129.3 ns
+- WS-TS M128N256 k=1: 370.5 cy = 200.9 ns
+- WS-SS M64N128 k=1: 175.3 cy = 95.0 ns
+- WS-SS M64N256 k=4 (competition SV): **539 cy = 292 ns**
+- Non-WS TS M64N64 k=1: 173.0 cy (identical to WS-TS)
+- Non-WS TS M64N128 k=1: 238.5 cy (+38% vs WS-TS M64N64)
+- Non-WS SS M64N64 k=1: 175.3 cy; M64N128 k=1: 262.8 cy; M64N256 k=4: 730.7 cy
+- Fine-N sweep (N=8..64, k=1): ALL produce IDENTICAL 173.0 cy (TS) / 175.3 cy (SS) — N-independent latency
+- UTCCP 128dp256bit 16-copy: 74.7 cy/copy; UTCCP 128dp128bit 32-copy: 51.3 cy/copy
+- GPU clock inferred from ver5: 173.0 cy / 93.8 ns = **1.844 GHz** (6.2% below 1.965 GHz boost)
+- Spread: 0.0% on all MMA experiments — extremely stable
+
+**N_ACC multi-accumulator (ver5, definitive with commit+wait):**
+- N_ACC=1..5 at M64N64 k_depth=32: all identical **60.16 cy/tile** (structural floor confirmed)
+- Cannot achieve paper's 11 cy/tile with N_ACC ≤ 5; likely requires N_ACC ≥ latency/initiation ≈ 173/11 ≈ 16
+
 **Competition kernel per-SM timing model (split-KV, B_TOPK=64, ver3 corrected)**:
 
 TMA per block (16 gather4 calls each for ckv and kpe):
 - NOTE: all TMA latency values above (546/595 ns) are PER-GATHER4-CALL, not per-block total
+- **Competition baseline = HBM-cold** (evaluation runs on separate machine, no guaranteed cache warmth)
 - HBM-cold sequential (no pipelining): 16 × 595 = ~9,520 ns per stream
-- With N=2 pipelining + DIST=2 prefetch: ~16 × 324 = ~5,184 ns per stream (estimated)
-- ckv and kpe run in parallel (verified zero HBM interference) → per-block TMA = max(ckv, kpe)
-- **Per-block TMA: ~5,000-9,500 ns** (range depends on pipelining efficiency; unmeasured for multi-call)
+- HBM-cold N=16 batch-issued (ver8 MEASURED for ckv): **3,690 ns** per 16-call block
+- ckv and kpe run in parallel; HBM-cold concurrent interference: +0% ckv, +7% kpe (ver1 confirmed)
+- **Per-block TMA: ~3,690 ns** (ckv ver8 measured; kpe N=16 unconfirmed — extrapolated)
 
 GEMM per block (serialized RAW chain, all values measured):
 - QK ckv (M=64 N=64 K_DEPTH=32): ~1,719 cy = ~928 ns

@@ -368,6 +368,9 @@ static void run_utcmma_throughput_2acc(bool verbose) {
         {64, 64, 3, 32, 1000},   // N_ACC=3: gap=33 cy < 43 cy RAW → predicted still serialized
         {64, 64, 4, 32, 1000},   // N_ACC=4: gap=44 cy ≥ 43 cy RAW → predicted to break dependency
         {64, 64, 5, 32, 1000},   // N_ACC=5: gap=55 cy >> 43 cy RAW → should clearly break
+        {64, 64, 6, 32, 1000},   // N_ACC=6: 6*32=192 C cols (fits in [0..255])
+        {64, 64, 7, 32, 1000},   // N_ACC=7: 7*32=224 C cols
+        {64, 64, 8, 32, 1000},   // N_ACC=8: 8*32=256 C cols (exactly fills before A@256)
         // N=128 k_depth=4: FlashMLA dual-GEMM B smem packing shape (two B_TOPK=64 blocks)
         {64, 128, 1, 4, 1000},
         {64, 128, 2, 4, 1000},
@@ -409,6 +412,9 @@ static void run_utcmma_throughput_2acc(bool verbose) {
                     case 3: { LAUNCH_2ACC(64, 64, 3, 32); break; }
                     case 4: { LAUNCH_2ACC(64, 64, 4, 32); break; }
                     case 5: { LAUNCH_2ACC(64, 64, 5, 32); break; }
+                    case 6: { LAUNCH_2ACC(64, 64, 6, 32); break; }
+                    case 7: { LAUNCH_2ACC(64, 64, 7, 32); break; }
+                    case 8: { LAUNCH_2ACC(64, 64, 8, 32); break; }
                 }
             } else if (cfg.M == 64 && cfg.N == 128 && cfg.k_depth == 32) {
                 switch (cfg.n_acc) {
@@ -663,10 +669,140 @@ static void run_utcmma_non_ws_ts(bool verbose) {
     }
 }
 
-// NOTE: Experiment 13 (M=32 WS-TS) REMOVED — M=32 is valid per PTX ISA for
-// tcgen05.mma.ws.cta_group::1 but CuTe's TMEM fragment code
-// (mma_traits_sm100.hpp:502) has a static_assert blocking M=32.
-// To benchmark M=32, either fix CuTe or use raw PTX inline assembly.
+// ---------------------------------------------------------------------------
+// Experiment 13: utcmma_m32_ws_ts — M=32 WS-TS latency via raw PTX bypass
+// Bypasses CuTe TiledMMA (which asserts M>=64 in tmem_frg_1sm) by calling
+// SM100_MMA_F16BF16_WS_TS_NOELECT::fma() directly with manual descriptors.
+// ---------------------------------------------------------------------------
+static void run_utcmma_m32_ws_ts(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 13: utcmma_m32_ws_ts (raw PTX) ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+    const int M = 32;
+
+    struct M32Config {
+        int N, k_depth, iters;
+        const char* label;
+    };
+
+    M32Config configs[] = {
+        // Single K-tile latency (compare to M=64 baseline: 173 cy at N=64)
+        {64,  1, 10000, "32x64"},
+        {128, 1, 10000, "32x128"},
+        {256, 1, 10000, "32x256"},
+        // K-depth scaling (competition-relevant tiles)
+        {64,  4, 5000,  "32x64_kd4"},   // kpe QK analog
+        {64,  32, 1000, "32x64_kd32"},   // ckv QK analog
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s (M=%d N=%d kd=%d) ...\n",
+                    cfg.label, M, cfg.N, cfg.k_depth);
+
+        int K_TOTAL = cfg.k_depth * 16;
+        int smem_bytes = cfg.N * K_TOTAL * (int)sizeof(__nv_bfloat16) + 512;
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_M32(N_VAL, KD_VAL) \
+                cudaFuncSetAttribute(kernel_utcmma_m32_ws_ts<N_VAL, KD_VAL>, \
+                   cudaFuncAttributeMaxDynamicSharedMemorySize, smem); \
+                kernel_utcmma_m32_ws_ts<N_VAL, KD_VAL><<<1, 128, smem>>>(d_result, iters)
+
+            if      (cfg.N == 64  && cfg.k_depth == 1)  { LAUNCH_M32(64,  1); }
+            else if (cfg.N == 128 && cfg.k_depth == 1)  { LAUNCH_M32(128, 1); }
+            else if (cfg.N == 256 && cfg.k_depth == 1)  { LAUNCH_M32(256, 1); }
+            else if (cfg.N == 64  && cfg.k_depth == 4)  { LAUNCH_M32(64,  4); }
+            else if (cfg.N == 64  && cfg.k_depth == 32) { LAUNCH_M32(64,  32); }
+            #undef LAUNCH_M32
+        };
+
+        run_and_report(
+            "utcmma_m32_ws_ts", cfg.label,
+            M, cfg.N, cfg.k_depth, "ws_ts", "SW32", cfg.iters,
+            launcher, smem_bytes, RUNS, verbose);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Experiment 19: tmem_ld_modes — compare TMEM load addressing modes
+// ---------------------------------------------------------------------------
+static void run_tmem_ld_modes(bool verbose) {
+    fprintf(stderr, "\n=== Experiment 19: tmem_ld_modes ===\n"); fflush(stderr);
+
+    const int RUNS = 11;
+    const int ITERS = 5000;
+
+    struct LdModeConfig {
+        int addr_mode;   // 0=32dp32b, 1=16dp128b, 2=16dp256b
+        int width;       // N replications
+        const char* label;
+    };
+
+    LdModeConfig configs[] = {
+        // 32dp32b baseline (from exp 7, re-measured for comparison)
+        {0, 1,  "32dp32b_1"},   // 32 bits
+        {0, 4,  "32dp32b_4"},   // 128 bits
+        {0, 8,  "32dp32b_8"},   // 256 bits
+        {0, 16, "32dp32b_16"},  // 512 bits
+        {0, 32, "32dp32b_32"},  // 1024 bits
+        {0, 64, "32dp32b_64"},  // 2048 bits
+        // 16dp128b (4 regs per replication)
+        {1, 1,  "16dp128b_1"},  // 128 bits (= 32dp32b_4)
+        {1, 2,  "16dp128b_2"},  // 256 bits (= 32dp32b_8)
+        {1, 4,  "16dp128b_4"},  // 512 bits (= 32dp32b_16)
+        {1, 8,  "16dp128b_8"},  // 1024 bits
+        {1, 16, "16dp128b_16"}, // 2048 bits
+        {1, 32, "16dp128b_32"}, // 4096 bits
+        // 16dp256b (8 regs per replication)
+        {2, 1,  "16dp256b_1"},  // 256 bits (= 32dp32b_8)
+        {2, 2,  "16dp256b_2"},  // 512 bits (= 32dp32b_16)
+        {2, 4,  "16dp256b_4"},  // 1024 bits
+        {2, 8,  "16dp256b_8"},  // 2048 bits
+        {2, 16, "16dp256b_16"}, // 4096 bits
+    };
+
+    for (auto& cfg : configs) {
+        if (verbose)
+            fprintf(stderr, "  %s ...\n", cfg.label);
+
+        auto launcher = [&](BenchResult* d_result, int iters, int smem) {
+            #define LAUNCH_LDM(AM, W) \
+                kernel_tmem_ld_modes<AM, W><<<1, 128, 256>>>(d_result, iters)
+
+            switch (cfg.addr_mode * 1000 + cfg.width) {
+                // 32dp32b
+                case 0*1000 + 1:  { LAUNCH_LDM(0, 1);  break; }
+                case 0*1000 + 4:  { LAUNCH_LDM(0, 4);  break; }
+                case 0*1000 + 8:  { LAUNCH_LDM(0, 8);  break; }
+                case 0*1000 + 16: { LAUNCH_LDM(0, 16); break; }
+                case 0*1000 + 32: { LAUNCH_LDM(0, 32); break; }
+                case 0*1000 + 64: { LAUNCH_LDM(0, 64); break; }
+                // 16dp128b
+                case 1*1000 + 1:  { LAUNCH_LDM(1, 1);  break; }
+                case 1*1000 + 2:  { LAUNCH_LDM(1, 2);  break; }
+                case 1*1000 + 4:  { LAUNCH_LDM(1, 4);  break; }
+                case 1*1000 + 8:  { LAUNCH_LDM(1, 8);  break; }
+                case 1*1000 + 16: { LAUNCH_LDM(1, 16); break; }
+                case 1*1000 + 32: { LAUNCH_LDM(1, 32); break; }
+                // 16dp256b
+                case 2*1000 + 1:  { LAUNCH_LDM(2, 1);  break; }
+                case 2*1000 + 2:  { LAUNCH_LDM(2, 2);  break; }
+                case 2*1000 + 4:  { LAUNCH_LDM(2, 4);  break; }
+                case 2*1000 + 8:  { LAUNCH_LDM(2, 8);  break; }
+                case 2*1000 + 16: { LAUNCH_LDM(2, 16); break; }
+            }
+            #undef LAUNCH_LDM
+        };
+
+        const char* mode_names[] = {"32dp32b", "16dp128b", "16dp256b"};
+
+        run_and_report(
+            "tmem_ld_modes", cfg.label,
+            0, 0, 1, mode_names[cfg.addr_mode], "N/A", ITERS,
+            launcher, 256, RUNS, verbose);
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Experiment 15: utcmma_non_ws_ss — Non-WS SS latency
@@ -923,8 +1059,8 @@ int main(int argc, char** argv) {
         run_utcmma_non_ws_ts(verbose);
 
     // --- Ver4 experiments ---
-    // NOTE: utcmma_m32_ws_ts removed — CuTe TMEM fragment doesn't support M=32
-    // (PTX ISA allows it for .ws, but CuTe mma_traits_sm100.hpp:502 blocks it)
+    if (run_all || experiment == "utcmma_m32_ws_ts")
+        run_utcmma_m32_ws_ts(verbose);
 
     if (run_all || experiment == "utcmma_non_ws_ss")
         run_utcmma_non_ws_ss(verbose);
@@ -934,6 +1070,9 @@ int main(int argc, char** argv) {
 
     if (run_all || experiment == "utccp_128dp128b")
         run_utccp_128dp128b(verbose);
+
+    if (run_all || experiment == "tmem_ld_modes")
+        run_tmem_ld_modes(verbose);
 
     CUDA_CHECK(cudaDeviceReset());
     return 0;

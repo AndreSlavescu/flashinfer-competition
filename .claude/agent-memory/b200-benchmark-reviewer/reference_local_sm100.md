@@ -62,4 +62,21 @@ Ground truth for correct sm100 patterns, benchmarked on real B200 Modal hardware
 - `references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py` — exact expected behavior
 - `references/dsa_topk_indexer_fp8_h64_d128_topk2048_ps64.py` — indexer reference
 
+### Competition dataset (actual evaluation workloads)
+- `competition-dataset/workloads/dsa_paged/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.jsonl` — 23 workloads, num_tokens=[1,2,6,7,8], real sparse_indices as safetensors
+- `competition-dataset/workloads/dsa_paged/dsa_topk_indexer_fp8_h64_d128_topk2048_ps64.jsonl` — 128 workloads, batch_size up to 31
+- **IMPORTANT**: num_tokens range is [1,2,6,7,8], NOT 1-2. At num_tokens≥5, 32×N blocks > 148 SMs.
+
+### New local reference libraries
+- `references/cuda-samples/` — NVIDIA official CUDA samples (0_Introduction through 8_Platform_Specific)
+- `references/learn-cuda/` — progressive CUDA tutorials; 07_attention/ has attention v1–v5; 02e_matmul_sm100/ is sm100 ground-truth
+- `references/CuTeDSL-kernels/quack/` — production sm100/sm90 CuTeDSL GEMM (gemm_sm100.py, autotuner)
+- `references/flash-attention/flash_attn/cute/` — FA4 in CuTeDSL: flash_fwd_sm100.py, flash_bwd_sm100.py, blackwell_helpers.py
+
+### B200 hardware ground truth (deviceQuery + warp_scheduler, 2026-03-21)
+- L2 cache: **126.5 MB** (132,644,864 bytes) — corrects all prior ~64 MB estimates
+- SM clock: 1,965 MHz | HBM: 3,996 MHz / 7,680-bit bus
+- Warp schedulers: 4 per SM, warp_id%4 mapping confirmed
+- Full results: `microbenchmarks/device_query/results/device-query-b200-ver1.txt`, `notes/b200_device_query_and_warp_scheduler.md`
+
 **How to apply**: During any sm100 benchmark review, read relevant reference file(s) first. If the benchmark uses tcgen05.ld, tcgen05.alloc, mbarrier, or tcgen05.fence differently from this reference, trace the difference to a PTX ISA citation before flagging as correct or incorrect.

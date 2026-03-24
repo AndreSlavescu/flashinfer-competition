@@ -130,5 +130,43 @@ leaves open a potential optimization path.
 **Fix**: Always test N_ACC up to and beyond latency/throughput_estimate (i.e., N_ACC ≥ 5 for
 UTCMMA). Use M=64 N=64 with N_ACC=8 (8×32=256 TMEM cols, fits in budget) as the definitive test.
 
+## Anti-Pattern 12: UTCMMA latency without commit+wait measures issue rate not completion
+
+**Problem**: Kernels that do `gemm(tiled_mma, tA, sB, tC)` in a loop without `tcgen05.commit + mbarrier.wait + tcgen05.fence::after_thread_sync` measure the rate at which MMA instructions can be issued (~54 cy/tile for M64N64), NOT when results are available in TMEM (~173 cy). Ver3/ver4 utcmma benchmarks had this bug, showing 54 cy vs the correct 173 cy.
+
+**Impact**: 3× underestimate of competition GEMM time (1,392 ns ver3 vs 1,809 ns ver5 per block).
+
+**Fix**: Always add `umma_arrive_noelect(*bar) + bar->wait(phase) + tcgen05_after_thread_sync()` after each timed GEMM group. This is the correct completion-latency measurement.
+
+**Where seen**: utcmma_kernels.cuh ver3/ver4 MMA experiments. Fixed in ver5 (2026-03-21).
+
+## Anti-Pattern 13: Throughput benchmark with insufficient unique footprint despite large buffer allocation
+
+**Problem**: Changing the stride pattern from `(tid * 4 + i * 128) % WS_ELEMS` to `(tid * per_thread + i * 4) % WORKING_SET_ELEMS` (ver2 fix) reduces but does NOT eliminate the L2-warm issue. With 32 threads × 10,000 iters × 32 bytes/load = 10.24 MB unique data accessed — still << 126.5 MB L2. The benchmark still measures L2 bandwidth. The ver1 footprint was ~2.5 MB; ver2 is ~10 MB — both far below the 253 MB threshold for HBM-bound operation. All hints still show identical ~1,049 GB/s.
+
+The deeper issue: the stride `(i * 4)` per iteration causes the thread to revisit the same region after `per_thread / 4 = 262,144` iters. With only 10,000 iters, each thread only touches 40,000 u64 = 320 KB of its 8 MB sub-region. The working set appears large (256 MB buffer) but the accessed subset is small.
+
+**Fix**: To measure HBM throughput, use a SINGLE non-wrapping pass: `offset = ((int64_t)i * THREADS + tid) * 4` (no modulo) with ITERS = total_WS_elems / (THREADS * 4) = ~2.1 million iterations for 256 MB. Or use a 512 MB buffer with a single forward sweep. Ensure total unique bytes = buffer size, with no L2-warm pass before.
+
+**Where seen**: ldg_hints/ldg_kernels.cuh kernel_ldg_throughput (ver1 and ver2 — only partially fixed).
+
+## Anti-Pattern 14: gbps formula overcounts by total_loads_per_iter factor
+
+**Problem**: `run_ldg` computes `ns_per_load = avg_total_ns / (iters * total_loads_per_iter)` then `gbps = 32.0 / ns_per_load * total_loads_per_iter`. Substituting: `gbps = 32.0 * total_loads_per_iter^2 * iters / avg_total_ns`. The formula overcounts by `total_loads_per_iter` (32× for throughput, 256× for competition experiment). All reported GB/s values are inflated by this factor.
+
+**Fix**: Correct formula: `gbps = 32.0 * total_loads_per_iter * iters / avg_total_ns`. Or equivalently: `gbps = 32.0 * total_loads_per_iter / ns_per_iter` where `ns_per_iter = avg_total_ns / iters`.
+
+**Where seen**: ldg_hints/main.cu run_ldg() (ver1).
+
+## Anti-Pattern 15: TMEM ld benchmark without RAW dependency chain measures loop overhead floor
+
+**Problem**: `kernel_tmem_ld_modes` measures TMEM load latency across different addressing modes (32dp32bNx vs 16dp128bNx vs 16dp256bNx) but uses the same constant TMEM column each iteration with no data-flow dependency between iterations. The compiler can remove loads or the hardware can issue all loads out-of-order. All 17 configurations produce identical 1.79 cy/iter — the clock-read floor for an empty loop. No width or mode differentiation is measurable.
+
+**Fix**: Add a RAW dependency: `asm volatile("{ .reg .u32 tmp; and.b32 tmp, %1, 0; add.u32 %0, tmp, %2; }" : "=r"(col) : "r"(data[0]), "r"((uint32_t)TMEM_COL_C))` after fence. Anti-DCE: use `if (data[0] == 0xDEADDEAD) result->total_cycles = data[1]`. Also fix REGS_PER_CALL: 16dp128b needs WIDTH*2 (not WIDTH*4), 16dp256b needs WIDTH*4 (not WIDTH*8).
+
+**Fixed in ver8 (2026-03-23)**: Results now show clean scaling: 32dp32b model cy = 1.74 + 0.031×WIDTH (R²≈0.999). Cross-mode alignment (32dp32b×W = 16dp128b×(W/2) at equal bit volume) validates the measurement. WIDTH=1 is near floor (1.80 cy); WIDTH=64 is clearly differentiated (3.73 cy).
+
+**Where seen**: utcmma/utcmma_kernels_ver2.cuh kernel_tmem_ld_modes (ver7 broken, ver8 fixed).
+
 ## Why these matter
 These patterns can silently produce misleading results — the benchmark compiles and runs without error, but the measured values don't reflect what the experiment claims to measure. Always verify: (a) the effective unique data footprint vs L2 size, (b) whether published PTX patterns in this repo are validated before flagging as violations, (c) cache regime (L2-warm vs HBM-bound) when evaluating concurrent stream behavior, (d) that every CSV label field matches what the kernel actually executes.

@@ -101,6 +101,44 @@ From tma_gather4 ver4 results on B200 Modal hardware:
 
 TMA pipelining efficiency at competition scale (16 consecutive HBM-cold gather4s) is the key unmeasured parameter.
 
+## Indexer Kernel Gap (discovered 2026-03-21 consolidated review)
+
+The indexer kernel (dsa_topk_indexer) is COMPLETELY UNBENCHMARKED. Competition has ~128 indexer workloads with batch_size 1 through 29+. No microbenchmarks exist for:
+- FP8 GEMM (q_index FP8 × k_index_cache FP8, deep_gemm format)
+- ReLU activation after GEMM
+- Top-K selection over ~763K scores per batch element
+- Block table indirection (two-level page lookup)
+- Global load patterns for q_index_fp8, k_index_cache_fp8
+
+If competition scores attention and indexer equally, ~50% of optimization target is uninformed.
+
+## Dual TMA Stream — Competition Regime Gap
+
+dual_tma_stream ver1 tested 256MB random (ckv) + 32MB (kpe effective) — both large enough to be HBM-cold. In the actual competition, each SM processes 64 tokens × (1024B ckv + 128B kpe) = 72KB per block, and across 32 SMs the aggregate is only 2MB — well within L2 (126.5MB). The ver1 results (585 ns concurrent kpe) do NOT apply to competition scenario where both streams should be L2-hot (~197 ns). New experiment needed: dual streams with 64KB + 8KB per-block working sets.
+
+## Updated Competition Per-SM Timing Model (ver9 + ver6, 2026-03-23)
+
+**TMA random scatter (N=16 pipelining) replaces prior sequential estimates:**
+- ckv 16-call block: ~3,752 ns (random scatter N=16)
+- kpe 16-call block: ~3,673 ns (run in parallel with ckv)
+- Per-SM TMA = max(ckv, kpe) = ~3,752 ns
+- TMA:GEMM ratio = 3,752 / 1,507 = 2.49× (was 3.6-6.8× with sequential N=1)
+- Per-SM total (TMA + GEMM sequential) = ~5,259 ns
+- Kernel is still TMA-bound but narrower than previously thought
+
+**Key insight from ver9**: Competition scatter pipeline saturates at N=16, not N=2. Must issue ALL 16 gather4 calls before waiting. The N=2 saturation conclusion from ver6 was specific to sequential access.
+
+**LDG hint for sparse_indices (new from ldg-hints-ver1)**:
+- Use nc_en_en_128B: 40 cy net L1 hit, vs 461 cy for na_ef (L1-bypass)
+- sparse_indices = 64KB max → L1-resident throughout decode loop
+- Avoid no_allocate: +130% latency penalty for L1-sized working sets
+
+**S2G bulk reduce for combine kernel (new from bulk-copy-s2g-ver1)**:
+- cp.reduce.async.bulk.add.f32 = +18-25% overhead vs plain copy
+- Single-CTA throughput = 62 GB/s — need all 32 SMs writing simultaneously to saturate HBM
+- Issue bulk reduce immediately after MMA; do NOT wait until end of block
+- Async overlap confirmed: ~11 cy overhead when compute time >> copy time
+
 ## What's Still Unknown (requires follow-up benchmarks)
 
 - **TMA pipelining at competition scale**: 16 consecutive HBM-cold gather4 calls — what is the achieved per-call throughput with N=2 pipelining? This determines whether per-block TMA is ~5,000 or ~9,500 ns. HIGHEST PRIORITY.

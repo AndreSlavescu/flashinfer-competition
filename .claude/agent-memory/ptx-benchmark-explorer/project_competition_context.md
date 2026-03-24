@@ -6,9 +6,9 @@ type: project
 
 Competition target: B200 sm100a, CUDA 12.9+. Two kernels to optimize:
 
-1. Attention kernel: sparse decode attention, num_tokens=1-2, topk=2048, ckv_cache [8462,64,512] BF16 + kpe_cache [8462,64,64] BF16, sparse_indices [num_tokens,2048], output [num_tokens,16,512] BF16, LSE in log2 base. Memory-bound: 2.36 MB KV per query token, scattered across ~8462 pages.
+1. Attention kernel: sparse decode attention, **num_tokens=[1,2,6,7,8]** (confirmed from `competition-dataset/workloads/dsa_paged/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.jsonl`, 23 workloads), topk=2048, ckv_cache [8462,64,512] BF16 + kpe_cache [8462,64,64] BF16, sparse_indices [num_tokens,2048] (real patterns, NOT uniform random), output [num_tokens,16,512] BF16, LSE in log2 base. Memory-bound: 2.36 MB KV per query token. At num_tokens≥5 (160 blocks > 148 SMs), multi-block-per-SM becomes unavoidable.
 
-2. Indexer kernel: FP8 input, 64 heads, dim=128, topk=2048, page_size=64.
+2. Indexer kernel: FP8 input, 64 heads, dim=128, topk=2048, page_size=64. **batch_size up to 31** (128 workloads, values [1,2,3,4,6,7,8,11,12,14,15,16,25,26,27,29,30,31]).
 
 **Why:** Competition requires lowest possible latency for the decode path. All benchmark findings directly inform kernel design choices (cache policies, TMA layout, pipeline depth, GEMM tile sizes).
 

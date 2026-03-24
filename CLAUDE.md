@@ -15,7 +15,7 @@ PTX ISA: https://docs.nvidia.com/cuda/parallel-thread-execution/#instruction-set
 **Task**: Optimize a batched sparse decode attention kernel for B200 (sm100a).
 
 **Evaluation parameters**:
-- `num_tokens` = 1-2 (pure decode, tiny batch)
+- `num_tokens` = 1-8 (confirmed from competition-dataset: values are [1, 2, 6, 7, 8])
 - `num_pages` = 8462 (~541K KV tokens, page_size=64)
 - `topk` = 2048 (sparse selection per query token)
 - `h_q` = 16 query heads
@@ -33,13 +33,13 @@ PTX ISA: https://docs.nvidia.com/cuda/parallel-thread-execution/#instruction-set
 | KV precision | **BF16** | FP8 (float8_e4m3) |
 | KV layout | **Separate** ckv_cache + kpe_cache | Single interleaved 656B/token |
 | Dequantization | **None needed** | FP8 -> BF16 with per-tile scales |
-| Batch size | **1-2 tokens** | Typically larger batches |
+| Batch size | **1-8 tokens** (competition values: [1,2,6,7,8]) | Typically larger batches |
 | sparse_indices shape | `[num_tokens, topk]` | `[b, s_q, topk]` |
 | LSE base | **log2** | natural log (kernel uses log2 internally) |
 
 **Why this matters for kernel design**:
 1. Skip FP8 dequantization entirely — WG2 (dequant warpgroup) in FlashMLA is unnecessary
-2. Split-KV is essential — topk=2048, B_TOPK=64 means 32 blocks per query. With only 1-2 tokens, you MUST split across SMs for parallelism
+2. Split-KV is essential — topk=2048, B_TOPK=64 means 32 blocks per query. With 1-8 tokens, you MUST split across SMs for parallelism
 3. Memory-bound — 2048 tokens x (512+64) x 2 bytes = ~2.3 MB of KV per query token, scattered across ~8462 pages. TMA gather efficiency is critical
 4. Two separate TMA gather streams — one for ckv_cache (512d), one for kpe_cache (64d)
 5. Output is Kc (NoPE only) — SV GEMM uses ckv_cache values (512d), same data already gathered for QK

@@ -1,6 +1,6 @@
 import modal
 
-app = modal.App("utcmma-bench")
+app = modal.App("ldg-hints-bench")
 
 cuda_image = (
     modal.Image.debian_slim(python_version="3.11")
@@ -9,7 +9,6 @@ cuda_image = (
         "wget https://developer.download.nvidia.com/compute/cuda/repos/debian12/x86_64/cuda-keyring_1.1-1_all.deb",
         "dpkg -i cuda-keyring_1.1-1_all.deb",
         "apt-get update",
-        # Try CUDA 13.0 first, fall back to 12.8
         "apt-get install -y cuda-toolkit-13-0 || apt-get install -y cuda-toolkit-12-8",
     )
     .env({
@@ -18,13 +17,8 @@ cuda_image = (
     })
     # Benchmark source files
     .add_local_file("microbenchmarks/common/benchmark_common.cuh", "/root/common/benchmark_common.cuh", copy=True)
-    .add_local_file("microbenchmarks/utcmma/utcmma_kernels.cuh", "/root/bench/utcmma_kernels.cuh", copy=True)
-    .add_local_file("microbenchmarks/utcmma/utcmma_kernels_ver2.cuh", "/root/bench/utcmma_kernels_ver2.cuh", copy=True)
-    .add_local_file("microbenchmarks/utcmma/main.cu", "/root/bench/main.cu", copy=True)
-    # CUTLASS/CuTe headers (needed for TMEM allocator, UMMA descriptors, MMA traits)
-    .add_local_dir("csrc/cutlass/include", "/root/bench/include", copy=True)
-    # kerutils headers (gemm.cuh, helpers.cuh, intrinsics.cuh)
-    .add_local_dir("csrc/kerutils/include", "/root/bench/kerutils_include", copy=True)
+    .add_local_file("microbenchmarks/ldg_hints/ldg_kernels.cuh", "/root/bench/ldg_kernels.cuh", copy=True)
+    .add_local_file("microbenchmarks/ldg_hints/main.cu", "/root/bench/main.cu", copy=True)
 )
 
 NVCC_FLAGS = [
@@ -33,19 +27,13 @@ NVCC_FLAGS = [
     "-gencode", "arch=compute_100a,code=sm_100a",
     "-O3",
     "--expt-relaxed-constexpr",
-    # ptxas: max optimization + expensive opts + report resource usage
     "-Xptxas", "-O3",
     "-Xptxas", "--allow-expensive-optimizations=true",
     "-Xptxas", "-v",
-    # Line info for profiling (negligible overhead, enables ncu source correlation)
     "-lineinfo",
-    # Flush denormals to zero
     "--ftz=true",
-    # Include paths for CuTe/CUTLASS and kerutils
-    "-I/root/bench/include",
-    "-I/root/bench/kerutils_include",
-    # Output
-    "-o", "/root/bench/utcmma_bench",
+    "-I/root/common",
+    "-o", "/root/bench/ldg_bench",
     "/root/bench/main.cu",
 ]
 
@@ -53,12 +41,12 @@ NVCC_FLAGS = [
 @app.function(
     image=cuda_image,
     gpu="B200",
-    timeout=300,
+    timeout=600,
 )
 def run_benchmark(experiment: str = "all"):
     import subprocess
 
-    # Check CUDA/GPU info
+    # GPU info
     info = subprocess.run(
         ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
         capture_output=True, text=True,
@@ -74,26 +62,24 @@ def run_benchmark(experiment: str = "all"):
     if compile_result.returncode != 0:
         print(f"Compilation failed:\n{compile_result.stderr}")
         return {"success": False, "error": compile_result.stderr}
-    # ptxas -v output goes to stderr — shows register/smem usage
     print(f"Compilation successful!\n{compile_result.stderr}")
 
     # Run
     print(f"\nRunning experiment: {experiment}")
     try:
         run_result = subprocess.run(
-            ["/root/bench/utcmma_bench", f"--experiment={experiment}", "--verbose"],
+            ["/root/bench/ldg_bench", f"--experiment={experiment}", "--verbose"],
             capture_output=True, text=True,
             timeout=240,
         )
     except subprocess.TimeoutExpired as e:
-        # Show partial output so we know exactly which experiment/config hung
         partial_stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
         partial_stdout = e.stdout.decode() if isinstance(e.stdout, bytes) else (e.stdout or "")
-        print("=== TIMEOUT after 600s — partial stderr (shows last experiment before hang) ===")
+        print("=== TIMEOUT after 240s ===")
         print(partial_stderr[-8000:] if len(partial_stderr) > 8000 else partial_stderr)
         print("=== partial stdout (CSV so far) ===")
         print(partial_stdout)
-        return {"success": False, "error": "timeout_600s", "stderr": partial_stderr, "csv": partial_stdout}
+        return {"success": False, "error": "timeout_240s", "stderr": partial_stderr, "csv": partial_stdout}
 
     if run_result.returncode != 0:
         print(f"Execution failed:\n{run_result.stderr}")
@@ -113,19 +99,16 @@ def run_benchmark(experiment: str = "all"):
 
 @app.local_entrypoint()
 def main(experiment: str = "all"):
-    """Run UTCMMA benchmarks on B200 GPU.
+    """Run LDG.256 hint sweep benchmarks on B200 GPU.
 
     Usage:
-        modal run run_modal.py                                    # all experiments
-        modal run run_modal.py --experiment utcmma_latency_ts     # single experiment
-        modal run run_modal.py --experiment utcmma_kdepth_ts
-        modal run run_modal.py --experiment utcmma_latency_ss
-        modal run run_modal.py --experiment utccp_latency
-        modal run run_modal.py --experiment utcmma_swizzle
-        modal run run_modal.py --experiment utcmma_m32_ws_ts
-        modal run run_modal.py --experiment tmem_ld_modes
+        modal run run_modal.py                               # all experiments
+        modal run run_modal.py --experiment throughput        # streaming bandwidth (256 MB, HBM)
+        modal run run_modal.py --experiment competition       # sparse scatter pattern
+        modal run run_modal.py --experiment latency           # pointer-chase at 4 WS sizes
+        modal run run_modal.py --experiment pchase_sweep      # fine-grained WS sweep 4KB-512MB
     """
-    print(f"Launching UTCMMA benchmark (experiment={experiment}) on B200...")
+    print(f"Launching LDG.256 hint benchmark (experiment={experiment}) on B200...")
     result = run_benchmark.remote(experiment)
 
     if result["success"]:
