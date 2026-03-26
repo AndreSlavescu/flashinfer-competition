@@ -19,6 +19,9 @@ Usage:
 
     # Specify language (default: triton):
     modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --lang cuda
+
+    # Entry point format: "<file>::<function>" (e.g. "kernel.py::kernel" or "kernel.cu::kernel"):
+    modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel.py::kernel"
 """
 
 import json
@@ -127,10 +130,13 @@ def run_benchmark_remote(
     for trace in traces:
         if not trace.evaluation:
             continue
+        axes = trace.workload.axes if trace.workload else {}
         entry = {
             "workload_uuid": trace.workload.uuid if trace.workload else "unknown",
-            "num_tokens": trace.workload.axes.get("num_tokens") if trace.workload else None,
-            "num_pages": trace.workload.axes.get("num_pages") if trace.workload else None,
+            "num_tokens": axes.get("num_tokens"),
+            "num_pages": axes.get("num_pages"),
+            "batch_size": axes.get("batch_size"),
+            "max_num_pages": axes.get("max_num_pages"),
             "status": trace.evaluation.status.value,
         }
         if trace.evaluation.performance:
@@ -187,7 +193,7 @@ def pack_solution_local(
     solution_dir: str,
     track: str,
     lang: str = "triton",
-    entry_point: str = "kernel",
+    entry_point: str = "kernel.py::kernel",
     name: str = "dev-kernel",
     author: str = "team",
 ) -> str:
@@ -221,8 +227,8 @@ def print_results(results: list[dict]):
         return
 
     # Group by status
-    passed = [r for r in results if r["status"] == "passed"]
-    failed = [r for r in results if r["status"] != "passed"]
+    passed = [r for r in results if r["status"] == "PASSED"]
+    failed = [r for r in results if r["status"] != "PASSED"]
 
     print(f"\n{'='*80}")
     print(f"  RESULTS: {len(passed)}/{len(results)} workloads passed")
@@ -232,16 +238,16 @@ def print_results(results: list[dict]):
     print(f"  {'tokens':>6}  {'pages':>6}  {'status':>8}  {'latency':>10}  {'ref_lat':>10}  {'speedup':>8}  {'abs_err':>10}  {'rel_err':>10}")
     print(f"  {'-'*6}  {'-'*6}  {'-'*8}  {'-'*10}  {'-'*10}  {'-'*8}  {'-'*10}  {'-'*10}")
 
-    for r in sorted(results, key=lambda x: (x.get("num_tokens") or 0, x.get("status", ""))):
-        tokens = r.get("num_tokens", "?")
-        pages = r.get("num_pages", "?")
+    for r in sorted(results, key=lambda x: (x.get("num_tokens") or x.get("batch_size") or 0, x.get("status", ""))):
+        tokens = r.get("num_tokens") or r.get("batch_size") or "?"
+        pages = r.get("num_pages") or r.get("max_num_pages") or "?"
         status = r.get("status", "?")
         lat = f"{r['latency_ms']:.3f}ms" if r.get("latency_ms") is not None else "-"
         ref_lat = f"{r['ref_latency_ms']:.3f}ms" if r.get("ref_latency_ms") is not None else "-"
         speedup = f"{r['speedup']:.2f}x" if r.get("speedup") is not None else "-"
         abs_err = f"{r['max_abs_err']:.2e}" if r.get("max_abs_err") is not None else "-"
         rel_err = f"{r['max_rel_err']:.2e}" if r.get("max_rel_err") is not None else "-"
-        marker = "PASS" if status == "passed" else "FAIL"
+        marker = "PASS" if status == "PASSED" else "FAIL"
         print(f"  {tokens:>6}  {pages:>6}  {marker:>8}  {lat:>10}  {ref_lat:>10}  {speedup:>8}  {abs_err:>10}  {rel_err:>10}")
 
     if results and results[0].get("speedup") is not None:
@@ -264,7 +270,7 @@ def main(
     track: str = "dsa_attention",
     solution_dir: str = "solution/dsa_attention",
     lang: str = "triton",
-    entry_point: str = "kernel",
+    entry_point: str = "kernel.py::kernel",
     name: str = "dev-kernel",
     author: str = "team",
     correctness_only: bool = False,
