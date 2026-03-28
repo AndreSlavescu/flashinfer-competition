@@ -1,0 +1,934 @@
+Success: True
+Phase: done
+GPU: NVIDIA B200, 580.95.05, 183359 MiB
+NVCC: nvcc: NVIDIA (R) Cuda compiler driver
+Copyright (c) 2005-2025 NVIDIA Corporation
+Built on Wed_Aug_20_01:58:59_PM_PDT_2025
+Cuda compilation tools, release 13.0, V13.0.88
+Build cuda_13.0.r13.0/compiler.36424714_0
+
+--- compile log ---
+ptxas info    : 11 bytes gmem
+ptxas info    : Compiling entry function '_Z29async_utchmma_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z29async_utchmma_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 10.753 ms
+ptxas info    : Compiling entry function '_Z29async_utchmma_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z29async_utchmma_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.508 ms
+ptxas info    : Compiling entry function '_Z29async_utchmma_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z29async_utchmma_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.157 ms
+ptxas info    : Compiling entry function '_Z29async_utchmma_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z29async_utchmma_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.068 ms
+ptxas info    : Compiling entry function '_Z29async_utchmma_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z29async_utchmma_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.074 ms
+ptxas info    : Compiling entry function '_Z20async_utchmma_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z20async_utchmma_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 25.897 ms
+ptxas info    : Compiling entry function '_Z20async_utchmma_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z20async_utchmma_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 17.646 ms
+ptxas info    : Compiling entry function '_Z20async_utchmma_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z20async_utchmma_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 13.840 ms
+ptxas info    : Compiling entry function '_Z20async_utchmma_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z20async_utchmma_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 11.513 ms
+ptxas info    : Compiling entry function '_Z20async_utchmma_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z20async_utchmma_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 10.530 ms
+ptxas info    : Compiling entry function '_Z17async_sttm_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_sttm_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 246.164 ms
+ptxas info    : Compiling entry function '_Z17async_sttm_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_sttm_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 97.787 ms
+ptxas info    : Compiling entry function '_Z17async_sttm_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_sttm_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 47.585 ms
+ptxas info    : Compiling entry function '_Z17async_sttm_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_sttm_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 26.240 ms
+ptxas info    : Compiling entry function '_Z17async_sttm_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_sttm_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 50 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 13.767 ms
+ptxas info    : Compiling entry function '_Z25async_stt_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_stt_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.031 ms
+ptxas info    : Compiling entry function '_Z25async_stt_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_stt_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.042 ms
+ptxas info    : Compiling entry function '_Z25async_stt_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_stt_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.055 ms
+ptxas info    : Compiling entry function '_Z25async_stt_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_stt_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.062 ms
+ptxas info    : Compiling entry function '_Z25async_stt_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_stt_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.002 ms
+ptxas info    : Compiling entry function '_Z16async_stt_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stt_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 19 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 30.260 ms
+ptxas info    : Compiling entry function '_Z16async_stt_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stt_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 16.958 ms
+ptxas info    : Compiling entry function '_Z16async_stt_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stt_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 12.143 ms
+ptxas info    : Compiling entry function '_Z16async_stt_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stt_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 10.066 ms
+ptxas info    : Compiling entry function '_Z16async_stt_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stt_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 8.490 ms
+ptxas info    : Compiling entry function '_Z17async_ldtm_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_ldtm_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 38 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 27.120 ms
+ptxas info    : Compiling entry function '_Z17async_ldtm_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_ldtm_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 38 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 16.859 ms
+ptxas info    : Compiling entry function '_Z17async_ldtm_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_ldtm_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 32 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 12.140 ms
+ptxas info    : Compiling entry function '_Z17async_ldtm_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_ldtm_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 24 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 9.755 ms
+ptxas info    : Compiling entry function '_Z17async_ldtm_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_ldtm_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 8.336 ms
+ptxas info    : Compiling entry function '_Z25async_ldt_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_ldt_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.060 ms
+ptxas info    : Compiling entry function '_Z25async_ldt_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_ldt_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.010 ms
+ptxas info    : Compiling entry function '_Z25async_ldt_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_ldt_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.048 ms
+ptxas info    : Compiling entry function '_Z25async_ldt_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_ldt_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.046 ms
+ptxas info    : Compiling entry function '_Z25async_ldt_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_ldt_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.057 ms
+ptxas info    : Compiling entry function '_Z16async_ldt_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldt_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 15 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 21.627 ms
+ptxas info    : Compiling entry function '_Z16async_ldt_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldt_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 15 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 14.486 ms
+ptxas info    : Compiling entry function '_Z16async_ldt_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldt_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 15 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 10.928 ms
+ptxas info    : Compiling entry function '_Z16async_ldt_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldt_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 15 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 9.278 ms
+ptxas info    : Compiling entry function '_Z16async_ldt_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldt_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 8.108 ms
+ptxas info    : Compiling entry function '_Z27async_utccp_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z27async_utccp_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.091 ms
+ptxas info    : Compiling entry function '_Z27async_utccp_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z27async_utccp_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.043 ms
+ptxas info    : Compiling entry function '_Z27async_utccp_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z27async_utccp_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.094 ms
+ptxas info    : Compiling entry function '_Z27async_utccp_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z27async_utccp_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.055 ms
+ptxas info    : Compiling entry function '_Z27async_utccp_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z27async_utccp_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.075 ms
+ptxas info    : Compiling entry function '_Z18async_utccp_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_utccp_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 48 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 77.303 ms
+ptxas info    : Compiling entry function '_Z18async_utccp_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_utccp_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 33 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 43.904 ms
+ptxas info    : Compiling entry function '_Z18async_utccp_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_utccp_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 25 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 29.811 ms
+ptxas info    : Compiling entry function '_Z18async_utccp_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_utccp_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 23.064 ms
+ptxas info    : Compiling entry function '_Z18async_utccp_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_utccp_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 17 registers, used 1 barriers, 32 bytes smem
+ptxas info    : Compile time = 9.910 ms
+ptxas info    : Compiling entry function '_Z25async_bar_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_bar_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers
+ptxas info    : Compile time = 1.627 ms
+ptxas info    : Compiling entry function '_Z25async_bar_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_bar_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers
+ptxas info    : Compile time = 1.570 ms
+ptxas info    : Compiling entry function '_Z25async_bar_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_bar_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers
+ptxas info    : Compile time = 1.616 ms
+ptxas info    : Compiling entry function '_Z25async_bar_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_bar_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers
+ptxas info    : Compile time = 1.575 ms
+ptxas info    : Compiling entry function '_Z25async_bar_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_bar_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers
+ptxas info    : Compile time = 1.593 ms
+ptxas info    : Compiling entry function '_Z16async_bar_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_bar_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 1 barriers
+ptxas info    : Compile time = 3.813 ms
+ptxas info    : Compiling entry function '_Z16async_bar_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_bar_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 1 barriers
+ptxas info    : Compile time = 3.070 ms
+ptxas info    : Compiling entry function '_Z16async_bar_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_bar_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 1 barriers
+ptxas info    : Compile time = 4.585 ms
+ptxas info    : Compiling entry function '_Z16async_bar_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_bar_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 1 barriers
+ptxas info    : Compile time = 3.723 ms
+ptxas info    : Compiling entry function '_Z16async_bar_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_bar_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 1 barriers
+ptxas info    : Compile time = 3.295 ms
+ptxas info    : Compiling entry function '_Z26async_mbar_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_mbar_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.324 ms
+ptxas info    : Compiling entry function '_Z26async_mbar_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_mbar_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.315 ms
+ptxas info    : Compiling entry function '_Z26async_mbar_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_mbar_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.320 ms
+ptxas info    : Compiling entry function '_Z26async_mbar_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_mbar_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.311 ms
+ptxas info    : Compiling entry function '_Z26async_mbar_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_mbar_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.284 ms
+ptxas info    : Compiling entry function '_Z17async_mbar_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_mbar_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 4.017 ms
+ptxas info    : Compiling entry function '_Z17async_mbar_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_mbar_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.224 ms
+ptxas info    : Compiling entry function '_Z17async_mbar_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_mbar_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 2.825 ms
+ptxas info    : Compiling entry function '_Z17async_mbar_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_mbar_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 4.311 ms
+ptxas info    : Compiling entry function '_Z17async_mbar_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17async_mbar_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.818 ms
+ptxas info    : Compiling entry function '_Z26async_cctl_prefetch_kernelILi16EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_cctl_prefetch_kernelILi16EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.816 ms
+ptxas info    : Compiling entry function '_Z26async_cctl_prefetch_kernelILi8EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_cctl_prefetch_kernelILi8EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.134 ms
+ptxas info    : Compiling entry function '_Z26async_cctl_prefetch_kernelILi4EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_cctl_prefetch_kernelILi4EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 2.759 ms
+ptxas info    : Compiling entry function '_Z26async_cctl_prefetch_kernelILi2EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_cctl_prefetch_kernelILi2EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.790 ms
+ptxas info    : Compiling entry function '_Z26async_cctl_prefetch_kernelILi1EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_cctl_prefetch_kernelILi1EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.053 ms
+ptxas info    : Compiling entry function '_Z28async_ldgsts_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z28async_ldgsts_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.174 ms
+ptxas info    : Compiling entry function '_Z28async_ldgsts_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z28async_ldgsts_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.157 ms
+ptxas info    : Compiling entry function '_Z28async_ldgsts_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z28async_ldgsts_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.154 ms
+ptxas info    : Compiling entry function '_Z28async_ldgsts_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z28async_ldgsts_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.113 ms
+ptxas info    : Compiling entry function '_Z28async_ldgsts_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z28async_ldgsts_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.145 ms
+ptxas info    : Compiling entry function '_Z19async_ldgsts_kernelILi16EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z19async_ldgsts_kernelILi16EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 5.367 ms
+ptxas info    : Compiling entry function '_Z19async_ldgsts_kernelILi8EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z19async_ldgsts_kernelILi8EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 4.201 ms
+ptxas info    : Compiling entry function '_Z19async_ldgsts_kernelILi4EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z19async_ldgsts_kernelILi4EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 3.592 ms
+ptxas info    : Compiling entry function '_Z19async_ldgsts_kernelILi2EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z19async_ldgsts_kernelILi2EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 3.207 ms
+ptxas info    : Compiling entry function '_Z19async_ldgsts_kernelILi1EEvP11BenchResultiPKc' for 'sm_100a'
+ptxas info    : Function properties for _Z19async_ldgsts_kernelILi1EEvP11BenchResultiPKc
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 4.530 ms
+ptxas info    : Compiling entry function '_Z16async_stl_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stl_kernelILi16EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 23 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 7.888 ms
+ptxas info    : Compiling entry function '_Z16async_stl_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stl_kernelILi8EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 28 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 4.781 ms
+ptxas info    : Compiling entry function '_Z16async_stl_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stl_kernelILi4EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 3.449 ms
+ptxas info    : Compiling entry function '_Z16async_stl_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stl_kernelILi2EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 2.808 ms
+ptxas info    : Compiling entry function '_Z16async_stl_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stl_kernelILi1EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 2.431 ms
+ptxas info    : Compiling entry function '_Z16async_ldl_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldl_kernelILi16EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 16.682 ms
+ptxas info    : Compiling entry function '_Z16async_ldl_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldl_kernelILi8EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 15.056 ms
+ptxas info    : Compiling entry function '_Z16async_ldl_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldl_kernelILi4EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 14.117 ms
+ptxas info    : Compiling entry function '_Z16async_ldl_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldl_kernelILi2EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 13.906 ms
+ptxas info    : Compiling entry function '_Z16async_ldl_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldl_kernelILi1EEvP11BenchResulti
+    1024 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 26 registers, used 0 barriers, 1024 bytes cumulative stack size
+ptxas info    : Compile time = 13.085 ms
+ptxas info    : Compiling entry function '_Z16async_stg_kernelILi16EEvP11BenchResultiPm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stg_kernelILi16EEvP11BenchResultiPm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 0 barriers
+ptxas info    : Compile time = 6.123 ms
+ptxas info    : Compiling entry function '_Z16async_stg_kernelILi8EEvP11BenchResultiPm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stg_kernelILi8EEvP11BenchResultiPm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 0 barriers
+ptxas info    : Compile time = 4.222 ms
+ptxas info    : Compiling entry function '_Z16async_stg_kernelILi4EEvP11BenchResultiPm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stg_kernelILi4EEvP11BenchResultiPm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 0 barriers
+ptxas info    : Compile time = 3.406 ms
+ptxas info    : Compiling entry function '_Z16async_stg_kernelILi2EEvP11BenchResultiPm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stg_kernelILi2EEvP11BenchResultiPm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 0 barriers
+ptxas info    : Compile time = 5.404 ms
+ptxas info    : Compiling entry function '_Z16async_stg_kernelILi1EEvP11BenchResultiPm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_stg_kernelILi1EEvP11BenchResultiPm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 3.580 ms
+ptxas info    : Compiling entry function '_Z16async_ldg_kernelILi16EEvP11BenchResultiPKm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldg_kernelILi16EEvP11BenchResultiPKm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 7.189 ms
+ptxas info    : Compiling entry function '_Z16async_ldg_kernelILi8EEvP11BenchResultiPKm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldg_kernelILi8EEvP11BenchResultiPKm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 4.977 ms
+ptxas info    : Compiling entry function '_Z16async_ldg_kernelILi4EEvP11BenchResultiPKm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldg_kernelILi4EEvP11BenchResultiPKm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 3.997 ms
+ptxas info    : Compiling entry function '_Z16async_ldg_kernelILi2EEvP11BenchResultiPKm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldg_kernelILi2EEvP11BenchResultiPKm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 3.515 ms
+ptxas info    : Compiling entry function '_Z16async_ldg_kernelILi1EEvP11BenchResultiPKm' for 'sm_100a'
+ptxas info    : Function properties for _Z16async_ldg_kernelILi1EEvP11BenchResultiPKm
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 2.917 ms
+ptxas info    : Compiling entry function '_Z26async_bulk_prefetch_kernelILi16EEvP11BenchResultiPKci' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_bulk_prefetch_kernelILi16EEvP11BenchResultiPKci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 6.029 ms
+ptxas info    : Compiling entry function '_Z26async_bulk_prefetch_kernelILi8EEvP11BenchResultiPKci' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_bulk_prefetch_kernelILi8EEvP11BenchResultiPKci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.973 ms
+ptxas info    : Compiling entry function '_Z26async_bulk_prefetch_kernelILi4EEvP11BenchResultiPKci' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_bulk_prefetch_kernelILi4EEvP11BenchResultiPKci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.150 ms
+ptxas info    : Compiling entry function '_Z26async_bulk_prefetch_kernelILi2EEvP11BenchResultiPKci' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_bulk_prefetch_kernelILi2EEvP11BenchResultiPKci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 2.650 ms
+ptxas info    : Compiling entry function '_Z26async_bulk_prefetch_kernelILi1EEvP11BenchResultiPKci' for 'sm_100a'
+ptxas info    : Function properties for _Z26async_bulk_prefetch_kernelILi1EEvP11BenchResultiPKci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.536 ms
+ptxas info    : Compiling entry function '_Z24async_bulk_reduce_kernelILi16EEvP11BenchResultiPfi' for 'sm_100a'
+ptxas info    : Function properties for _Z24async_bulk_reduce_kernelILi16EEvP11BenchResultiPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 11.058 ms
+ptxas info    : Compiling entry function '_Z24async_bulk_reduce_kernelILi8EEvP11BenchResultiPfi' for 'sm_100a'
+ptxas info    : Function properties for _Z24async_bulk_reduce_kernelILi8EEvP11BenchResultiPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 7.016 ms
+ptxas info    : Compiling entry function '_Z24async_bulk_reduce_kernelILi4EEvP11BenchResultiPfi' for 'sm_100a'
+ptxas info    : Function properties for _Z24async_bulk_reduce_kernelILi4EEvP11BenchResultiPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 4.890 ms
+ptxas info    : Compiling entry function '_Z24async_bulk_reduce_kernelILi2EEvP11BenchResultiPfi' for 'sm_100a'
+ptxas info    : Function properties for _Z24async_bulk_reduce_kernelILi2EEvP11BenchResultiPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.654 ms
+ptxas info    : Compiling entry function '_Z24async_bulk_reduce_kernelILi1EEvP11BenchResultiPfi' for 'sm_100a'
+ptxas info    : Function properties for _Z24async_bulk_reduce_kernelILi1EEvP11BenchResultiPfi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.071 ms
+ptxas info    : Compiling entry function '_Z22async_bulk_copy_kernelILi16EEvP11BenchResultiPci' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_bulk_copy_kernelILi16EEvP11BenchResultiPci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 6.097 ms
+ptxas info    : Compiling entry function '_Z22async_bulk_copy_kernelILi8EEvP11BenchResultiPci' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_bulk_copy_kernelILi8EEvP11BenchResultiPci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 4.403 ms
+ptxas info    : Compiling entry function '_Z22async_bulk_copy_kernelILi4EEvP11BenchResultiPci' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_bulk_copy_kernelILi4EEvP11BenchResultiPci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.551 ms
+ptxas info    : Compiling entry function '_Z22async_bulk_copy_kernelILi2EEvP11BenchResultiPci' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_bulk_copy_kernelILi2EEvP11BenchResultiPci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 2.998 ms
+ptxas info    : Compiling entry function '_Z22async_bulk_copy_kernelILi1EEvP11BenchResultiPci' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_bulk_copy_kernelILi1EEvP11BenchResultiPci
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 2.764 ms
+ptxas info    : Compiling entry function '_Z23async_tma_reduce_kernelILi16EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z23async_tma_reduce_kernelILi16EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 13.201 ms
+ptxas info    : Compiling entry function '_Z23async_tma_reduce_kernelILi8EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z23async_tma_reduce_kernelILi8EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 9.169 ms
+ptxas info    : Compiling entry function '_Z23async_tma_reduce_kernelILi4EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z23async_tma_reduce_kernelILi4EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 7.111 ms
+ptxas info    : Compiling entry function '_Z23async_tma_reduce_kernelILi2EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z23async_tma_reduce_kernelILi2EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 12.079 ms
+ptxas info    : Compiling entry function '_Z23async_tma_reduce_kernelILi1EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z23async_tma_reduce_kernelILi1EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 8.850 ms
+ptxas info    : Compiling entry function '_Z31async_tma_store_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z31async_tma_store_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.140 ms
+ptxas info    : Compiling entry function '_Z31async_tma_store_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z31async_tma_store_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.085 ms
+ptxas info    : Compiling entry function '_Z31async_tma_store_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z31async_tma_store_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.119 ms
+ptxas info    : Compiling entry function '_Z31async_tma_store_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z31async_tma_store_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.127 ms
+ptxas info    : Compiling entry function '_Z31async_tma_store_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z31async_tma_store_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 3.129 ms
+ptxas info    : Compiling entry function '_Z22async_tma_store_kernelILi16EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_tma_store_kernelILi16EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 9.081 ms
+ptxas info    : Compiling entry function '_Z22async_tma_store_kernelILi8EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_tma_store_kernelILi8EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 7.002 ms
+ptxas info    : Compiling entry function '_Z22async_tma_store_kernelILi4EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_tma_store_kernelILi4EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 6.010 ms
+ptxas info    : Compiling entry function '_Z22async_tma_store_kernelILi2EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_tma_store_kernelILi2EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 8.755 ms
+ptxas info    : Compiling entry function '_Z22async_tma_store_kernelILi1EEvP11BenchResulti14CUtensorMap_sti' for 'sm_100a'
+ptxas info    : Function properties for _Z22async_tma_store_kernelILi1EEvP11BenchResulti14CUtensorMap_sti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 14 registers, used 0 barriers
+ptxas info    : Compile time = 7.274 ms
+ptxas info    : Compiling entry function '_Z18async_dummy_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_dummy_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.315 ms
+ptxas info    : Compiling entry function '_Z18async_dummy_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_dummy_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.277 ms
+ptxas info    : Compiling entry function '_Z18async_dummy_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_dummy_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.286 ms
+ptxas info    : Compiling entry function '_Z18async_dummy_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_dummy_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.297 ms
+ptxas info    : Compiling entry function '_Z18async_dummy_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z18async_dummy_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.281 ms
+ptxas info    : Compiling entry function '_Z25async_tma_prefetch_kernelILi16EEvP11BenchResulti14CUtensorMap_stPKil' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_tma_prefetch_kernelILi16EEvP11BenchResulti14CUtensorMap_stPKil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 11.029 ms
+ptxas info    : Compiling entry function '_Z25async_tma_prefetch_kernelILi8EEvP11BenchResulti14CUtensorMap_stPKil' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_tma_prefetch_kernelILi8EEvP11BenchResulti14CUtensorMap_stPKil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 12.697 ms
+ptxas info    : Compiling entry function '_Z25async_tma_prefetch_kernelILi4EEvP11BenchResulti14CUtensorMap_stPKil' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_tma_prefetch_kernelILi4EEvP11BenchResulti14CUtensorMap_stPKil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 20 registers, used 0 barriers
+ptxas info    : Compile time = 13.687 ms
+ptxas info    : Compiling entry function '_Z25async_tma_prefetch_kernelILi2EEvP11BenchResulti14CUtensorMap_stPKil' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_tma_prefetch_kernelILi2EEvP11BenchResulti14CUtensorMap_stPKil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 8.562 ms
+ptxas info    : Compiling entry function '_Z25async_tma_prefetch_kernelILi1EEvP11BenchResulti14CUtensorMap_stPKil' for 'sm_100a'
+ptxas info    : Function properties for _Z25async_tma_prefetch_kernelILi1EEvP11BenchResulti14CUtensorMap_stPKil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 8.151 ms
+ptxas info    : Compiling entry function '_Z30async_tma_load_baseline_kernelILi16EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z30async_tma_load_baseline_kernelILi16EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.686 ms
+ptxas info    : Compiling entry function '_Z30async_tma_load_baseline_kernelILi8EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z30async_tma_load_baseline_kernelILi8EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.665 ms
+ptxas info    : Compiling entry function '_Z30async_tma_load_baseline_kernelILi4EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z30async_tma_load_baseline_kernelILi4EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.678 ms
+ptxas info    : Compiling entry function '_Z30async_tma_load_baseline_kernelILi2EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z30async_tma_load_baseline_kernelILi2EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.653 ms
+ptxas info    : Compiling entry function '_Z30async_tma_load_baseline_kernelILi1EEvP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z30async_tma_load_baseline_kernelILi1EEvP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.626 ms
+ptxas info    : Compiling entry function '_Z21async_tma_load_kernelILi16EEvP11BenchResulti14CUtensorMap_stPKiil' for 'sm_100a'
+ptxas info    : Function properties for _Z21async_tma_load_kernelILi16EEvP11BenchResulti14CUtensorMap_stPKiil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 23 registers, used 0 barriers
+ptxas info    : Compile time = 7.997 ms
+ptxas info    : Compiling entry function '_Z21async_tma_load_kernelILi8EEvP11BenchResulti14CUtensorMap_stPKiil' for 'sm_100a'
+ptxas info    : Function properties for _Z21async_tma_load_kernelILi8EEvP11BenchResulti14CUtensorMap_stPKiil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 22 registers, used 0 barriers
+ptxas info    : Compile time = 18.311 ms
+ptxas info    : Compiling entry function '_Z21async_tma_load_kernelILi4EEvP11BenchResulti14CUtensorMap_stPKiil' for 'sm_100a'
+ptxas info    : Function properties for _Z21async_tma_load_kernelILi4EEvP11BenchResulti14CUtensorMap_stPKiil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 19.689 ms
+ptxas info    : Compiling entry function '_Z21async_tma_load_kernelILi2EEvP11BenchResulti14CUtensorMap_stPKiil' for 'sm_100a'
+ptxas info    : Function properties for _Z21async_tma_load_kernelILi2EEvP11BenchResulti14CUtensorMap_stPKiil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 18 registers, used 0 barriers
+ptxas info    : Compile time = 13.261 ms
+ptxas info    : Compiling entry function '_Z21async_tma_load_kernelILi1EEvP11BenchResulti14CUtensorMap_stPKiil' for 'sm_100a'
+ptxas info    : Function properties for _Z21async_tma_load_kernelILi1EEvP11BenchResulti14CUtensorMap_stPKiil
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 20 registers, used 0 barriers
+ptxas info    : Compile time = 15.994 ms
+ptxas info    : Compiling entry function '_Z21sync_sts_proxy_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z21sync_sts_proxy_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 4.405 ms
+ptxas info    : Compiling entry function '_Z15sync_lds_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z15sync_lds_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 1 barriers, 16 bytes smem
+ptxas info    : Compile time = 3.930 ms
+ptxas info    : Compiling entry function '_Z15sync_s2r_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z15sync_s2r_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.216 ms
+ptxas info    : Compiling entry function '_Z16sync_shfl_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_shfl_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 24 registers, used 0 barriers
+ptxas info    : Compile time = 3.722 ms
+ptxas info    : Compiling entry function '_Z15sync_mov_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z15sync_mov_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.518 ms
+ptxas info    : Compiling entry function '_Z16sync_lop3_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_lop3_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 4.320 ms
+ptxas info    : Compiling entry function '_Z17sync_iadd3_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17sync_iadd3_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 2.822 ms
+ptxas info    : Compiling entry function '_Z16sync_imad_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_imad_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.337 ms
+ptxas info    : Compiling entry function '_Z16sync_mufu_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_mufu_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.089 ms
+ptxas info    : Compiling entry function '_Z17sync_hfma2_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z17sync_hfma2_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.819 ms
+ptxas info    : Compiling entry function '_Z16sync_fmul_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_fmul_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.120 ms
+ptxas info    : Compiling entry function '_Z16sync_fadd_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_fadd_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.107 ms
+ptxas info    : Compiling entry function '_Z16sync_ffma_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z16sync_ffma_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 3.320 ms
+ptxas info    : Compiling entry function '_Z25sync_warp_baseline_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z25sync_warp_baseline_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.661 ms
+ptxas info    : Compiling entry function '_Z27sync_scalar_baseline_kernelP11BenchResulti' for 'sm_100a'
+ptxas info    : Function properties for _Z27sync_scalar_baseline_kernelP11BenchResulti
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 16 registers, used 0 barriers
+ptxas info    : Compile time = 1.280 ms
+ptxas info    : Compiling entry function '_Z12power_kernelPdi' for 'sm_100a'
+ptxas info    : Function properties for _Z12power_kernelPdi
+    0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+ptxas info    : Used 10 registers, used 0 barriers
+ptxas info    : Compile time = 1.534 ms
+/root/bench/tensor_map_utils.cuh: In function ‘CUresult (* get_cuTensorMapEncodeTiled())(CUtensorMap*, CUtensorMapDataType, cuuint32_t, void*, const cuuint64_t*, const cuuint64_t*, const cuuint32_t*, const cuuint32_t*, CUtensorMapInterleave, CUtensorMapSwizzle, CUtensorMapL2promotion, CUtensorMapFloatOOBfill)’:
+/root/bench/tensor_map_utils.cuh:34:40: warning: ‘cudaError_t cudaGetDriverEntryPoint(const char*, void**, long long unsigned int, cudaDriverEntryPointQueryResult*)’ is deprecated [-Wdeprecated-declarations]
+   34 |     CUDA_CHECK(cudaGetDriverEntryPoint(
+      |                 ~~~~~~~~~~~~~~~~~~~~~~~^                                                              
+/usr/local/cuda/bin/../targets/x86_64-linux/include/cuda_runtime_api.h:13101:46: note: declared here
+13101 | extern __CUDA_DEPRECATED __host__ cudaError_t CUDARTAPI cudaGetDriverEntryPoint(const char *symbol, void **funcPtr, unsigned long long flags, enum cudaDriverEntryPointQueryResult *driverStatus = NULL);
+      |                                              ^~~~~~~~~~~~~~~~~~~~~~~
+
+
+--- runtime log ---
+[measure] async_ldl (async)
+  run 1/5: 3154 cycles 1600.0 ns
+  run 2/5: 3154 cycles 1632.0 ns
+  run 3/5: 3154 cycles 1632.0 ns
+  run 4/5: 3154 cycles 1600.0 ns
+  run 5/5: 3154 cycles 1600.0 ns
+  run 1/5: 3 cycles 0.0 ns
+  run 2/5: 3 cycles 0.0 ns
+  run 3/5: 3 cycles 0.0 ns
+  run 4/5: 3 cycles 0.0 ns
+  run 5/5: 3 cycles 32.0 ns
+  run 1/5: 430 cycles 224.0 ns
+  run 2/5: 411 cycles 192.0 ns
+  run 3/5: 791 cycles 416.0 ns
+  run 4/5: 805 cycles 416.0 ns
+  run 5/5: 766 cycles 384.0 ns
+  run 1/5: 3 cycles 0.0 ns
+  run 2/5: 3 cycles 0.0 ns
+  run 3/5: 3 cycles 0.0 ns
+  run 4/5: 3 cycles 0.0 ns
+  run 5/5: 3 cycles 32.0 ns
+  run 1/5: 787 cycles 416.0 ns
+  run 2/5: 804 cycles 384.0 ns
+  run 3/5: 783 cycles 416.0 ns
+  run 4/5: 807 cycles 416.0 ns
+  run 5/5: 426 cycles 224.0 ns
+  run 1/5: 3 cycles 32.0 ns
+  run 2/5: 3 cycles 32.0 ns
+  run 3/5: 3 cycles 0.0 ns
+  run 4/5: 3 cycles 0.0 ns
+  run 5/5: 3 cycles 0.0 ns
+  run 1/5: 811 cycles 416.0 ns
+  run 2/5: 839 cycles 416.0 ns
+  run 3/5: 470 cycles 256.0 ns
+  run 4/5: 473 cycles 224.0 ns
+  run 5/5: 461 cycles 256.0 ns
+  run 1/5: 3 cycles 0.0 ns
+  run 2/5: 3 cycles 32.0 ns
+  run 3/5: 3 cycles 0.0 ns
+  run 4/5: 3 cycles 0.0 ns
+  run 5/5: 3 cycles 0.0 ns
+  run 1/5: 469 cycles 224.0 ns
+  run 2/5: 477 cycles 256.0 ns
+  run 3/5: 461 cycles 256.0 ns
+  run 4/5: 442 cycles 224.0 ns
+  run 5/5: 813 cycles 416.0 ns
+  run 1/5: 3 cycles 0.0 ns
+  run 2/5: 3 cycles 0.0 ns
+  run 3/5: 3 cycles 0.0 ns
+  run 4/5: 3 cycles 0.0 ns
+  run 5/5: 3 cycles 0.0 ns
+
+
+--- error ---
+
+
+--- sass error ---
+

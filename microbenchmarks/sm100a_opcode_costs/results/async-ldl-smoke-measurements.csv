@@ -1,0 +1,11 @@
+measurement_id,suite,role,batch,outer_iters,ops_per_iter,runs,total_cycles,total_ns,cycles_per_op,ns_per_op,spread_pct
+async_ldl,async,target,1,2048,1,5,3154.0,1610.7,1.5400,0.7865,0.00
+async_ldl,async,baseline,1,2048,1,5,3.0,0.0,0.0015,0.0000,0.00
+async_ldl,async,target,2,2048,2,5,662.3,341.3,0.1617,0.0833,59.49
+async_ldl,async,baseline,2,2048,2,5,3.0,0.0,0.0007,0.0000,0.00
+async_ldl,async,target,4,2048,4,5,791.3,405.3,0.0966,0.0495,48.15
+async_ldl,async,baseline,4,2048,4,5,3.0,10.7,0.0004,0.0013,0.00
+async_ldl,async,target,8,2048,8,5,584.7,309.3,0.0357,0.0189,64.65
+async_ldl,async,baseline,8,2048,8,5,3.0,0.0,0.0002,0.0000,0.00
+async_ldl,async,target,16,2048,16,5,469.0,245.3,0.0143,0.0075,79.10
+async_ldl,async,baseline,16,2048,16,5,3.0,0.0,0.0001,0.0000,0.00

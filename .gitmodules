@@ -25,3 +25,6 @@
 [submodule "references/CudaForge"]
 	path = references/CudaForge
 	url = https://github.com/OptimAI-Lab/CudaForge.git
+[submodule "flashinfer-bench"]
+	path = flashinfer-bench
+	url = https://github.com/flashinfer-ai/flashinfer-bench.git
