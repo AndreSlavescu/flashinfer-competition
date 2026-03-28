@@ -33,6 +33,32 @@ Competition target: B200 sm100a, CUDA 12.9+. Two kernels to optimize:
 - O-rescale pattern: tmem_ld_32dp32bNx<64> → fence_view_async_tmem_load → tcgen05_before_thread_sync → __syncthreads → tcgen05_after_thread_sync → FMA → tmem_st_32dp32bNx<64> × 4 iterations (for D_V=512 in B_EPI=64 chunks)
 - SM90_BULK_COPY_S2G used for split-KV output accumulation (not TMA reduce; separate combine kernel)
 
+## Indexer kernel PTX analysis (2026-03-24)
+
+### `kind::mxf8f6f4.block_scale` — CRITICAL constraint discovered
+- SS-only (no TS variant). Requires M=128. Source: `csrc/cutlass/include/cute/arch/mma_sm100_umma.hpp:990-1025`.
+- Scale factors stored in TMEM (`tsfa_addr`, `tsfb_addr`).
+- For 64-head indexer (M=64 TS in current design), switching to block-scaled GEMM requires: (a) switch to SS mode, (b) tile M to 128 (two 64-head half-tiles), (c) stage Q in SMEM instead of TMEM. Not a trivial addition.
+- Competition format: per-token scale (4B per 128-dim FP8 token, 1 scale per K_DEPTH=4 tiles). Exactly matches `mxf8f6f4.block_scale` scale_vec_size=32.
+
+### Post-GEMM epilogue PTX (steps 3-5)
+- ReLU: Use `max.f32x2 dst, src, {0.0f, 0.0f}` — vectorized form, 2 elements/instr, same latency as scalar.
+- No hardware warp-level f32 reduction: `redux.sync.add` is integer only. Must use `shfl.sync.down.b32 + add.f32` tree (5 steps for 32 lanes).
+- Head reduction path: TMEM read (warp-collective) → ReLU (max.f32x2) → scale by w (mul.f32x2) → intra-warp shfl_down → cross-warp SMEM exchange. Entire chain unmeasured.
+- `ex2.approx.ftz.f32` for softmax: relevant to attention kernel, not indexer.
+
+### Indexer seq_len reality
+- Competition workloads: max_num_pages 1..91+. Constraint: topk=2048 ≤ max_num_pages×64.
+- For max_num_pages≤31: seq_len<2048, actual_topk=seq_len (return ALL tokens — trivial path).
+- For max_num_pages≥32: seq_len≥2048, actual topk selection needed. Most common hard case: 2048-5824.
+- topk_select benchmark (seq_len=2048,4096,5824) covers the correct range.
+
+### Next priority benchmarks for indexer
+1. TMEM readout + epilogue chain (TMEM ld + ReLU + mul + warp reduce) — unmeasured
+2. `kind::mxf8f6f4.block_scale` SS M=128 latency vs f8f6f4 TS M=64 + software dequant
+3. Fix radix_select (per-thread histograms), add cub::BlockRadixSort
+4. `ex2.approx.ftz.f32` vs polynomial softmax (for attention kernel)
+
 ## Benchmark status (2026-03-17)
 
 ### Completed benchmarks

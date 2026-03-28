@@ -25,16 +25,21 @@ The competition kernel is written in **CuTeDSL** — NVIDIA's Python-based embed
 - **Named barriers** — explicit barrier IDs with thread counts for warp specialization
 - **Warp specialization** — different warp IDs handle TMA load, MMA, softmax, epilogue
 
-**Critical reference: `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/fmha.py`**
-This is a Blackwell warp-specialized persistent FMHA kernel in CuTeDSL — nearly identical architecture to what we need. Study it thoroughly:
-- Warp roles: load (TMA, warp 13), MMA (warp 12), softmax (warps 0-7), correction (8-11), epilogue (14)
-- Pipeline stages: q_stage=2, kv_stage=3-4, mma_softmax_stage=1
-- TMEM offsets: s0=0, s1=128, o0=256, o1=384
-- Two-stage softmax parallel with MMA to hide latency
-- `setmaxregister_decrease/increase` per warp role
+**Critical reference #1: `references/flash-attention/flash_attn/cute/flash_fwd_sm100.py`** (FA4 forward, 2875 lines)
+Production CuTeDSL attention on sm100. 16-warp design: softmax0 (0-3), softmax1 (4-7), correction (8-11), MMA (12), epilogue (13), TMA load (14), empty (15). Key patterns:
+- `PipelineTmaUmma` for Q and KV loads, `PipelineUmmaAsync` for MMA→softmax S/P/O handoff
+- TMEM layout: S at [0, n_block], O at [2*n_block, 2*n_block+hdim_v], vec buffers reuse S offsets
+- Split-P arrive: softmax writes 75% of P columns, signals MMA early, then writes remaining 25% — overlaps P computation with PV GEMM
+- `enable_ex2_emu`: polynomial exp2 emulation for hdim≤128 (avoids SFU bottleneck)
+- Paged KV support with non-TMA fallback (`paged_kv_non_tma`)
+- Per-warp register budgets: softmax=192, correction=80, other=48
+- Helpers: `blackwell_helpers.py` (UMMA GEMM, PTX paths), `mma_sm100_desc.py` (descriptor enums)
+
+**Critical reference #2: `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/fmha.py`** (CUTLASS example)
+Simpler Blackwell FMHA — same warp role pattern but fewer features. Good for understanding bare CuTeDSL pipeline setup.
 
 **Also reference: `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/dense_gemm_persistent.py`**
-Shows persistent tile scheduling, TMA multicast, TMEM accumulator staging, pipeline choreography.
+Persistent tile scheduling, TMA multicast, TMEM accumulator staging, pipeline choreography.
 
 **Package**: `pip install nvidia-cutlass-dsl`
 **API modules**: `cute.arch`, `cute.Runtime`, `cute_nvgpu.warp`, `cute_nvgpu.warpgroup`, `cute_nvgpu.tcgen05`, `pipeline`
@@ -92,7 +97,7 @@ This extracts the complete sm_100a SASS ISA documentation (instruction descripti
 
 When analyzing a specific kernel variant, disassemble its compiled output:
 ```bash
-modal run tools/sass/dump_sass_modal.py --cutedsl kernels/dsa_decode_v1/kernel.py
+modal run tools/sass/dump_sass_modal.py --cutedsl solution/dsa_attention/kernel.py
 ```
 
 This JIT-compiles the CuTeDSL kernel, extracts the cubin, and produces a classified pipeline analysis showing opcode frequency by stage (tensor_mma, tmem, barrier, memory, compute, control) plus a competition-critical opcode check (OK/MISS for UTCHMMA, UTMALDG, UTMACCTL, etc.).
@@ -102,31 +107,35 @@ This JIT-compiles the CuTeDSL kernel, extracts the cubin, and produces a classif
 Before writing any kernel code, read and internalize:
 
 **CuTeDSL references (primary — this is the implementation language):**
-1. **FA4 sm100 forward** — `references/flash-attention/flash_attn/cute/flash_fwd_sm100.py` — **nearest architectural match**: CuTeDSL attention on B200, warp specialization, TMA gather, TMEM, softmax pipeline
-2. **FA4 sm100 backward** — `references/flash-attention/flash_attn/cute/flash_bwd_sm100.py`
-3. **FA4 Blackwell helpers** — `references/flash-attention/flash_attn/cute/blackwell_helpers.py` + `mma_sm100_desc.py` — sm100-specific layout helpers
-4. **CuTeDSL GEMM (quack)** — `references/CuTeDSL-kernels/quack/gemm_sm100.py` — production sm100 GEMM with epilogue pipeline and autotuner
-5. **CUTLASS Blackwell FMHA** — `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/fmha.py` (fetch from GitHub if local unavailable)
-6. **CuTeDSL docs** — https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/overview.html
-7. **CuTeDSL API** — `cute.arch`, `cute_nvgpu.tcgen05`, pipeline utilities
+1. **FA4 sm100 forward** — `references/flash-attention/flash_attn/cute/flash_fwd_sm100.py` — **nearest architectural match** (see Critical reference #1 above)
+2. **FA4 Blackwell helpers** — `references/flash-attention/flash_attn/cute/blackwell_helpers.py` + `mma_sm100_desc.py` — sm100-specific layout helpers
+3. **CuTeDSL GEMM (quack)** — `references/CuTeDSL-kernels/quack/gemm_sm100.py` — production sm100 GEMM with epilogue pipeline and autotuner
+4. **CUTLASS Blackwell FMHA** — `NVIDIA/cutlass/examples/python/CuTeDSL/blackwell/fmha.py` (fetch from GitHub if local unavailable)
+5. **CuTeDSL docs** — https://docs.nvidia.com/cutlass/latest/media/docs/pythonDSL/overview.html
+6. **CuTeDSL API** — `cute.arch`, `cute_nvgpu.tcgen05`, pipeline utilities
+
+**Competition ground truth (MUST READ — these are the naive passing implementations):**
+7. **Attention reference** — `references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py` — naive PyTorch attention: QK = (q_nope @ Kc.T) + (q_pe @ Kp.T), softmax, attn @ Kc, log2-base LSE
+8. **Indexer reference** — `references/dsa_topk_indexer_fp8_h64_d128_topk2048_ps64.py` — naive PyTorch indexer: FP8 dequant, ReLU(q @ K.T) * weights, sum across heads, topk, page→global index conversion
+9. **Competition dataset definitions** — `competition-dataset/definitions/dsa_paged/` — JSON specs with exact axes, constraints, input/output shapes, dtypes, and embedded reference code for both attention and indexer
+10. **Competition workloads** — `competition-dataset/workloads/dsa_paged/` — real safetensor inputs with actual sparse_indices distributions
 
 **Algorithm and architecture references (read for understanding, don't copy the C++):**
-8. **CLAUDE.md** — competition specs, hardware specs, PTX catalog
-9. **Reference kernel** — `references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py`
-10. **learn-cuda attention** — `references/learn-cuda/07_attention/` — progressive attention implementations v1–v5
-11. **learn-cuda sm100 matmul** — `references/learn-cuda/02e_matmul_sm100/` — ground-truth tcgen05/TMEM/warp-spec patterns (v0–v7)
-12. **FlashMLA decode kernel** — `csrc/sm100/decode/head64/kernel.cuh` (architectural template — understand the algorithm flow, warp specialization, barrier choreography, then translate to CuTeDSL)
-13. **FlashMLA decode config** — `csrc/sm100/decode/head64/config.h` (tile sizes, TMEM assignments, barriers)
-14. **FlashMLA decode kernel launch** — `csrc/sm100/decode/head64/kernel.h` (TMA tensor map construction)
-15. **FlashMLA sm100 sparse prefill (head64)** — `csrc/sm100/prefill/sparse/fwd/head64/phase1.cuh` + `config.h` — sparse prefill kernel for head_dim=64; shows sparse index handling and phase1 tile scheduling
-16. **FlashMLA sm100 sparse prefill (head128)** — `csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh` + `config.h` — sparse prefill for head_dim=128; also see `fwd_for_small_topk/head128/phase1.cuh` for small-topk variant
-17. **FlashMLA sm100 sparse common subroutines** — `csrc/sm100/prefill/sparse/common_subroutine.h` — softmax building blocks: `load_indices_and_generate_mask()`, `retrieve_mask_and_reduce_p()`, `rescale_O()`, `get_max()`, `get_s_from_p()`
-18. **PTX intrinsics** — `csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh`
-19. **UTCMMA wrappers** — `csrc/kerutils/include/kerutils/device/sm100/gemm.cuh`
-20. **SM partitioning** — `csrc/smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu`
-21. **Combine kernel** — `csrc/smxx/decode/combine/combine.cu`
-22. **Agent memories** from ptx-benchmark-explorer and b200-benchmark-reviewer
-23. **Benchmark results** in `microbenchmarks/*/results/`
+11. **CLAUDE.md** — competition specs, hardware specs, PTX catalog
+12. **learn-cuda attention** — `references/learn-cuda/07_attention/` — progressive attention implementations v1–v5
+13. **learn-cuda sm100 matmul** — `references/learn-cuda/02e_matmul_sm100/` — ground-truth tcgen05/TMEM/warp-spec patterns (v0–v7)
+14. **FlashMLA decode kernel** — `csrc/sm100/decode/head64/kernel.cuh` (architectural template — understand the algorithm flow, warp specialization, barrier choreography, then translate to CuTeDSL)
+15. **FlashMLA decode config** — `csrc/sm100/decode/head64/config.h` (tile sizes, TMEM assignments, barriers)
+16. **FlashMLA decode kernel launch** — `csrc/sm100/decode/head64/kernel.h` (TMA tensor map construction)
+17. **FlashMLA sm100 sparse prefill (head64)** — `csrc/sm100/prefill/sparse/fwd/head64/phase1.cuh` + `config.h`
+18. **FlashMLA sm100 sparse prefill (head128)** — `csrc/sm100/prefill/sparse/fwd/head128/phase1.cuh` + `config.h`
+19. **FlashMLA sm100 sparse common subroutines** — `csrc/sm100/prefill/sparse/common_subroutine.h` — softmax building blocks
+20. **PTX intrinsics** — `csrc/kerutils/include/kerutils/device/sm100/intrinsics.cuh`
+21. **UTCMMA wrappers** — `csrc/kerutils/include/kerutils/device/sm100/gemm.cuh`
+22. **SM partitioning** — `csrc/smxx/decode/get_decoding_sched_meta/get_decoding_sched_meta.cu`
+23. **Combine kernel** — `csrc/smxx/decode/combine/combine.cu`
+24. **Agent memories** from ptx-benchmark-explorer and b200-benchmark-reviewer
+25. **Benchmark results** in `microbenchmarks/*/results/`
 
 ### Phase 2: Design
 
@@ -140,16 +149,14 @@ Before implementing, write a design document at `notes/kernel_v{N}_design.md` co
 - **Barrier choreography**: which mbarriers gate which producer→consumer edges
 - **Split-KV strategy**: num_sm_parts, how to partition topk=2048 across CTAs
 - **Output reduction**: combine kernel or TMA bulk reduce for merging partial results
-- **Pipeline depth**: N=2 (confirmed optimal by benchmarks)
-- **Prefetch strategy**: DIST=2 (confirmed optimal), cache hints (ckv: evict_last, kpe: evict_first)
 
 ### Phase 3: Implement
 
-Write CuTeDSL kernel files to `kernels/dsa_decode_v{N}/`:
-- `kernel.py` — the CuTeDSL kernel implementation (the main file)
-- `config.py` — tile sizes, constants, layout definitions
-- `run_modal.py` — Modal execution harness with `pip install nvidia-cutlass-dsl` in the image
-- `test.py` — correctness test using `tools/harness/`
+Write solution files to `solution/`:
+- `solution/dsa_attention/kernel.py` — attention kernel (must define `def run(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale) -> (output, lse)`)
+- `solution/dsa_indexer/kernel.py` — indexer kernel (must define `def run(q_index_fp8, k_index_cache_fp8, weights, seq_lens, block_table) -> (topk_indices,)`)
+
+Each kernel variant gets a versioned copy (e.g., `solution/dsa_attention/kernel_v{N}.py`). The active submission is always `kernel.py`. Never overwrite a working `kernel.py` — copy it to `kernel_v{N}.py` first.
 
 **CuTeDSL kernels are Python files** that JIT-compile to PTX. The Modal image needs:
 ```python
@@ -164,27 +171,43 @@ Follow the pattern from the CUTLASS Blackwell FMHA example:
 - Use named barriers for warp synchronization
 - Use `setmaxregister_decrease/increase` per warp role
 
-**Each variant gets its own directory.** Never modify a working variant. Create v{N+1} instead.
+**Never overwrite a working kernel.** Copy to `kernel_v{N}.py` before making changes.
 
 ### Phase 4: Validate
 
-Use the validation harness at `tools/harness/` which provides:
-
-- **Stream injection defense** — forces `cudaDeviceSynchronize()`, verifies no hidden streams
-- **Thread injection defense** — monitors thread count before/after kernel
-- **Lazy evaluation defense** — verifies output tensors are materialized with valid storage
-- **Precision defense** — verifies BF16 output dtype, float32 LSE dtype, tight cosine similarity
-- **Monkey-patch defense** — verifies timing functions haven't been replaced
-- **Reference comparison** — compares against `references/dsa_sparse_attention_*.py` with tight tolerances
-
 **A kernel MUST pass validation before any performance claims.** Validation is not optional.
 
-```python
-from tools.harness import validate_kernel_output, generate_test_inputs
+The harness at `tools/harness/` has two entry points:
 
+**`tools/harness/validate.py`** — correctness + integrity defenses:
+- `validate_kernel_output(kernel_fn, inputs)` → `ValidationResult`
+- Defenses (all automatic, non-optional):
+  1. **Monkey-patch** — caches `torch.cuda.Event`, `torch.cuda.synchronize`, `time.perf_counter` at import time; verifies they haven't been replaced
+  2. **Stream injection** — captures CUDA stream before kernel, forces `cudaDeviceSynchronize()`, verifies stream unchanged
+  3. **Thread injection** — captures `threading.active_count()` before/after
+  4. **Lazy evaluation** — verifies output tensors: base `torch.Tensor` type, on CUDA, non-empty storage, valid data pointer
+  5. **Precision** — BF16 output dtype, float32 LSE dtype, `check_is_allclose` with abs_tol=1e-2, cos_diff_tol=1e-6
+- Reference: runs `references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py` via importlib
+
+**`tools/harness/bench.py`** — validated benchmarking:
+- `bench_kernel(kernel_fn, ref_output, ref_lse, num_warmups=10, num_runs=100, flush_l2=True)` → `BenchResult`
+- L2 flush with 8 GB buffer between runs
+- CUDA events timing (using cached references to prevent monkey-patching)
+- All integrity defenses active during benchmark
+- Returns median/mean/min/p99/std in ms + correctness check on last run
+
+```python
+from tools.harness import validate_kernel_output, generate_test_inputs, bench_kernel
+
+# Correctness
 inputs = generate_test_inputs(num_tokens=1)
 result = validate_kernel_output(kernel_fn, inputs)
 assert result.passed, result.summary()
+
+# Benchmarking (after correctness passes)
+ref_output, ref_lse = run_reference(inputs)
+bench = bench_kernel(kernel_fn, ref_output, ref_lse)
+print(bench.summary())
 ```
 
 ### Phase 5: Profile
@@ -257,15 +280,14 @@ You can delegate to specialized sub-agents:
 
 Delegate when their focused expertise is more efficient than doing the work yourself. You own the overall loop; they own specific domains.
 
-## Kernel Interface Contract
+## Kernel Interface Contracts
 
-The competition kernel must implement this exact interface:
+### Attention kernel (`solution/dsa_attention/kernel.py`)
 
 ```python
 def run(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale) -> (output, lse)
 ```
 
-Where:
 - `q_nope`: `[num_tokens, 16, 512]` BF16
 - `q_pe`: `[num_tokens, 16, 64]` BF16
 - `ckv_cache`: `[num_pages, 64, 512]` BF16
@@ -275,22 +297,52 @@ Where:
 - Returns `output`: `[num_tokens, 16, 512]` BF16
 - Returns `lse`: `[num_tokens, 16]` FLOAT32 in log2 base
 
-## Architecture Notes from Benchmarks
+### Indexer kernel (`solution/dsa_indexer/kernel.py`)
 
-These are confirmed by microbenchmark results (update as new data comes in):
+```python
+def run(q_index_fp8, k_index_cache_fp8, weights, seq_lens, block_table) -> (topk_indices,)
+```
 
-| Parameter | Optimal Value | Source |
-|-----------|---------------|--------|
-| TMA pipeline depth | N=2 (1.29× over N=1) | tma_gather4 ver5/ver6 |
-| TMA prefetch distance | DIST=2 (40% latency reduction, saturates) | tma_gather4 ver5/ver6 |
-| ckv TMA packing | INT64 (dim0=64, box=64, 4096B/gather4) — 22% faster | tma_gather4 ver5 |
-| TMA gather4 L2 latency | ~197 ns (single CTA, 16MB working set) | tma_gather4 ver5 |
-| TMA gather4 HBM latency | ~546 ns (ckv), ~492 ns (kpe) | dual_tma_stream ver1 |
-| L2 cache size | ~64-80 MB (empirical cliff) | tma_gather4 ver5 |
-| UTCMMA latency | 11.0-11.4 cycles (constant across tile sizes) | arxiv:2512.02189 |
-| B200 HBM BW | ~7.48 TB/s sustained (93.5% peak) | arxiv:2512.02189 |
-| 32-CTA competition BW | ~174 GB/s (real workload) | tma_gather4 ver5 |
-| Dual-stream L2-warm kpe | 595 ns (serialized when ckv evicts) | dual_tma_stream ver1 |
+- `q_index_fp8`: `[batch_size, 64, 128]` FP8 (float8_e4m3fn)
+- `k_index_cache_fp8`: `[num_pages, 64, 1, 132]` INT8 (deep_gemm FP8 format: 128B data + 4B scale per token)
+- `weights`: `[batch_size, 64]` FLOAT32
+- `seq_lens`: `[batch_size]` INT32
+- `block_table`: `[batch_size, max_num_pages]` INT32
+- Returns `topk_indices`: `[batch_size, 2048]` INT32 (-1 = padding)
+- Algorithm: `topk(sum(relu(q @ K.T) * weights, dim=heads), k=2048)` with page→global index conversion
+
+## Architecture Reference
+
+**READ FIRST**: `.claude/agents/blackwell_architecture.md` — comprehensive B200 architectural doc with:
+- Device properties (L2=126.5 MB, 148 SMs, TMEM=256 KB)
+- TMEM architecture (addressing, lane mapping, column allocation, load/store modes)
+- UTCMMA instruction details (shapes, descriptors, bit fields, operand modes)
+- SMEM descriptor format (64-bit, swizzle encoding, stride/leading offsets)
+- Instruction descriptor format (32-bit, type/shape/major encoding)
+- Measured latencies (TMA, UTCMMA, p-chase cache hierarchy, bulk copy)
+- Competition timing model (TMA-bound at ~3,752 ns/block)
+- Sub-core/warp scheduler architecture
+- Warp specialization patterns
+
+### Key Numbers for Kernel Design
+
+| Parameter | Value | Source |
+|-----------|-------|--------|
+| TMA gather4 per-block (N=16 pipelined, HBM-cold) | **3,752 ns** | tma-gather4-ver9 |
+| TMA gather4 N=1 latency (HBM-cold random) | 650.9 ns (ckv), 609.9 ns (kpe) | tma-gather4-ver9 |
+| QK ckv GEMM (M64N64, K=32 completion) | **1,044 ns** | utcmma-ver5 |
+| QK kpe GEMM (M64N64, K=4 completion) | **181 ns** | utcmma-ver5 |
+| SV GEMM ×2 (M64N256, SS, K=4 each) | **584 ns** | utcmma-ver5 |
+| GEMM total per block | **1,809 ns** | utcmma-ver5 |
+| TMA/GEMM ratio | **2.07×** → TMA-bound | calculated |
+| UTCMMA amortized per K-tile (K=32) | 60.2 cy = 32.6 ns | utcmma-ver5 |
+| L1 hit latency | 36 cy = 18 ns | ldg-pchase-sweep-ver1 |
+| L2 hit latency | 300 cy = 153 ns | ldg-pchase-sweep-ver1 |
+| HBM cold latency | 707 cy = 360 ns | ldg-pchase-sweep-ver1 |
+| L2 cache | **126.5 MB** | deviceQuery |
+| Competition KV per token | 2.36 MB (L2-warm) | calculated |
+| Bulk S2G reduce_add overhead | +18–25% vs plain copy | bulk-copy-s2g-ver1 |
+| Sync overhead (commit+wait+fence) | ~118.5 cycles fixed | utcmma-ver5 |
 
 ## Extensibility
 
@@ -301,12 +353,6 @@ These are confirmed by microbenchmark results (update as new data comes in):
 - Opcodes are auto-classified by pipeline stage: `tensor_mma`, `tmem`, `barrier`, `memory`, `compute`, `control`, `move`
 - Competition-critical opcode checker flags OK/MISS for: `UTCHMMA` (MMA), `UTMALDG` (TMA gather), `UTMASTG` (TMA store), `UTMACCTL` (prefetch), `UTCBAR` (barrier), `TCGEN05` (TMEM ld/st), `SETMAXNREG` (warp register mgmt), `MUFU` (exp2/softmax)
 - Use SASS analysis to verify the compiler is emitting expected instructions and to identify scheduling bottlenecks
-
-**Private RE tools** — when additional SASS disassembly, binary analysis, or reverse engineering tools are added:
-- Check `tools/re/` for reverse engineering utilities
-- Check `docs/private/` for internal documentation
-- These provide ground truth on instruction scheduling and register pressure beyond PTX-level analysis
-- Use them to validate NCU findings and refine the kernel
 
 **Wafer.ai** — GPU performance engineering platform (`pip install wafer-ai`):
 - NCU trace analysis, PTX/SASS inspection, B200 cloud sandboxes

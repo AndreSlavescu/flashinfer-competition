@@ -34,20 +34,39 @@ SM100A_OPCODE_CLASSES = {
     # Tensor core / TMEM
     "tensor_mma": [
         "UTCHMMA",       # tcgen05.mma — tensor core MMA via TMEM
+        "UTCIMMA",       # integer tensor MMA variant
+        "UTCOMMA",       # mixed/other tensor MMA variant
+        "UTCQMMA",       # quantized tensor MMA variant
         "HMMA",          # legacy wgmma path (should not appear on sm100a optimal code)
     ],
     "tmem": [
         "UTMALDG",       # TMA async global load (4D gather)
         "UTMASTG",       # TMA async global store
-        "UTMACCTL",      # TMA cache control / prefetch
+        "UTMAREDG",      # TMA async reduction store to global
         "UTMACMDFLUSH",  # TMA command flush
         "UTMALDL",       # TMA async local load (if any)
+        "UTMAPF",        # TMA prefetch
+        "UTCCP",         # tcgen05.cp — async copy from SMEM to TMEM
+        "LDTM",          # TMEM -> register load (matrix)
+        "LDT",           # TMEM -> register load
+        "STTM",          # register -> TMEM store (matrix)
+        "STT",           # register -> TMEM store
+        "UTCSHIFT",      # TMEM data shift/rearrangement
         "TCGEN05",       # tcgen05.ld / tcgen05.st / tcgen05.alloc / tcgen05.dealloc
+    ],
+    # Cache control / prefetch control plane
+    "cache_control": [
+        "UTMACCTL",      # TMA cache control / prefetch hint
+        "CCTLL",         # cache control (long form)
+        "CCTL",          # cache control
+        "LDGMC",         # reducing/cached load variant
+        "UBLKPF",        # bulk prefetch
     ],
     # Barriers & synchronization
     "barrier": [
         "UTCBAR",        # tensor core barrier (multicast)
         "UTCATOMSWS",    # tensor core atomic shared-memory ops
+        "LDGDEPBAR",     # global-load dependency barrier
         "BAR",           # standard barrier
         "MBAR",          # mbarrier
         "DEPBAR",        # dependency barrier
@@ -57,10 +76,17 @@ SM100A_OPCODE_CLASSES = {
     ],
     # Global / shared memory
     "memory": [
+        "LDGSTS",        # async global -> shared memcopy
         "LDG",           # global load
         "STG",           # global store
         "LDS",           # shared load
         "STS",           # shared store
+        "LDL",           # local memory load (often register spill)
+        "STL",           # local memory store (often register spill)
+        "STAS",          # async store to distributed shared memory
+        "REDAS",         # async reduction on distributed shared memory
+        "UBLKCP",        # bulk copy
+        "UBLKRED",       # bulk copy with reduction
         "ATOMS",         # shared atomic
         "ATOMG",         # global atomic
         "RED",           # reduction
@@ -83,6 +109,7 @@ SM100A_OPCODE_CLASSES = {
     "control": [
         "BRA", "BRX", "JMP", "JMX", "CALL", "RET", "EXIT",
         "BREAK", "CONT", "BSSY", "BSYNC", "YIELD",
+        "NOP",           # no-op / scheduling padding
         "SETMAXNREG",   # setmaxregister (warp specialization register management)
     ],
     # Data movement
@@ -97,14 +124,27 @@ SM100A_OPCODE_CLASSES = {
 
 # Opcodes critical for the competition kernel — flag if missing or low count
 COMPETITION_CRITICAL_OPCODES = {
-    "UTCHMMA":    "tcgen05.mma (tensor core MMA via TMEM) — the core compute instruction",
-    "UTMALDG":    "TMA async global load — used for gather4 of ckv/kpe from HBM",
-    "UTMASTG":    "TMA async global store — output write",
-    "UTMACCTL":   "TMA cache control / prefetch — L2 prefetch for gather locality",
-    "UTCBAR":     "tensor core barrier — warp specialization synchronization",
-    "TCGEN05":    "tcgen05.ld/st/alloc/dealloc — TMEM data movement",
-    "SETMAXNREG": "setmaxregister — per-warp register budget (warp specialization)",
-    "MUFU":       "multi-function unit — exp2 for softmax",
+    # Attention mainloop and epilogue signals
+    "UTCHMMA":    "tcgen05.mma tensor-core path",
+    "UTMALDG":    "TMA global->shared load (Q/K/V, gather-heavy paths)",
+    "UTMASTG":    "TMA shared->global store (output paths)",
+    "UTCCP":      "tcgen05.cp shared->TMEM copy (TMEM-fed MMA paths)",
+    "LDT":        "TMEM->register load (accumulator/readback path)",
+    "STT":        "register->TMEM store (accumulator/writeback path)",
+    "UTCBAR":     "tensor-core barrier synchronization",
+    "SETMAXNREG": "warp-specialized register budgeting",
+    "MUFU":       "softmax exp/log path (exp2 etc.)",
+    # Memory pipeline control signals
+    "UTMACCTL":   "TMA cache-control/prefetch hint",
+    "UTMAPF":     "TMA prefetch",
+    "LDGDEPBAR":  "global-load dependency barrier",
+}
+
+# Opcodes that are usually performance hazards in competition kernels.
+# Presence is not always wrong, but high counts are a red flag.
+COMPETITION_PERF_RISK_OPCODES = {
+    "LDL": "local-memory load (commonly register spill traffic)",
+    "STL": "local-memory store (commonly register spill traffic)",
 }
 
 # Synchronous instruction issue latencies (cycles) for sm100a.
@@ -116,42 +156,64 @@ COMPETITION_CRITICAL_OPCODES = {
 # ops as having a "cycle count" is fundamentally misleading.
 #
 # For async ops, we track ISSUE COST (cycles to dispatch the instruction)
-# separately from COMPLETION (which is non-deterministic and measured
-# empirically via our benchmarks, not assigned a fixed number).
+# separately from COMPLETION (which is non-deterministic and therefore
+# not assigned a fixed cycle count here).
 #
 # Sources marked per entry. [est] = carried from Hopper, not confirmed on B200.
 SM100A_SYNC_LATENCIES = {
     # Compute — arxiv:2507.10789 confirms standard 4-cycle FP/INT pipeline on Blackwell
-    "FFMA":       (4,  "FP32 fused multiply-add (arxiv:2507.10789)"),
-    "FADD":       (4,  "FP32 add (arxiv:2507.10789)"),
-    "FMUL":       (4,  "FP32 multiply (arxiv:2507.10789)"),
-    "HFMA2":      (4,  "FP16x2 fused multiply-add (arxiv:2507.10789)"),
-    "MUFU":       (8,  "multi-function unit — exp, rcp, rsq; varies by fn [est]"),
-    "IMAD":       (4,  "integer multiply-add (arxiv:2507.10789)"),
-    "IADD3":      (4,  "3-input integer add (arxiv:2507.10789)"),
-    "LOP3":       (4,  "3-input logic op [est]"),
+    "FFMA":    (4, "FP32 fused multiply-add (arxiv:2507.10789); measured on B200 issue-isolation bench (direct)"),
+    "FADD":    (4, "FP32 add (arxiv:2507.10789); measured on B200 issue-isolation bench (direct)"),
+    "FMUL":    (4, "FP32 multiply (arxiv:2507.10789); measured on B200 issue-isolation bench (direct)"),
+    "HFMA2":    (4, "FP16x2 fused multiply-add (arxiv:2507.10789); measured on B200 issue-isolation bench (direct)"),
+    "MUFU":    (17, "multi-function unit — exp, rcp, rsq; varies by fn [est]; measured on B200 issue-isolation bench (direct)"),
+    "IMAD":    (4, "integer multiply-add (arxiv:2507.10789); measured on B200 issue-isolation bench (direct)"),
+    "IADD3":    (2, "3-input integer add (arxiv:2507.10789); measured on B200 issue-isolation bench (direct)"),
+    "LOP3":    (4, "3-input logic op [est]; measured on B200 issue-isolation bench (direct)"),
     # Shared memory — synchronous from the warp's perspective
-    # arxiv:2507.10789: smem latency ~20-30 cycles
-    "LDS":        (25,  "shared memory load — 20-30 cyc (arxiv:2507.10789)"),
-    "STS":        (25,  "shared memory store (arxiv:2507.10789)"),
+    "LDS":    (41, "shared memory load — measured on B200 issue-isolation bench (direct; dependent shared-memory pointer chase)"),
+    "STS":    (10, "shared memory store — measured on B200 issue-isolation bench (proxy; STS+MEMBAR+LDS chain minus matched MEMBAR+LDS baseline)"),
     # Data movement — synchronous register ops
     "MOV":        (4,   "register move [est]"),
-    "SHFL":       (4,   "warp shuffle [est]"),
-    "S2R":        (20,  "special register read [est]"),
+    "SHFL":    (26, "warp shuffle [est]; measured on B200 issue-isolation bench (direct)"),
+    "S2R":    (19, "special register read — measured on B200 issue-isolation bench (direct; noinline laneid helper keeps S2R in-loop)"),
 }
 
 # Async instruction ISSUE costs (cycles to dispatch, NOT completion time).
 # Completion is non-deterministic — depends on memory hierarchy, contention,
-# pipeline depth, and overlap. Use our benchmark data for completion estimates.
+# pipeline depth, and overlap.
 SM100A_ASYNC_ISSUE_COSTS = {
-    "UTCHMMA":    (1,  "tcgen05.mma — single-thread issue, async completion via TMEM"),
-    "UTMALDG":    (1,  "TMA gather — async issue, completion varies (our benchmarks: 197-546ns)"),
-    "UTMASTG":    (1,  "TMA store — async issue"),
-    "UTMACCTL":   (1,  "TMA prefetch — async issue, fire-and-forget"),
-    "LDG":        (1,  "global load — async issue, data arrives later via scoreboard"),
-    "STG":        (1,  "global store — async issue"),
-    "MBAR":       (1,  "mbarrier arrive — async issue"),
-    "BAR":        (20, "barrier — sync, blocks until all threads arrive [est]"),
+    "UTCHMMA":    (54, "tcgen05.mma — single-thread issue, async completion via TMEM; measured on B200 issue-isolation bench (direct)"),
+    "UTCIMMA":    (54, "integer tensor mma variant — async issue; measured on B200 issue-isolation bench (proxy; proxied with f16 tcgen05.mma issue kernel)"),
+    "UTCOMMA":    (54, "tensor mma variant — async issue; measured on B200 issue-isolation bench (proxy; proxied with f16 tcgen05.mma issue kernel)"),
+    "UTCQMMA":    (54, "quantized tensor mma variant — async issue; measured on B200 issue-isolation bench (proxy; proxied with f16 tcgen05.mma issue kernel)"),
+    "UTMALDG":    (110, "TMA gather/load — async issue; measured on B200 issue-isolation bench (direct)"),
+    "UTMASTG":    (14, "TMA store — async issue; measured on B200 issue-isolation bench (direct)"),
+    "UTMAREDG":    (45, "TMA reduction store — async issue; measured on B200 issue-isolation bench (direct)"),
+    "UTMAPF":    (57, "TMA prefetch — async issue; measured on B200 issue-isolation bench (direct)"),
+    "UTMACCTL":    (57, "TMA cache-control hint — async issue; measured on B200 issue-isolation bench (proxy; proxied with TMA prefetch/cache-control path)"),
+    "UTCCP":    (70, "tcgen05.cp shared->TMEM copy — async issue; measured on B200 issue-isolation bench (direct)"),
+    "LDT":    (0, "TMEM->register load — async scoreboarded issue; measured on B200 issue-isolation bench (direct)"),
+    "LDTM":    (0, "TMEM->register matrix load — async scoreboarded issue; measured on B200 issue-isolation bench (direct)"),
+    "STT":    (2, "register->TMEM store — async issue; measured on B200 issue-isolation bench (direct)"),
+    "STTM":    (54, "register->TMEM matrix store — async issue; measured on B200 issue-isolation bench (direct)"),
+    "UTCSHIFT":    (0, "TMEM shift op — async issue; measured on B200 issue-isolation bench (proxy; proxied with TMEM rearrangement/load path)"),
+    "LDGDEPBAR":  (1,  "global-load dependency barrier — scheduling control"),
+    "LDGSTS":    (6, "global->shared async copy issue; measured on B200 issue-isolation bench (direct)"),
+    "LDGMC":    (0, "reducing/cached load issue; measured on B200 issue-isolation bench (proxy; proxied with global load/cache-control path)"),
+    "CCTL":    (4, "cache-control hint; measured on B200 issue-isolation bench (direct)"),
+    "CCTLL":    (4, "cache-control hint; measured on B200 issue-isolation bench (proxy; ptxas selected short-form cache-control encoding)"),
+    "UBLKCP":    (15, "bulk copy issue; measured on B200 issue-isolation bench (direct)"),
+    "UBLKPF":    (6, "bulk prefetch issue; measured on B200 issue-isolation bench (direct)"),
+    "UBLKRED":    (44, "bulk reduction copy issue; measured on B200 issue-isolation bench (direct)"),
+    "LDG":    (0, "global load — async issue, data arrives later via scoreboard; measured on B200 issue-isolation bench (direct)"),
+    "STG":    (21, "global store — async issue; measured on B200 issue-isolation bench (direct)"),
+    "LDL":    (0, "local-memory load — often spill traffic; measured on B200 issue-isolation bench (direct)"),
+    "STL":    (4, "local-memory store — often spill traffic; measured on B200 issue-isolation bench (direct)"),
+    "STAS":       (1,  "async distributed-shared store issue"),
+    "REDAS":      (1,  "async distributed-shared reduction issue"),
+    "MBAR":    (7, "mbarrier arrive — async issue; measured on B200 issue-isolation bench (direct; cuobjdump lowers mbarrier arrive to SYNCS.ARRIVE)"),
+    "BAR":    (20, "barrier — sync, blocks until all threads arrive [est]; measured on B200 issue-isolation bench (direct)"),
 }
 
 
@@ -299,6 +361,15 @@ def format_analysis(opcode_counts: dict, total: int, disassembly: str = "") -> s
         else:
             lines.append(f"  MISS {prefix:15s}       0  -- {desc}")
 
+    # Performance-risk check (lower is usually better)
+    lines.append("")
+    lines.append("Performance-risk opcodes (lower is better):")
+    for prefix, desc in COMPETITION_PERF_RISK_OPCODES.items():
+        matching = {k: v for k, v in opcode_counts.items() if k.startswith(prefix)}
+        count = sum(matching.values()) if matching else 0
+        status = "OK" if count == 0 else "WARN"
+        lines.append(f"  {status:4s} {prefix:15s}  {count:6d}  -- {desc}")
+
     # Pipeline cost estimation (sync only — async has no fixed cost)
     lines.append("")
     lines.append("Synchronous cycle cost by pipeline stage:")
@@ -336,10 +407,17 @@ def format_analysis(opcode_counts: dict, total: int, disassembly: str = "") -> s
         lines.append("Async pipeline patterns detected:")
         # Look for TMA → barrier → MMA sequences
         tma_count = sum(v for k, v in opcode_counts.items() if k.startswith("UTMALDG"))
+        tmapf_count = sum(v for k, v in opcode_counts.items() if k.startswith("UTMAPF"))
+        utccp_count = sum(v for k, v in opcode_counts.items() if k.startswith("UTCCP"))
+        cachectl_count = sum(
+            v for k, v in opcode_counts.items()
+            if k.startswith("UTMACCTL") or k.startswith("CCTL") or k.startswith("LDGMC")
+        )
         mma_count = sum(v for k, v in opcode_counts.items() if k.startswith("UTCHMMA"))
         bar_count = sum(v for k, v in opcode_counts.items()
                        if k.startswith("MBAR") or k.startswith("BAR") or k.startswith("UTCBAR"))
         setmax_count = sum(v for k, v in opcode_counts.items() if k.startswith("SETMAXNREG"))
+        spill_count = sum(v for k, v in opcode_counts.items() if k.startswith("LDL") or k.startswith("STL"))
 
         if tma_count and mma_count:
             ratio = tma_count / mma_count
@@ -356,8 +434,17 @@ def format_analysis(opcode_counts: dict, total: int, disassembly: str = "") -> s
             if tma_count and bar_count > tma_count * 2:
                 lines.append(f"    -> high barrier:TMA ratio ({bar_count/tma_count:.1f}x) — possible over-synchronization")
 
+        if utccp_count:
+            lines.append(f"  UTCCP instructions: {utccp_count} (shared->TMEM copy activity)")
+
+        if tmapf_count or cachectl_count:
+            lines.append(f"  Cache/prefetch control ops: {tmapf_count + cachectl_count} (UTMAPF/CCTL/UTMACCTL/LDGMC)")
+
         if setmax_count:
             lines.append(f"  SETMAXNREG count: {setmax_count} (warp specialization register transitions)")
+
+        if spill_count:
+            lines.append(f"  Local-memory spill ops: {spill_count} (LDL/STL) — check register pressure")
 
     return "\n".join(lines)
 
@@ -585,12 +672,19 @@ def analyze_cutedsl_kernel(kernel_source: str, kernel_filename: str = "kernel.py
     with open(kernel_path, "w") as f:
         f.write(kernel_source)
 
-    # Set env to capture compilation artifacts
-    cache_dir = "/root/cutlass_cache"
+    # Set env to capture compilation artifacts.
+    # CuTeDSL uses CUTE_DSL_* env vars (not CUTLASS_DSL_*).
+    cache_dir = "/root/cute_dsl_cache"
     os.makedirs(cache_dir, exist_ok=True)
     env = os.environ.copy()
+    env["CUTE_DSL_CACHE_DIR"] = cache_dir
+    env["CUTE_DSL_DUMP_DIR"] = cache_dir
+    env["CUTE_DSL_KEEP_PTX"] = "1"
+    env["CUTE_DSL_KEEP_CUBIN"] = "1"
+    env["CUTE_DSL_ARCH"] = "sm_100a"
+
+    # Backward-compat fallback for older naming in some stacks.
     env["CUTLASS_DSL_CACHE_DIR"] = cache_dir
-    env["CUTLASS_DSL_DUMP_PTX"] = "1"
 
     print(f"Compiling CuTeDSL kernel: {kernel_filename}")
     run = subprocess.run(

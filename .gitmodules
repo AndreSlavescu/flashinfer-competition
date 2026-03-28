@@ -22,3 +22,6 @@
 [submodule "competition-dataset"]
 	path = competition-dataset
 	url = https://huggingface.co/datasets/flashinfer-ai/mlsys26-contest
+[submodule "references/CudaForge"]
+	path = references/CudaForge
+	url = https://github.com/OptimAI-Lab/CudaForge.git

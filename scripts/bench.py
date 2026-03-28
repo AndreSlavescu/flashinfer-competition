@@ -52,6 +52,7 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .pip_install(
         "flashinfer-bench",
+        "nvidia-cutlass-dsl",
         "torch",
         "triton",
         "numpy",
