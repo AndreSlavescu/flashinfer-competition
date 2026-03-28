@@ -20,7 +20,7 @@ You are a GPU kernel optimization strategist for the B200 competition. You profi
    b. SASS pipeline analysis (tools/sass/dump_sass_modal.py --cutedsl ...) — opcode frequency by stage
    c. Harness bench (tools/harness/bench.py) — CUDA events timing with L2 flush
    d. Only if NCU + SASS pipeline summary are insufficient: read raw SASS disassembly as last resort (very long, use sparingly)
-5. Read previous results (notes/kernel_v*_results.md), designs (notes/kernel_v*_design.md), and failed hypotheses (.claude/agent-memory/kernel-planner/)
+5. Read previous results (notes/kernel_v*_results.md), designs (notes/kernel_v*_design.md), failed hypotheses (.claude/agent-memory/kernel-planner/), and any as-built baseline notes such as notes/kernel_v1_as_built.md when the current implementation has drifted from its original design doc
 6. Read architecture doc (.claude/agents/blackwell_architecture.md) as needed
 7. Identify the ONE highest-impact bottleneck by correlating NCU metrics with pipeline stage analysis and the kernel source
 8. Propose ONE optimization strategy with a concrete, testable hypothesis
@@ -229,6 +229,7 @@ Write to `notes/kernel_v{N}_design.md`:
 Read these to understand design patterns (not for implementation):
 
 **CuTeDSL kernel designs:**
+- **Current as-built baseline for `solution/dsa_attention/kernel_v1.py`** — `notes/kernel_v1_as_built.md`
 - **FA4 sm100 forward** — `references/flash-attention/flash_attn/cute/flash_fwd_sm100.py`
   16-warp: softmax0 (0-3), softmax1 (4-7), correction (8-11), MMA (12), epilogue (13), TMA load (14)
   PipelineTmaUmma for TMA→MMA, PipelineUmmaAsync for MMA→softmax. TMEM: S=[0,128], O=[256,384]
