@@ -3,6 +3,7 @@
 ## Project
 - [project_v1_design_decisions.md](project_v1_design_decisions.md) — V1 attention: M=64 padded, split-KV 32 chunks, 8 warps, PyTorch combine; indexer: PyTorch reference
 - [../../../notes/kernel_v1_as_built.md](../../../notes/kernel_v1_as_built.md) — Canonical as-built baseline for `solution/dsa_attention/kernel_v1.py`: vectorized split-KV PyTorch runtime plus a self-contained CuTeDSL ckv QK experiment
+- [../../../notes/kernel_v2_design.md](../../../notes/kernel_v2_design.md) — Corrected v2 plan: first fully fused CuTe baseline should fuse the whole per-split attention body, keep combine separate, and prefer SMEM-backed Q/P with TMEM used only for accumulators
 
 ## Planning Notes
 
@@ -32,3 +33,10 @@
   - `scripts/bench.py`
 - Why:
   These files answered the hardest questions from this run: SM100 staging layout, fragment indexing, TMEM/T2R structure, SASS harness constraints, and Modal packaging/runtime behavior.
+
+### 2026-03-28 — The first fused CuTe baseline should not require FlashMLA-level load plumbing
+
+- Rule:
+  For the first end-to-end fused CuTe attention kernel, do not require TMA gather4, TMEM-stored Q, or TMEM-stored P as part of the baseline design. Start with SMEM-backed Q/K/V/P and use TMEM only for accumulators.
+- Why:
+  That keeps the first fused kernel focused on removing PyTorch boundary overhead. TMA gather4, TS-mode P-in-TMEM, and deeper FlashMLA-style pipelines are later optimizations, not prerequisites for v2.

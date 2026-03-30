@@ -140,6 +140,8 @@ def run_benchmark_remote(
             "max_num_pages": axes.get("max_num_pages"),
             "status": trace.evaluation.status.value,
         }
+        if trace.evaluation.log:
+            entry["log"] = trace.evaluation.log
         if trace.evaluation.performance:
             entry["latency_ms"] = trace.evaluation.performance.latency_ms
             entry["ref_latency_ms"] = trace.evaluation.performance.reference_latency_ms
@@ -261,6 +263,19 @@ def print_results(results: list[dict]):
         print(f"\n  FAILED workloads ({len(failed)}):")
         for r in failed:
             print(f"    - tokens={r.get('num_tokens')} uuid={r.get('workload_uuid', '?')[:12]}... status={r['status']}")
+            if r.get("log"):
+                log_lines = r["log"].strip().splitlines()
+                print(f"      log: {len(log_lines)} lines")
+                if len(log_lines) <= 80:
+                    for line in log_lines:
+                        print(f"        {line}")
+                else:
+                    print("        --- first 20 lines ---")
+                    for line in log_lines[:20]:
+                        print(f"        {line}")
+                    print("        --- last 60 lines ---")
+                    for line in log_lines[-60:]:
+                        print(f"        {line}")
 
 
 # ---------------------------------------------------------------------------
