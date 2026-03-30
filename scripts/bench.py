@@ -57,6 +57,7 @@ image = (
         "triton",
         "numpy",
         "safetensors",
+        "pygpubench",
     )
 )
 

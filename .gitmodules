@@ -28,3 +28,6 @@
 [submodule "flashinfer-bench"]
 	path = flashinfer-bench
 	url = https://github.com/flashinfer-ai/flashinfer-bench.git
+[submodule "tools/pygpubench"]
+	path = tools/pygpubench
+	url = https://github.com/AndreSlavescu/pygpubench.git

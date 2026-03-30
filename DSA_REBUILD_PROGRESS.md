@@ -29,13 +29,12 @@
 - [x] Add WG2 BF16 `P` write-back from softmax scratch into SMEM `sP` (switched PV MMA A-operand from TMEM to SMEM source, following mixed_input_fmha_decode pattern).
 - [x] Add WG0 sparse V staging and `v_pipe` handoff for one output tile.
 - [x] Add WG1 PV MMA from `sP` SMEM and staged V into reused score TMEM as `tOtO` (no TMEM reallocation — reuse same allocation).
-- [ ] Extend PV across all 8 output tiles.
-- [ ] Add WG2 TMEM->SMEM epilogue staging plus TMA store for one output tile into padded `partial_o_tma`.
-- [ ] Extend WG2 epilogue TMA store across all 8 output tiles with FMHA-style `cp_async_bulk_commit_group` and `cp_async_bulk_wait_group` ordering.
-- [ ] Shadow-launch the rebuilt fused kernel from `run()` while keeping fallback authoritative.
-- [ ] Add fused-vs-fallback validation hook back around split partials and require it to pass the correctness benchmark.
-- [ ] Switch `run()` to fused-authoritative and keep a temporary debug env escape hatch.
-- [ ] Remove the obsolete dense fallback gather/softmax/SV path and remove the old split-shell implementation.
+- [x] Extend PV across all 8 output tiles.
+- [x] Add WG2 TMEM->registers->global epilogue for all 8 output tiles (register-based store path, not TMA store — avoids TMA descriptor complexity for partial_o).
+- [x] Shadow-launch the rebuilt fused kernel from `run()` while keeping fallback authoritative.
+- [x] Add fused-vs-fallback validation hook back around split partials and require it to pass the correctness benchmark.
+- [x] Switch `run()` to fused-authoritative and keep a temporary debug env escape hatch (`FLASHMLA_DSA_USE_FALLBACK=1`).
+- [x] Remove the old split-shell implementation (SplitKernelShell + dead helpers). Dense fallback retained behind `FLASHMLA_DSA_VALIDATE_FUSED` / `FLASHMLA_DSA_USE_FALLBACK` for validation.
 
 ## Helpful Sync Notes
 

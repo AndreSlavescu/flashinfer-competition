@@ -1,17 +1,18 @@
 """
-DSA Sparse Attention Kernel v3 — transitional rebuild state.
+DSA Sparse Attention Kernel — fused 3-warpgroup CuTeDSL implementation.
 
-Uses CuTeDSL tcgen05.mma (Blackwell UTCMMA) for the QK GEMM:
-    S = Q_nope @ Kc^T + Q_pe @ Kp^T
-
-Current status:
-    - The dense reference path remains authoritative.
-    - The existing split-shell fused path is deprecated and shadow-only while the
-      FMHA-like rebuild is brought up via DSA_REBUILD_PROGRESS.md.
+Uses CuTeDSL tcgen05.mma (Blackwell UTCMMA) with three cooperating warpgroups:
+    WG0 (Load):    TMA gather4 for Q, CKV, KPE, V staging into operand SMEM
+    WG1 (MMA):     QK GEMM (S = Q_nope @ Kc^T + Q_pe @ Kp^T), then PV MMA
+    WG2 (Softmax): Score TMEM -> softmax -> P staging, then output epilogue
 
 Entry points:
     run(...) -> (output, lse)
     kernel(..., output, lse) -> writes destination tensors in place
+
+Env vars:
+    FLASHMLA_DSA_VALIDATE_FUSED=assert  — compare against dense fallback
+    FLASHMLA_DSA_USE_FALLBACK=1         — override with dense fallback output
 """
 
 import math
@@ -33,10 +34,7 @@ N_BLOCK = 64  # KV chunk size
 WARP_SIZE = 32
 WARPGROUP_THREADS = 128
 WARPS_PER_WARPGROUP = WARPGROUP_THREADS // WARP_SIZE
-LOAD_WARP_GROUP = 0
-MMA_WARP_GROUP = 1
-SOFTMAX_WARP_GROUP = 2
-REBUILD_THREADS_PER_CTA = 3 * WARPGROUP_THREADS
+REBUILD_THREADS_PER_CTA = 3 * WARPGROUP_THREADS  # WG0(load) + WG1(mma) + WG2(softmax)
 
 # CuTeDSL imports (lazy, only on GPU)
 _cutedsl_kernel = None
@@ -703,115 +701,8 @@ def _make_split_shell_launcher():
         return pipeline.CooperativeGroup(pipeline.Agent.Thread, size)
 
     @cute.jit
-    def _warpgroup_idx() -> Int32:
-        warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-        return warp_idx // Int32(WARPS_PER_WARPGROUP)
-
-    @cute.jit
     def _warpgroup_thread_idx(tidx: Int32) -> Int32:
         return tidx % Int32(WARPGROUP_THREADS)
-
-    @cute.jit
-    def _load_q_nope_tile(
-        s_q_row: cute.Tensor,
-        s_q: cute.Tensor,
-        m_q_nope: cute.Tensor,
-        q_swizzle,
-        tidx: Int32,
-        token_idx: Int32,
-        col_base: Int32,
-    ) -> None:
-        for elem in cutlass.range(tidx, M_BLOCK * N_BLOCK, 128, unroll=1):
-            row = elem // N_BLOCK
-            col = elem % N_BLOCK
-            if row < NUM_Q_HEADS:
-                s_q_row[row, col, 0] = m_q_nope[token_idx, row, col_base + col]
-            else:
-                s_q_row[row, col, 0] = BFloat16(0.0)
-        cute.arch.sync_threads()
-        copy_rowmajor_stage_to_operand_a(
-            s_q_row, s_q[None, None, None, 0], q_swizzle, tidx
-        )
-        cute.arch.sync_threads()
-
-    @cute.jit
-    def _load_q_pe_tile(
-        s_q_row: cute.Tensor,
-        s_q: cute.Tensor,
-        m_q_pe: cute.Tensor,
-        q_swizzle,
-        tidx: Int32,
-        token_idx: Int32,
-    ) -> None:
-        for elem in cutlass.range(tidx, M_BLOCK * N_BLOCK, 128, unroll=1):
-            row = elem // N_BLOCK
-            col = elem % N_BLOCK
-            if row < NUM_Q_HEADS:
-                s_q_row[row, col, 0] = m_q_pe[token_idx, row, col]
-            else:
-                s_q_row[row, col, 0] = BFloat16(0.0)
-        cute.arch.sync_threads()
-        copy_rowmajor_stage_to_operand_a(
-            s_q_row, s_q[None, None, None, 0], q_swizzle, tidx
-        )
-        cute.arch.sync_threads()
-
-    @cute.jit
-    def _clear_rowmajor_stage(
-        s_stage: cute.Tensor,
-        tidx: Int32,
-    ) -> None:
-        for elem in cutlass.range(tidx, CHUNK_SIZE * N_BLOCK, 128, unroll=1):
-            row = elem // N_BLOCK
-            col = elem % N_BLOCK
-            s_stage[row, col, 0] = BFloat16(0.0)
-
-    @cute.jit
-    def _load_dense_k_tile(
-        s_k_row: cute.Tensor,
-        s_k: cute.Tensor,
-        m_ckv_flat: cute.Tensor,
-        s_idx: cute.Tensor,
-        s_valid: cute.Tensor,
-        k_swizzle,
-        tidx: Int32,
-        col_base: Int32,
-    ) -> None:
-        for elem in cutlass.range(tidx, CHUNK_SIZE * N_BLOCK, 128, unroll=1):
-            row = elem // N_BLOCK
-            col = elem % N_BLOCK
-            if s_valid[row] != 0:
-                s_k_row[row, col, 0] = m_ckv_flat[s_idx[row], col_base + col]
-            else:
-                s_k_row[row, col, 0] = BFloat16(0.0)
-        cute.arch.sync_threads()
-        copy_rowmajor_stage_to_operand_b(
-            s_k_row, s_k[None, None, None, 0], k_swizzle, tidx
-        )
-        cute.arch.sync_threads()
-
-    @cute.jit
-    def _load_dense_kpe_tile(
-        s_k_row: cute.Tensor,
-        s_k: cute.Tensor,
-        m_kpe_flat: cute.Tensor,
-        s_idx: cute.Tensor,
-        s_valid: cute.Tensor,
-        k_swizzle,
-        tidx: Int32,
-    ) -> None:
-        for elem in cutlass.range(tidx, CHUNK_SIZE * N_BLOCK, 128, unroll=1):
-            row = elem // N_BLOCK
-            col = elem % N_BLOCK
-            if s_valid[row] != 0:
-                s_k_row[row, col, 0] = m_kpe_flat[s_idx[row], col]
-            else:
-                s_k_row[row, col, 0] = BFloat16(0.0)
-        cute.arch.sync_threads()
-        copy_rowmajor_stage_to_operand_b(
-            s_k_row, s_k[None, None, None, 0], k_swizzle, tidx
-        )
-        cute.arch.sync_threads()
 
     @cute.jit
     def _load_split_index_groups(
@@ -839,7 +730,6 @@ def _make_split_shell_launcher():
                 s_valid[row_base + 0] = Int32(1)
                 group_mask = group_mask | Int32(1)
             else:
-                # Keep physical gather coordinates in-bounds; s_valid carries semantics.
                 s_idx[row_base + 0] = Int32(0)
                 s_valid[row_base + 0] = Int32(0)
 
@@ -870,21 +760,6 @@ def _make_split_shell_launcher():
             s_group_mask[group_idx] = group_mask
 
     @cute.jit
-    def _initialize_placeholder_outputs(
-        m_partial_o: cute.Tensor,
-        m_partial_lse: cute.Tensor,
-        tidx: Int32,
-        split_idx: Int32,
-        token_idx: Int32,
-    ) -> None:
-        for elem in cutlass.range(tidx, NUM_Q_HEADS * CKV_DIM, 128, unroll=1):
-            head = elem // CKV_DIM
-            dim = elem % CKV_DIM
-            m_partial_o[split_idx, token_idx, head, dim] = Float32(0.0)
-        for head in cutlass.range(tidx, NUM_Q_HEADS, 128, unroll=1):
-            m_partial_lse[split_idx, token_idx, head] = Float32(-float("inf"))
-
-    @cute.jit
     def _compute_gather_bytes(
         s_group_mask: cute.Tensor,
         s_gather_bytes: cute.Tensor,
@@ -898,7 +773,7 @@ def _make_split_shell_launcher():
             s_gather_bytes[leader] = issued_groups * Int32(4 * N_BLOCK * 2)
 
     class RebuildSplitKernelShell:
-        """FMHA-like 3-warpgroup rebuild skeleton shadow-launched during bring-up."""
+        """Fused 3-warpgroup split kernel: WG0(load) + WG1(mma) + WG2(softmax+epilogue)."""
 
         def __init__(self):
             self.threads_per_cta = REBUILD_THREADS_PER_CTA
@@ -1091,11 +966,6 @@ def _make_split_shell_launcher():
                 byte_alignment=128,
                 swizzle=p_smem_layout_staged.inner,
             )
-            sO = smem.allocate_tensor(
-                element_type=Float32,
-                layout=cute.make_layout((M_BLOCK, N_BLOCK)),
-                byte_alignment=16,
-            )
             sScoreF32 = smem.allocate_tensor(
                 element_type=Float32,
                 layout=cute.make_layout((M_BLOCK, N_BLOCK)),
@@ -1169,7 +1039,6 @@ def _make_split_shell_launcher():
             _ = sK
             _ = sV
             _ = sP
-            _ = sO
             _ = sScoreF32
             gather_phase = Int32(0)
             _ = gather_phase
@@ -1506,6 +1375,36 @@ def _make_split_shell_launcher():
             pv_acc_fake = pv_tiled_mma_.make_fragment_C(pv_acc_shape)
             tOtO = cute.make_tensor(score_tmem_ptr, pv_acc_fake.layout)
 
+            # --- Output TMEM copy setup for WG2 epilogue ---
+            output_copy_atom_t2r = sm100_utils.get_tmem_load_op(
+                (M_BLOCK, N_BLOCK, N_BLOCK),
+                row_major,
+                Float32,
+                Float32,
+                (M_BLOCK, N_BLOCK),
+                False,
+            )
+            tOutput_flat = tOtO[((None, None), 0, 0)]
+            tOutput_epi = cute.flat_divide(tOutput_flat, (M_BLOCK, N_BLOCK))
+            tiled_output_t2r = tcgen05.make_tmem_copy(
+                output_copy_atom_t2r, tOutput_epi[(None, None, 0, 0)]
+            )
+            output_thr_t2r = tiled_output_t2r.get_slice(warpgroup_tidx)
+            tTR_tOutput = output_thr_t2r.partition_S(tOutput_epi)
+            tTR_tOutput = cute.group_modes(
+                tTR_tOutput, 3, cute.rank(tTR_tOutput)
+            )
+            cOutput = cute.make_identity_tensor((M_BLOCK, N_BLOCK))
+            cOutput_epi = cute.flat_divide(cOutput, (M_BLOCK, N_BLOCK))
+            tTR_cOutput = output_thr_t2r.partition_D(cOutput_epi)
+            tTR_cOutput = cute.group_modes(
+                tTR_cOutput, 3, cute.rank(tTR_cOutput)
+            )
+            tTR_rOutput = cute.make_fragment_like(
+                tTR_cOutput[(None, None, None, 0)], Float32
+            )
+            num_output_epi_tiles = cute.size(tTR_tOutput.shape, mode=[3])
+
             # --- Phase 2: V staging + PV MMA across 8 output tiles ---
             NUM_V_TILES = CKV_DIM // N_BLOCK  # 8
 
@@ -1580,576 +1479,42 @@ def _make_split_shell_launcher():
                 warp_idx >= 2 * WARPS_PER_WARPGROUP
                 and warp_idx < 3 * WARPS_PER_WARPGROUP
             ):
-                # Minimal WG2 output drain — release each tile so WG1 can proceed
                 for v_tile_idx in cutlass.range(NUM_V_TILES, unroll=1):
                     output_handle = output_consumer.wait_and_advance()
+                    v_col_base = v_tile_idx * Int32(N_BLOCK)
+
+                    # TMEM -> registers -> global store
+                    for si in cutlass.range(num_output_epi_tiles):
+                        cOutput_i = tTR_cOutput[(None, None, None, si)]
+                        cute.copy(
+                            tiled_output_t2r,
+                            tTR_tOutput[(None, None, None, si)],
+                            tTR_rOutput,
+                        )
+                        cute.arch.fence_view_async_tmem_load()
+                        for i in cutlass.range_constexpr(
+                            cute.size(tTR_rOutput)
+                        ):
+                            coord = cOutput_i[i]
+                            row = coord[0]
+                            col = coord[1]
+                            if row < Int32(NUM_Q_HEADS):
+                                mPartialO[
+                                    split_idx, token_idx, row,
+                                    v_col_base + col,
+                                ] = tTR_rOutput[i]
+
                     output_handle.release()
 
             cute.arch.sync_threads()
 
             score_tmem.relinquish_alloc_permit()
             score_tmem.free(score_tmem_ptr)
-
-            _initialize_placeholder_outputs(
-                mPartialO, mPartialLse, tidx, split_idx, token_idx
-            )
             cute.arch.sync_threads()
             return
 
-    class SplitKernelShell:
-        """Deprecated 128-thread split shell kept only for shadow validation during the rebuild."""
-
-        def __init__(self):
-            self.threads_per_cta = 128
-            self.cta_group = tcgen05.CtaGroup.ONE
-
-        @cute.jit
-        def __call__(
-            self,
-            mQ_nope: cute.Tensor,
-            mQ_pe: cute.Tensor,
-            mCkv_flat: cute.Tensor,
-            mKpe_flat: cute.Tensor,
-            mIdx: cute.Tensor,
-            mPartialO: cute.Tensor,
-            mPartialLse: cute.Tensor,
-            sm_scale: Float32,
-            stream: cuda.CUstream,
-        ):
-            qk_mma_tiler = (M_BLOCK, N_BLOCK, N_BLOCK)
-            qk_tiled_mma = sm100_utils.make_trivial_tiled_mma(
-                BFloat16,
-                row_major.mma_major_mode(),
-                row_major.mma_major_mode(),
-                Float32,
-                self.cta_group,
-                (M_BLOCK, N_BLOCK),
-            )
-            q_smem_layout_staged = sm100_utils.make_smem_layout_a(
-                qk_tiled_mma,
-                qk_mma_tiler,
-                BFloat16,
-                1,
-            )
-            k_smem_layout_staged = sm100_utils.make_smem_layout_b(
-                qk_tiled_mma,
-                qk_mma_tiler,
-                BFloat16,
-                1,
-            )
-            # PV MMA: P (A major K), V (B major MN = COL_MAJOR)
-            pv_tiled_mma = sm100_utils.make_trivial_tiled_mma(
-                BFloat16,
-                row_major.mma_major_mode(),
-                col_major.mma_major_mode(),
-                Float32,
-                self.cta_group,
-                (M_BLOCK, N_BLOCK),
-            )
-            pv_mma_tiler = (M_BLOCK, N_BLOCK, N_BLOCK)
-            pv_b_smem_layout = sm100_utils.make_smem_layout_b(
-                pv_tiled_mma, pv_mma_tiler, BFloat16, 1,
-            )
-            gather_stage_layout = cute.slice_(
-                cute.make_layout((1, N_BLOCK, 1)), (None, None, 0)
-            )
-            tma_load_op = cpasync.CopyBulkTensorTileG2SOp(self.cta_group)
-            tma_atom_ckv, _ = cpasync.make_tiled_tma_atom(
-                tma_load_op,
-                mCkv_flat,
-                gather_stage_layout,
-                (1, N_BLOCK),
-            )
-            tma_atom_kpe, _ = cpasync.make_tiled_tma_atom(
-                tma_load_op,
-                mKpe_flat,
-                gather_stage_layout,
-                (1, N_BLOCK),
-            )
-            self.cta_tile_shape_mnk = (M_BLOCK, N_BLOCK, N_BLOCK)
-            self.epi_tile = (M_BLOCK, N_BLOCK)
-            self.c_layout = row_major
-            self.kernel(
-                qk_tiled_mma,
-                pv_tiled_mma,
-                tma_atom_ckv,
-                tma_atom_kpe,
-                q_smem_layout_staged,
-                k_smem_layout_staged,
-                pv_b_smem_layout,
-                mQ_nope,
-                mQ_pe,
-                mCkv_flat,
-                mKpe_flat,
-                mIdx,
-                mPartialO,
-                mPartialLse,
-                sm_scale,
-            ).launch(
-                grid=[mQ_nope.shape[0], NUM_SPLITS, 1],
-                block=[self.threads_per_cta, 1, 1],
-                stream=stream,
-            )
-
-        @cute.kernel
-        def kernel(
-            self,
-            qk_tiled_mma_: cute.TiledMma,
-            pv_tiled_mma_: cute.TiledMma,
-            tma_atom_ckv: cute.CopyAtom,
-            tma_atom_kpe: cute.CopyAtom,
-            q_smem_layout_staged: cute.ComposedLayout,
-            k_smem_layout_staged: cute.ComposedLayout,
-            pv_b_smem_layout: cute.ComposedLayout,
-            mQ_nope: cute.Tensor,
-            mQ_pe: cute.Tensor,
-            mCkv_flat: cute.Tensor,
-            mKpe_flat: cute.Tensor,
-            mIdx: cute.Tensor,
-            mPartialO: cute.Tensor,
-            mPartialLse: cute.Tensor,
-            sm_scale: Float32,
-        ):
-            tidx, _, _ = cute.arch.thread_idx()
-            warp_idx = cute.arch.make_warp_uniform(cute.arch.warp_idx())
-            token_idx, split_idx, _ = cute.arch.block_idx()
-            total_kv = mCkv_flat.shape[0]
-            split_base = split_idx * CHUNK_SIZE
-
-            if warp_idx == 0:
-                with cute.arch.elect_one():
-                    cpasync.prefetch_descriptor(tma_atom_ckv)
-                    cpasync.prefetch_descriptor(tma_atom_kpe)
-
-            @cute.struct
-            class SharedStorage:
-                acc_mbar: cute.struct.MemRange[cutlass.Int64, 1 * 2]
-                gather_mbar: cute.struct.MemRange[cutlass.Int64, 1]
-                tmem_buf: cutlass.Int32
-
-            smem = utils.SmemAllocator()
-            _storage = smem.allocate(SharedStorage)
-            gather_mbar_ptr = _storage.gather_mbar.data_ptr()
-            sQ = smem.allocate_tensor(
-                element_type=BFloat16,
-                layout=q_smem_layout_staged.outer,
-                byte_alignment=128,
-                swizzle=q_smem_layout_staged.inner,
-            )
-            sQrow = smem.allocate_tensor(
-                element_type=BFloat16,
-                layout=cute.make_layout((M_BLOCK, N_BLOCK, 1)),
-                byte_alignment=16,
-            )
-            sK = smem.allocate_tensor(
-                element_type=BFloat16,
-                layout=k_smem_layout_staged.outer,
-                byte_alignment=128,
-                swizzle=k_smem_layout_staged.inner,
-            )
-            # NOTE: sQrow is reused as staging buffer for K loads too
-            # (no separate sKrow needed — Q and K loads don't overlap)
-            sIdx = smem.allocate_tensor(
-                element_type=Int32,
-                layout=cute.make_layout((CHUNK_SIZE,)),
-                byte_alignment=16,
-            )
-            sValid = smem.allocate_tensor(
-                element_type=Int32,
-                layout=cute.make_layout((CHUNK_SIZE,)),
-                byte_alignment=4,
-            )
-            sGroupMask = smem.allocate_tensor(
-                element_type=Int32,
-                layout=cute.make_layout((CHUNK_SIZE // 4,)),
-                byte_alignment=4,
-            )
-            sGatherBytes = smem.allocate_tensor(
-                element_type=Int32,
-                layout=cute.make_layout((1,)),
-                byte_alignment=4,
-            )
-            sScoreF32 = smem.allocate_tensor(
-                element_type=Float32,
-                layout=cute.make_layout((M_BLOCK, N_BLOCK)),
-                byte_alignment=16,
-            )
-            sV = smem.allocate_tensor(
-                element_type=BFloat16,
-                layout=pv_b_smem_layout.outer,
-                byte_alignment=128,
-                swizzle=pv_b_smem_layout.inner,
-            )
-
-            if warp_idx == 0:
-                with cute.arch.elect_one():
-                    cute.arch.mbarrier_init(gather_mbar_ptr, 1)
-
-            _load_split_index_groups(
-                mIdx,
-                sIdx,
-                sValid,
-                sGroupMask,
-                tidx,
-                token_idx,
-                split_base,
-                total_kv,
-            )
-
-            cute.arch.sync_threads()
-
-            _compute_gather_bytes(sGroupMask, sGatherBytes, tidx)
-            cute.arch.sync_threads()
-
-            gather_kpe_copy = make_gather4_copy_fn(
-                tma_atom_kpe, sQrow, sIdx, sGroupMask, Int32(0)
-            )
-            gather_ckv_copy = make_gather4_copy_fn(
-                tma_atom_ckv, sQrow, sIdx, sGroupMask, Int32(0)
-            )
-
-            _initialize_placeholder_outputs(
-                mPartialO, mPartialLse, tidx, split_idx, token_idx
-            )
-            cute.arch.sync_threads()
-
-            for _ in cutlass.range_constexpr(1):
-                tmem_alloc_barrier = pipeline.NamedBarrier(
-                    barrier_id=1,
-                    num_threads=self.threads_per_cta,
-                )
-                tmem = utils.TmemAllocator(
-                    _storage.tmem_buf,
-                    barrier_for_retrieve=tmem_alloc_barrier,
-                )
-                qk_acc_shape = qk_tiled_mma_.partition_shape_C((M_BLOCK, N_BLOCK))
-                qk_acc_fake = qk_tiled_mma_.make_fragment_C(qk_acc_shape)
-                qk_tmem_cols = sm100_utils.get_num_tmem_alloc_cols(qk_acc_fake)
-                acc_producer, acc_consumer = pipeline.PipelineUmmaAsync.create(
-                    barrier_storage=_storage.acc_mbar.data_ptr(),
-                    num_stages=1,
-                    producer_group=pipeline.CooperativeGroup(pipeline.Agent.Thread),
-                    consumer_group=pipeline.CooperativeGroup(
-                        pipeline.Agent.Thread, self.threads_per_cta
-                    ),
-                ).make_participants()
-
-                tmem.allocate(qk_tmem_cols)
-                tmem.wait_for_alloc()
-                tmem_ptr = tmem.retrieve_ptr(Float32)
-                tScore = cute.make_tensor(tmem_ptr, qk_acc_fake.layout)
-
-                copy_atom_t2r = sm100_utils.get_tmem_load_op(
-                    self.cta_tile_shape_mnk, self.c_layout, Float32,
-                    Float32, self.epi_tile, False,
-                )
-                tScore_flat = tScore[((None, None), 0, 0)]
-                tAcc_epi = cute.flat_divide(tScore_flat, self.epi_tile)
-                tiled_copy_t2r = tcgen05.make_tmem_copy(
-                    copy_atom_t2r, tAcc_epi[(None, None, 0, 0)]
-                )
-                thr_t2r = tiled_copy_t2r.get_slice(tidx)
-                tTR_tScore = thr_t2r.partition_S(tAcc_epi)
-                tTR_tScore = cute.group_modes(
-                    tTR_tScore, 3, cute.rank(tTR_tScore)
-                )
-
-                cScore = cute.make_identity_tensor((M_BLOCK, N_BLOCK))
-                cScore_epi = cute.flat_divide(cScore, self.epi_tile)
-                tTR_cScore = thr_t2r.partition_D(cScore_epi)
-                tTR_cScore = cute.group_modes(
-                    tTR_cScore, 3, cute.rank(tTR_cScore)
-                )
-                tTR_rScore = cute.make_fragment_like(
-                    tTR_cScore[(None, None, None, 0)], Float32
-                )
-
-                tQr = qk_tiled_mma_.make_fragment_A(sQ)
-                tKr = qk_tiled_mma_.make_fragment_B(sK)
-                qk_num_kblks = cute.size(tQr, mode=[2])
-                first_qk = True
-                gather_phase = Int32(0)
-
-                acc_handle = acc_producer.acquire_and_advance()
-                for tile_idx in cutlass.range(CKV_DIM // N_BLOCK, unroll=1):
-                    col_base = Int32(tile_idx * N_BLOCK)
-                    _load_q_nope_tile(
-                        sQrow,
-                        sQ,
-                        mQ_nope,
-                        q_smem_layout_staged.inner,
-                        tidx,
-                        token_idx,
-                        col_base,
-                    )
-                    _clear_rowmajor_stage(sQrow, tidx)
-                    cute.arch.sync_threads()
-                    if warp_idx == 0:
-                        gather_ckv_copy(tile_idx, 0, gather_mbar_ptr)
-                        with cute.arch.elect_one():
-                            cute.arch.mbarrier_expect_tx(
-                                gather_mbar_ptr,
-                                sGatherBytes[0],
-                            )
-                            cute.arch.mbarrier_arrive(gather_mbar_ptr)
-                    cute.arch.mbarrier_wait(gather_mbar_ptr, gather_phase)
-                    cute.arch.fence_view_async_shared()
-                    cute.arch.sync_threads()
-                    copy_rowmajor_stage_to_operand_b(
-                        sQrow,
-                        sK[None, None, None, 0],
-                        k_smem_layout_staged.inner,
-                        tidx,
-                    )
-                    cute.arch.sync_threads()
-                    gather_phase = gather_phase ^ Int32(1)
-
-                    for kblk_idx in cutlass.range(qk_num_kblks, unroll_full=True):
-                        qk_tiled_mma_.set(
-                            tcgen05.Field.ACCUMULATE,
-                            (not first_qk) or kblk_idx != 0,
-                        )
-                        cute.gemm(
-                            qk_tiled_mma_,
-                            tScore,
-                            tQr[(None, None, kblk_idx, 0)],
-                            tKr[(None, None, kblk_idx, 0)],
-                            tScore,
-                        )
-                    first_qk = False
-
-                _load_q_pe_tile(
-                    sQrow,
-                    sQ,
-                    mQ_pe,
-                    q_smem_layout_staged.inner,
-                    tidx,
-                    token_idx,
-                )
-                _clear_rowmajor_stage(sQrow, tidx)
-                cute.arch.sync_threads()
-                if warp_idx == 0:
-                    gather_kpe_copy(0, 0, gather_mbar_ptr)
-                    with cute.arch.elect_one():
-                        cute.arch.mbarrier_expect_tx(
-                            gather_mbar_ptr,
-                            sGatherBytes[0],
-                        )
-                        cute.arch.mbarrier_arrive(gather_mbar_ptr)
-                cute.arch.mbarrier_wait(gather_mbar_ptr, gather_phase)
-                cute.arch.fence_view_async_shared()
-                cute.arch.sync_threads()
-                copy_rowmajor_stage_to_operand_b(
-                    sQrow,
-                    sK[None, None, None, 0],
-                    k_smem_layout_staged.inner,
-                    tidx,
-                )
-                cute.arch.sync_threads()
-                gather_phase = gather_phase ^ Int32(1)
-
-                for kblk_idx in cutlass.range(qk_num_kblks, unroll_full=True):
-                    qk_tiled_mma_.set(tcgen05.Field.ACCUMULATE, True)
-                    cute.gemm(
-                        qk_tiled_mma_,
-                        tScore,
-                        tQr[(None, None, kblk_idx, 0)],
-                        tKr[(None, None, kblk_idx, 0)],
-                        tScore,
-                    )
-
-                acc_handle.commit()
-                acc_handle = acc_consumer.wait_and_advance()
-
-                scale_log2e = sm_scale * Float32(LOG2E)
-                simt_atom = cute.make_copy_atom(
-                    cute.nvgpu.CopyUniversalOp(), Float32
-                )
-                num_epi_tiles = cute.size(tTR_tScore.shape, mode=[3])
-                for si in cutlass.range(num_epi_tiles):
-                    cScore_i = tTR_cScore[(None, None, None, si)]
-                    cute.copy(
-                        tiled_copy_t2r,
-                        tTR_tScore[(None, None, None, si)],
-                        tTR_rScore,
-                    )
-                    for i in cutlass.range_constexpr(cute.size(tTR_rScore)):
-                        coord = cScore_i[i]
-                        sScoreF32[coord[0], coord[1]] = tTR_rScore[i] * scale_log2e
-
-                cute.arch.sync_threads()
-                acc_handle.release()
-
-                for elem in cutlass.range(tidx, M_BLOCK * N_BLOCK, 128, unroll=1):
-                    row = elem // N_BLOCK
-                    col = elem % N_BLOCK
-                    if sValid[col] == Int32(0):
-                        sScoreF32[row, col] = Float32(-float("inf"))
-
-                cute.arch.sync_threads()
-
-                cols_per_thr = N_BLOCK // 8
-                head_idx = tidx // Int32(8)
-                lane_in_head = tidx % Int32(8)
-                col_start = lane_in_head * Int32(cols_per_thr)
-
-                local_max = Float32(-float("inf"))
-                row_max = Float32(-float("inf"))
-                local_sum = Float32(0.0)
-                row_sum = Float32(0.0)
-                lse = Float32(-float("inf"))
-
-                if head_idx < Int32(NUM_Q_HEADS):
-                    for c in cutlass.range(cols_per_thr, unroll=1):
-                        val = sScoreF32[head_idx, col_start + Int32(c)]
-                        if val > local_max:
-                            local_max = val
-                    sScoreF32[
-                        Int32(NUM_Q_HEADS) + lane_in_head, head_idx
-                    ] = local_max
-                cute.arch.sync_threads()
-
-                if head_idx < Int32(NUM_Q_HEADS):
-                    for lane in cutlass.range(8, unroll_full=True):
-                        val = sScoreF32[
-                            Int32(NUM_Q_HEADS) + Int32(lane), head_idx
-                        ]
-                        if val > row_max:
-                            row_max = val
-
-                    for c in cutlass.range(cols_per_thr, unroll=1):
-                        col = col_start + Int32(c)
-                        val = sScoreF32[head_idx, col]
-                        exp_val = Float32(0.0)
-                        if row_max > Float32(-float("inf")):
-                            exp_val = cute.exp2(val - row_max, fastmath=True)
-                        sScoreF32[head_idx, col] = exp_val
-                        local_sum = local_sum + exp_val
-
-                    sScoreF32[
-                        Int32(NUM_Q_HEADS) + lane_in_head, head_idx
-                    ] = local_sum
-                cute.arch.sync_threads()
-
-                if head_idx < Int32(NUM_Q_HEADS):
-                    for lane in cutlass.range(8, unroll_full=True):
-                        row_sum = row_sum + sScoreF32[
-                            Int32(NUM_Q_HEADS) + Int32(lane), head_idx
-                        ]
-
-                    if row_sum > Float32(0.0):
-                        lse = row_max + cute.log2(row_sum, fastmath=True)
-                    mPartialLse[split_idx, token_idx, head_idx] = lse
-
-                cute.arch.sync_threads()
-
-                inv_sum = Float32(0.0)
-                if head_idx < Int32(NUM_Q_HEADS):
-                    if row_sum > Float32(0.0):
-                        inv_sum = Float32(1.0) / row_sum
-                    for c in cutlass.range(cols_per_thr, unroll=1):
-                        col = col_start + Int32(c)
-                        p_val = Float32(0.0)
-                        if inv_sum > Float32(0.0):
-                            p_val = sScoreF32[head_idx, col] * inv_sum
-                        sQrow[head_idx, col, 0] = BFloat16(p_val)
-
-                cute.arch.sync_threads()
-
-                for elem in cutlass.range(
-                    tidx, (M_BLOCK - NUM_Q_HEADS) * N_BLOCK, 128, unroll=1
-                ):
-                    row = Int32(NUM_Q_HEADS) + elem // Int32(N_BLOCK)
-                    col = elem % Int32(N_BLOCK)
-                    sQrow[row, col, 0] = BFloat16(0.0)
-
-                cute.arch.sync_threads()
-
-                copy_rowmajor_stage_to_operand_a(
-                    sQrow, sQ[None, None, None, 0],
-                    q_smem_layout_staged.inner, tidx,
-                )
-                cute.arch.sync_threads()
-
-                tPr = pv_tiled_mma_.make_fragment_A(sQ)
-                tVr = pv_tiled_mma_.make_fragment_B(sV)
-                pv_num_kblks = cute.size(tPr, mode=[2])
-
-                for v_tile_idx in cutlass.range(CKV_DIM // N_BLOCK, unroll=1):
-                    v_col_base = Int32(v_tile_idx * N_BLOCK)
-
-                    _clear_rowmajor_stage(sQrow, tidx)
-                    cute.arch.sync_threads()
-                    if warp_idx == 0:
-                        gather_ckv_copy(v_tile_idx, 0, gather_mbar_ptr)
-                        with cute.arch.elect_one():
-                            cute.arch.mbarrier_expect_tx(
-                                gather_mbar_ptr,
-                                sGatherBytes[0],
-                            )
-                            cute.arch.mbarrier_arrive(gather_mbar_ptr)
-                    cute.arch.mbarrier_wait(gather_mbar_ptr, gather_phase)
-                    cute.arch.fence_view_async_shared()
-                    cute.arch.sync_threads()
-                    copy_rowmajor_stage_to_operand_b(
-                        sQrow,
-                        sV[None, None, None, 0],
-                        pv_b_smem_layout.inner,
-                        tidx,
-                    )
-                    cute.arch.sync_threads()
-                    gather_phase = gather_phase ^ Int32(1)
-
-                    acc_handle = acc_producer.acquire_and_advance()
-                    pv_tiled_mma_.set(tcgen05.Field.ACCUMULATE, False)
-                    for kblk_idx in cutlass.range(
-                        pv_num_kblks, unroll_full=True
-                    ):
-                        pv_tiled_mma_.set(
-                            tcgen05.Field.ACCUMULATE, kblk_idx != 0,
-                        )
-                        cute.gemm(
-                            pv_tiled_mma_,
-                            tScore,
-                            tPr[(None, None, kblk_idx, 0)],
-                            tVr[(None, None, kblk_idx, 0)],
-                            tScore,
-                        )
-
-                    acc_handle.commit()
-                    acc_handle = acc_consumer.wait_and_advance()
-
-                    for si in cutlass.range(num_epi_tiles):
-                        cScore_i = tTR_cScore[(None, None, None, si)]
-                        cute.copy(
-                            tiled_copy_t2r,
-                            tTR_tScore[(None, None, None, si)],
-                            tTR_rScore,
-                        )
-                        for i in cutlass.range_constexpr(cute.size(tTR_rScore)):
-                            coord = cScore_i[i]
-                            sScoreF32[coord[0], coord[1]] = tTR_rScore[i]
-
-                    cute.arch.sync_threads()
-                    acc_handle.release()
-
-                    for elem in cutlass.range(
-                        tidx, NUM_Q_HEADS * N_BLOCK, 128, unroll=1
-                    ):
-                        head = elem // N_BLOCK
-                        dim_col = elem % N_BLOCK
-                        mPartialO[
-                            split_idx, token_idx, head,
-                            v_col_base + dim_col,
-                        ] = sScoreF32[head, dim_col]
-
-                    cute.arch.sync_threads()
-
-                tmem.relinquish_alloc_permit()
-                pipeline.sync(barrier_id=2)
-                tmem.free(tmem_ptr)
-            return
-
+    # SplitKernelShell removed — RebuildSplitKernelShell is now authoritative.
+    # Dense fallback (_compute_split_partials) retained for FLASHMLA_DSA_VALIDATE_FUSED.
     return RebuildSplitKernelShell()
 
 
@@ -2277,7 +1642,7 @@ def _prepare_qk_gemm_operands(q_nope, q_pe, kc, kp):
 
 
 def _allocate_fused_output_scratch(T, device):
-    """Allocate padded fused-output scratch compatible with future WG2 TMA stores."""
+    """Allocate padded fused-output scratch for WG2 epilogue stores."""
     partial_o_tma = torch.empty(
         (NUM_SPLITS, T, M_BLOCK, CKV_DIM), dtype=torch.float32, device=device
     )
@@ -2289,7 +1654,7 @@ def _allocate_fused_output_scratch(T, device):
 
 
 def _prepare_split_shell_operands(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices):
-    """Wrap direct split-shell operands plus padded fused-output scratch as CuTeDSL tensors."""
+    """Wrap fused kernel operands plus padded output scratch as CuTeDSL tensors."""
     from cutlass.cute.runtime import from_dlpack
 
     T = q_nope.shape[0]
@@ -2316,7 +1681,7 @@ def _prepare_split_shell_operands(q_nope, q_pe, ckv_cache, kpe_cache, sparse_ind
 def _compute_split_partials_fused(
     q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale_f
 ):
-    """Deprecated shadow-only fused path while the FMHA-like rebuild is in progress."""
+    """Run the fused 3-warpgroup split kernel and return partial outputs."""
     import cuda.bindings.driver as cuda
 
     (
@@ -2494,29 +1859,34 @@ def _compute_split_partials(q_nope, q_pe, kc, kp, vm, sm_scale_f):
 
 @torch.no_grad()
 def run(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale):
-    """Compute DSA sparse attention."""
+    """Compute DSA sparse attention — fused CuTeDSL kernel is authoritative."""
     sm_scale_f = _to_python_float(sm_scale)
-    shadow_partial_o, shadow_partial_lse = _compute_split_partials_fused(
+
+    # Fused 3-warpgroup kernel is the authoritative path
+    partial_o, partial_lse = _compute_split_partials_fused(
         q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale_f
     )
-    kc, kp, vm = _gather_kv_chunks(ckv_cache, kpe_cache, sparse_indices)
-    partial_o, partial_lse = _compute_split_partials(
-        q_nope, q_pe, kc, kp, vm, sm_scale_f
-    )
-    validate_fused = os.environ.get(
+
+    # Optional: run dense fallback for validation or override
+    use_fallback = os.environ.get(
+        "FLASHMLA_DSA_USE_FALLBACK", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    validate = os.environ.get(
         "FLASHMLA_DSA_VALIDATE_FUSED", ""
     ).strip().lower() not in {"", "0", "off"}
-    use_fused = os.environ.get(
-        "FLASHMLA_DSA_USE_FUSED", ""
-    ).strip().lower() in {"1", "true", "yes", "on"}
 
-    if validate_fused:
-        _maybe_validate_split_partials(
-            shadow_partial_o, shadow_partial_lse, partial_o, partial_lse
+    if use_fallback or validate:
+        kc, kp, vm = _gather_kv_chunks(ckv_cache, kpe_cache, sparse_indices)
+        fb_partial_o, fb_partial_lse = _compute_split_partials(
+            q_nope, q_pe, kc, kp, vm, sm_scale_f
         )
-    if use_fused:
-        partial_o = shadow_partial_o
-        partial_lse = shadow_partial_lse
+        if validate:
+            _maybe_validate_split_partials(
+                partial_o, partial_lse, fb_partial_o, fb_partial_lse
+            )
+        if use_fallback:
+            partial_o = fb_partial_o
+            partial_lse = fb_partial_lse
 
     output, final_lse = _combine_splits(partial_o, partial_lse)
     return output, final_lse
@@ -2524,7 +1894,7 @@ def run(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale):
 
 @torch.no_grad()
 def _compile_only(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale):
-    """Compile the current shadow-only split shell kernel for the provided problem shapes."""
+    """Compile the fused split kernel for the provided problem shapes."""
     from cutlass.base_dsl.compiler import CompileCallable
     import cuda.bindings.driver as cuda
 
@@ -2558,7 +1928,7 @@ def _cutedsl_smoke_compile() -> None:
         0, 8 * PAGE_SIZE, (1, TOPK), device="cuda", dtype=torch.int32
     )
     run.compile_only(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, 1.0)
-    print("CuTe split-shell smoke compile PASS")
+    print("CuTeDSL fused kernel smoke compile PASS")
 
 
 if __name__ == "__main__":
