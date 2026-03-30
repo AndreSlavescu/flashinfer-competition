@@ -24,9 +24,12 @@ Usage:
     modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel.py::kernel"
 """
 
+from __future__ import annotations
+
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import modal
 
@@ -72,15 +75,44 @@ image = (
     volumes={TRACE_MOUNT: trace_volume},
 )
 def run_benchmark_remote(
-    solution_json: str,
+    solution_json: str = "",
     correctness_only: bool = False,
+    raw_files: Optional[dict] = None,
+    pack_args: Optional[dict] = None,
 ) -> dict:
-    """Run flashinfer-bench evaluation on Modal B200."""
+    """Run flashinfer-bench evaluation on Modal B200.
+
+    Can accept either a pre-packed solution_json or raw_files + pack_args
+    to pack the solution remotely (avoids local flashinfer_bench dependency).
+    """
+    import base64
+    import tempfile
+
     import torch
-    from flashinfer_bench import Benchmark, BenchmarkConfig, Solution, TraceSet
+    from flashinfer_bench import Benchmark, BenchmarkConfig, BuildSpec, Solution, TraceSet
+    from flashinfer_bench.agents import pack_solution_from_files
 
     print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"CUDA: {torch.version.cuda}")
+
+    # If raw files provided, pack solution remotely
+    if raw_files and pack_args:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for fname, b64content in raw_files.items():
+                (Path(tmpdir) / fname).write_bytes(base64.b64decode(b64content))
+            spec = BuildSpec(
+                language=pack_args["lang"],
+                target_hardware=["cuda"],
+                entry_point=pack_args["entry_point"],
+            )
+            solution = pack_solution_from_files(
+                path=tmpdir,
+                spec=spec,
+                name=pack_args["name"],
+                definition=pack_args["definition"],
+                author=pack_args["author"],
+            )
+            solution_json = solution.model_dump_json(indent=2)
 
     # Load solution
     solution = Solution.model_validate_json(solution_json)
@@ -193,35 +225,17 @@ def setup_trace_volume(dataset_tar: bytes):
 # ---------------------------------------------------------------------------
 # Local helpers
 # ---------------------------------------------------------------------------
-def pack_solution_local(
-    solution_dir: str,
-    track: str,
-    lang: str = "triton",
-    entry_point: str = "kernel.py::kernel",
-    name: str = "dev-kernel",
-    author: str = "team",
-) -> str:
-    """Pack solution files into a Solution JSON string."""
-    from flashinfer_bench import BuildSpec
-    from flashinfer_bench.agents import pack_solution_from_files
-
-    definition = TRACK_DEFS[track]
-
-    spec = BuildSpec(
-        language=lang,
-        target_hardware=["cuda"],
-        entry_point=entry_point,
-    )
-
-    solution = pack_solution_from_files(
-        path=solution_dir,
-        spec=spec,
-        name=name,
-        definition=definition,
-        author=author,
-    )
-
-    return solution.model_dump_json(indent=2)
+def collect_solution_files(solution_dir: str) -> dict:
+    """Read all .py/.cu/.cuh files from solution_dir into a dict {filename: content}."""
+    import base64
+    files = {}
+    solution_path = Path(solution_dir)
+    for ext in ("*.py", "*.cu", "*.cuh", "*.h"):
+        for f in solution_path.glob(ext):
+            if f.name.startswith("__"):
+                continue
+            files[f.name] = base64.b64encode(f.read_bytes()).decode()
+    return files
 
 
 def print_results(results: list[dict]):
@@ -334,7 +348,7 @@ def main(
             tar_path = f.name
 
         subprocess.run(
-            ["tar", "czf", tar_path, "-C", str(dataset_path), "."],
+            ["tar", "czf", tar_path, "--no-mac-metadata", "--exclude", "._*", "--exclude", ".DS_Store", "-C", str(dataset_path), "."],
             check=True,
         )
         tar_size = Path(tar_path).stat().st_size
@@ -361,30 +375,27 @@ def main(
     print(f"Language: {lang}")
     print(f"Mode: {'correctness-only' if correctness_only else 'full benchmark'}")
 
-    # Pack solution
-    print("\nPacking solution...")
-    try:
-        solution_json = pack_solution_local(
-            solution_dir=str(solution_path),
-            track=track,
-            lang=lang,
-            entry_point=entry_point,
-            name=name,
-            author=author,
-        )
-    except Exception as e:
-        print(f"Failed to pack solution: {e}")
+    # Collect solution files and pack remotely on Modal
+    print("\nCollecting solution files...")
+    raw_files = collect_solution_files(str(solution_path))
+    if not raw_files:
+        print(f"No kernel files found in {solution_path}")
         sys.exit(1)
+    print(f"  Files: {', '.join(raw_files.keys())}")
 
-    # Save packed solution for reference
-    out_path = PROJECT_ROOT / "solution.json"
-    out_path.write_text(solution_json)
-    print(f"Packed solution saved to {out_path}")
+    pack_args = {
+        "lang": lang,
+        "entry_point": entry_point,
+        "name": name,
+        "definition": TRACK_DEFS[track],
+        "author": author,
+    }
 
-    # Run on Modal
+    # Run on Modal (packing + benchmark)
     print("\nLaunching benchmark on Modal B200...")
     result = run_benchmark_remote.remote(
-        solution_json=solution_json,
+        raw_files=raw_files,
+        pack_args=pack_args,
         correctness_only=correctness_only,
     )
 

@@ -112,3 +112,25 @@
 - Architecture: CuTeDSL tcgen05.mma for QK GEMM (CKV + KPE fused two-phase), PyTorch for gather/softmax/SV/combine
 - Accuracy: output max_abs 3.81e-06 to 1.53e-05, LSE max_abs 9.54e-07, cos_diff < 1e-9
 - Competition tolerance: output abs_tol=1e-2, LSE abs_tol=1e-3, cos_diff_tol=1e-6
+
+### 2026-03-30 — v4 proven path (BatchedQKKernel + PyTorch softmax/SV): 23/23 PASS
+
+- Kernel: `solution/dsa_attention/kernel.py` (v4)
+- Architecture: CuTeDSL BatchedQKKernel for QK GEMM + PyTorch softmax/SV/combine
+- All 23 competition workloads pass. ~200-250ms latency (0.01-0.02x ref). Not competitive but correct.
+
+### 2026-03-30 — Fused kernel hang fix: defer_sync + cluster
+
+- [fused_kernel_hang_fix.md](fused_kernel_hang_fix.md) — Adding defer_sync=True to pipeline creates and cluster=(1,1,1) to launch fixed GPU deadlock
+
+### 2026-03-30 — sQrow row-major fix for gather4 staging
+
+- [cutedsl_sQrow_rowmajor_fix.md](cutedsl_sQrow_rowmajor_fix.md) — sQrow must be row-major to match gather4 write order and _make_rowmajor_mn_view strides. Fix applied but fused kernel still has remaining numerical errors.
+
+### 2026-03-30 — Fused kernel remaining issues
+
+- With hang fixed + sQrow row-major fix, fused kernel runs but produces wrong results
+- LSE off by ~30-60 in log2 for some heads/splits; some heads have negative LSE
+- Root cause likely in `_copy_rowmajor_stage_to_operand_b` or `_make_swizzled_mn_view` swizzle handling
+- Q operand via TMA is bypassed (correct). K operand via gather4 + copy still broken.
+- Next step: either fix the B copy or replace it with direct SMEM staging
