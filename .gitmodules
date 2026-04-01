@@ -24,7 +24,7 @@
 	url = https://huggingface.co/datasets/flashinfer-ai/mlsys26-contest
 [submodule "references/CudaForge"]
 	path = references/CudaForge
-	url = https://github.com/OptimAI-Lab/CudaForge.git
+	url = https://github.com/OptimAI-Lab/CudaForge
 [submodule "flashinfer-bench"]
 	path = flashinfer-bench
 	url = https://github.com/flashinfer-ai/flashinfer-bench.git

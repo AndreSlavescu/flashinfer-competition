@@ -383,6 +383,11 @@ def main(
         sys.exit(1)
     print(f"  Files: {', '.join(raw_files.keys())}")
 
+    # Auto-select best_kernel.py for full perf benchmark
+    if not correctness_only and "best_kernel.py" in raw_files and entry_point == "kernel.py::kernel":
+        entry_point = "best_kernel.py::kernel"
+        print(f"  Using best_kernel.py for performance benchmark")
+
     pack_args = {
         "lang": lang,
         "entry_point": entry_point,
