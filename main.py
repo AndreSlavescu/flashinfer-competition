@@ -16,6 +16,9 @@ Usage:
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()  # loads OPENAI_API_KEY (and any other vars) from .env
+
 import argparse
 import asyncio
 import json
@@ -27,8 +30,47 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+import json as _json
+
 from agents import Runner
 from agents.exceptions import MaxTurnsExceeded
+from agents.lifecycle import RunHooksBase
+from agents import Agent as _Agent
+from typing import Any as _Any
+
+
+class _VerboseHooks(RunHooksBase[_Any, _Agent]):
+    """Print each tool call + a result preview as they happen."""
+
+    async def on_llm_end(self, context, agent, response) -> None:
+        """Called after each LLM turn — response.output has tool calls with args."""
+        for item in response.output:
+            item_type = getattr(item, "type", None)
+            if item_type == "function_call":
+                fn_name = getattr(item, "name", "?")
+                args_str = getattr(item, "arguments", "") or ""
+                try:
+                    args = _json.loads(args_str)
+                    key = next(
+                        (k for k in ("file_path", "command", "query", "url", "pattern", "path")
+                         if k in args), None
+                    )
+                    hint = f" {key}={str(args[key])[:80]}" if key else f" {args_str[:60]}"
+                except Exception:
+                    hint = f" {args_str[:60]}"
+                print(f"  [{agent.name}] {fn_name}{hint}")
+            elif item_type == "shell_call":
+                cmds = getattr(getattr(item, "action", None), "commands", []) or []
+                for cmd in cmds[:3]:
+                    print(f"  [{agent.name}] shell: {cmd[:120]}")
+
+    async def on_tool_end(self, context, agent, tool, result: str) -> None:
+        """Called after a tool returns — show a short preview of the result."""
+        preview = (result or "").replace("\n", " ")[:100]
+        print(f"  [{agent.name}]   ✓ {preview}")
+
+
+VERBOSE_HOOKS = _VerboseHooks()
 
 from kernel_agents.context import (
     CoderResult,
@@ -116,8 +158,9 @@ def find_last_correct_kernel(ctx: SharedContext, solution_dir: Path) -> Path:
 
 async def run_loop(
     num_rounds: int = 5,
-    model: str = "gpt-4.5",
+    model: str = "gpt-5.4",
     resume: bool = False,
+    verbose: bool = False,
     coder_extra: str = "",
     planner_extra: str = "",
     optimizer_extra: str = "",
@@ -144,6 +187,9 @@ async def run_loop(
     planner = make_kernel_planner(model=model, extra_instructions=planner_extra)
     optimizer = make_kernel_optimizer(model=model, extra_instructions=optimizer_extra)
 
+    # Hooks for live tool-call visibility (activated by --verbose)
+    hooks = VERBOSE_HOOKS if verbose else None  # type: ignore[assignment]
+
     # Resume handling
     start_round = 0
     if resume and state_path.exists():
@@ -167,6 +213,7 @@ async def run_loop(
                 ),
                 context=ctx,
                 max_turns=30,
+                hooks=hooks,
             )
             coder_out: CoderResult = result.final_output
         except MaxTurnsExceeded:
@@ -216,6 +263,7 @@ async def run_loop(
                 input=planner_input,
                 context=ctx,
                 max_turns=40,
+                hooks=hooks,
             )
             pr: PlannerResult = planner_result.final_output
         except MaxTurnsExceeded:
@@ -254,6 +302,7 @@ async def run_loop(
                 input=optimizer_input,
                 context=ctx,
                 max_turns=60,
+                hooks=hooks,
             )
             opt: OptimizerResult = optimizer_result.final_output
         except MaxTurnsExceeded:
@@ -300,6 +349,7 @@ async def run_loop(
                 ),
                 context=ctx,
                 max_turns=20,
+                hooks=hooks,
             )
             ep: PlannerResult = epilogue_result.final_output
             print(f"  Last kernel latency: {ep.latency_ms:.3f}ms")
@@ -352,8 +402,8 @@ def main():
         help="Number of optimization rounds (default: 5)",
     )
     parser.add_argument(
-        "--model", type=str, default="gpt-4.5",
-        help="LLM model for all agents (default: gpt-4.5)",
+        "--model", type=str, default="gpt-5.4",
+        help="LLM model for all agents (default: gpt-5.4)",
     )
     parser.add_argument(
         "--resume", action="store_true",
@@ -374,6 +424,7 @@ def main():
         num_rounds=args.num_rounds,
         model=args.model,
         resume=args.resume,
+        verbose=args.verbose,
     ))
 
 

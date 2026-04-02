@@ -74,7 +74,7 @@ Output tensors (pre-allocated, write in-place):
 """
 
 
-def make_kernel_optimizer(model: str = "gpt-4.5", extra_instructions: str = "") -> Agent[SharedContext]:
+def make_kernel_optimizer(model: str = "gpt-5.4", extra_instructions: str = "") -> Agent[SharedContext]:
     """Create the kernel-optimizer agent with the given model."""
     return Agent[SharedContext](
         name="kernel-optimizer",

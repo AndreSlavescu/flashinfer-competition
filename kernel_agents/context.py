@@ -28,7 +28,7 @@ class SharedContext:
     best_latency_ms: float = float("inf")
     best_round: int = -1
     history: list[RoundRecord] = field(default_factory=list)
-    model_name: str = "gpt-4.5"
+    model_name: str = "gpt-5.4"
 
 
 # ---------------------------------------------------------------------------

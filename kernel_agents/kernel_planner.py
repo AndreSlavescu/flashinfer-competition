@@ -71,7 +71,7 @@ strategy for the next round.
 """
 
 
-def make_kernel_planner(model: str = "gpt-4.5", extra_instructions: str = "") -> Agent[SharedContext]:
+def make_kernel_planner(model: str = "gpt-5.4", extra_instructions: str = "") -> Agent[SharedContext]:
     """Create the kernel-planner agent with the given model.
 
     Note: The {{round}} and {{history}} placeholders in the instructions are

@@ -893,7 +893,7 @@ def _make_split_shell_launcher():
             mCkv_flat: cute.Tensor,
             mKpe_flat: cute.Tensor,
             mIdx: cute.Tensor,
-            mPartialO: cute.Tensor,
+            mPartialO_store: cute.Tensor,
             mPartialLse: cute.Tensor,
             sm_scale: Float32,
             stream: cuda.CUstream,
@@ -937,10 +937,15 @@ def _make_split_shell_launcher():
                 BFloat16,
                 1,
             )
+            o_smem_layout_staged = cute.make_layout(
+                (M_BLOCK, N_BLOCK, 1),
+                stride=(N_BLOCK, 1, M_BLOCK * N_BLOCK),
+            )
             gather_stage_layout = cute.slice_(
                 cute.make_layout((1, N_BLOCK, 1)), (None, None, 0)
             )
             tma_load_op = cpasync.CopyBulkTensorTileG2SOp(self.cta_group)
+            tma_store_op = cpasync.CopyBulkTensorTileS2GOp()
             tma_atom_ckv, _ = cpasync.make_tiled_tma_atom(
                 tma_load_op,
                 mCkv_flat,
@@ -953,21 +958,30 @@ def _make_split_shell_launcher():
                 gather_stage_layout,
                 (1, N_BLOCK),
             )
+            tma_atom_o, tma_tensor_o = cpasync.make_tiled_tma_atom(
+                tma_store_op,
+                mPartialO_store,
+                cute.slice_(o_smem_layout_staged, (None, None, 0)),
+                (M_BLOCK, N_BLOCK),
+            )
             self.kernel(
                 qk_tiled_mma,
                 pv_tiled_mma,
                 tma_atom_ckv,
                 tma_atom_kpe,
+                tma_atom_o,
+                tma_tensor_o,
                 q_smem_layout_staged,
                 k_smem_layout_staged,
                 pv_b_smem_layout,
                 p_smem_layout_staged,
+                o_smem_layout_staged,
                 mQ_nope,
                 mQ_pe,
                 mCkv_flat,
                 mKpe_flat,
                 mIdx,
-                mPartialO,
+                mPartialO_store,
                 mPartialLse,
                 sm_scale,
             ).launch(
@@ -983,16 +997,19 @@ def _make_split_shell_launcher():
             pv_tiled_mma_: cute.TiledMma,
             tma_atom_ckv: cute.CopyAtom,
             tma_atom_kpe: cute.CopyAtom,
+            tma_atom_o: cute.CopyAtom,
+            tma_tensor_o: cute.Tensor,
             q_smem_layout_staged: cute.ComposedLayout,
             k_smem_layout_staged: cute.ComposedLayout,
             pv_b_smem_layout: cute.ComposedLayout,
             p_smem_layout_staged: cute.ComposedLayout,
+            o_smem_layout_staged: cute.Layout,
             mQ_nope: cute.Tensor,
             mQ_pe: cute.Tensor,
             mCkv_flat: cute.Tensor,
             mKpe_flat: cute.Tensor,
             mIdx: cute.Tensor,
-            mPartialO: cute.Tensor,
+            mPartialO_store: cute.Tensor,
             mPartialLse: cute.Tensor,
             sm_scale: Float32,
         ):
@@ -1027,6 +1044,8 @@ def _make_split_shell_launcher():
             _ = pv_tiled_mma_
             _ = tma_atom_ckv
             _ = tma_atom_kpe
+            _ = tma_atom_o
+            _ = tma_tensor_o
             _ = mQ_nope
             _ = mQ_pe
             _ = mKpe_flat
@@ -1084,6 +1103,11 @@ def _make_split_shell_launcher():
                 layout=p_smem_layout_staged.outer,
                 byte_alignment=128,
                 swizzle=p_smem_layout_staged.inner,
+            )
+            sO = smem.allocate_tensor(
+                element_type=Float32,
+                layout=o_smem_layout_staged,
+                byte_alignment=16,
             )
             sScoreF32 = smem.allocate_tensor(
                 element_type=Float32,
@@ -1159,6 +1183,7 @@ def _make_split_shell_launcher():
             _ = sK
             _ = sV
             _ = sP
+            _ = sO
             _ = sScoreF32
             gather_phase = Int32(0)
             _ = gather_phase
@@ -1535,6 +1560,21 @@ def _make_split_shell_launcher():
                 tTR_cOutput[(None, None, None, 0)], Float32
             )
             num_output_epi_tiles = cute.size(tTR_tOutput.shape, mode=[3])
+            gPartialO_base = cute.slice_(
+                tma_tensor_o, (None, None, split_idx, token_idx)
+            )
+            gPartialO_epi = cute.local_tile(
+                gPartialO_base,
+                (M_BLOCK, N_BLOCK),
+                (0, None),
+            )
+            tOsO, tOgO = cpasync.tma_partition(
+                tma_atom_o,
+                0,
+                cute.make_layout(1),
+                cute.group_modes(sO, 0, 2),
+                cute.group_modes(gPartialO_epi, 0, 2),
+            )
 
             # --- Phase 2: V staging + PV MMA across 8 output tiles ---
             NUM_V_TILES = CKV_DIM // N_BLOCK  # 8
@@ -1605,9 +1645,6 @@ def _make_split_shell_launcher():
             ):
                 for v_tile_idx in cutlass.range(NUM_V_TILES, unroll=1):
                     output_handle = output_consumer.wait_and_advance()
-                    v_col_base = v_tile_idx * Int32(N_BLOCK)
-
-                    # TMEM -> registers -> global store
                     for si in cutlass.range(num_output_epi_tiles):
                         cOutput_i = tTR_cOutput[(None, None, None, si)]
                         cute.copy(
@@ -1616,17 +1653,24 @@ def _make_split_shell_launcher():
                             tTR_rOutput,
                         )
                         cute.arch.fence_view_async_tmem_load()
-                        for i in cutlass.range_constexpr(
-                            cute.size(tTR_rOutput)
-                        ):
+                        for i in cutlass.range_constexpr(cute.size(tTR_rOutput)):
                             coord = cOutput_i[i]
                             row = coord[0]
                             col = coord[1]
-                            if row < Int32(NUM_Q_HEADS):
-                                mPartialO[
-                                    split_idx, token_idx, row,
-                                    v_col_base + col,
-                                ] = tTR_rOutput[i]
+                            sO[row, col, 0] = tTR_rOutput[i]
+
+                    softmax_wg_sync_barrier.arrive_and_wait()
+                    cute.arch.fence_proxy(
+                        cute.arch.ProxyKind.async_shared,
+                        space=cute.arch.SharedSpace.shared_cta,
+                    )
+                    if warp_idx == 2 * WARPS_PER_WARPGROUP:
+                        cute.copy(
+                            tma_atom_o, tOsO[None, 0], tOgO[None, v_tile_idx]
+                        )
+                        cute.arch.cp_async_bulk_commit_group()
+                        cute.arch.cp_async_bulk_wait_group(0, read=True)
+                    softmax_wg_sync_barrier.arrive_and_wait()
 
                     output_handle.release()
 
@@ -1841,6 +1885,7 @@ def _prepare_split_shell_operands(q_nope, q_pe, ckv_cache, kpe_cache, sparse_ind
     partial_o_tma, partial_o, partial_lse = _allocate_fused_output_scratch(
         T, device
     )
+    partial_o_tma_store = partial_o_tma.permute(2, 3, 0, 1)
 
     return (
         partial_o_tma,
@@ -1851,7 +1896,7 @@ def _prepare_split_shell_operands(q_nope, q_pe, ckv_cache, kpe_cache, sparse_ind
         from_dlpack(ckv_flat.contiguous(), assumed_align=16),
         from_dlpack(kpe_flat.contiguous(), assumed_align=16),
         from_dlpack(sparse_indices.contiguous(), assumed_align=16),
-        from_dlpack(partial_o_tma, assumed_align=16),
+        from_dlpack(partial_o_tma_store, assumed_align=16),
         from_dlpack(partial_lse, assumed_align=16),
     )
 
@@ -1871,7 +1916,7 @@ def _compute_split_partials_fused(
         mCkv,
         mKpe,
         mIdx,
-        mO,
+        mO_store,
         mLse,
     ) = _prepare_split_shell_operands(
         q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices
@@ -1886,11 +1931,13 @@ def _compute_split_partials_fused(
         mCkv,
         mKpe,
         mIdx,
-        mO,
+        mO_store,
         mLse,
         stream,
     )
-    compiled_kernel(mQ, mQp, mCkv, mKpe, mIdx, mO, mLse, sm_scale_f, stream)
+    compiled_kernel(
+        mQ, mQp, mCkv, mKpe, mIdx, mO_store, mLse, sm_scale_f, stream
+    )
     return partial_o, partial_lse
 
 
