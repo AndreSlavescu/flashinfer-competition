@@ -14,25 +14,31 @@ Rules:
 1. Your kernel must compile and pass 23/23 cases in the full correctness check
 2. Your kernel must be written FULLY in CuTeDSL. Don't fallback to PyTorch unless you're debugging
 3. Your kernel must be contained in one kernel_0.py file. Copy over any helpers you use
-4. Your kernel must be use the JIT compile cache pattern
-5. Your kernel must attempt to use optimized B200 (sm100a) features when possible (TMA ld/st, tcgen05 mma)
-6. Your kernel must have no debugging code when finalizing, remove AFTER passing modal bench
-7. Your kernel must be written to solution/dsa_attention/kernel_0.py
+4. Your kernel must use type annotations as much as possible to help JIT compiler
+5. Your kernel must use static arguments as much as possible via cutlass.Constexpr
+6. Your kernel must be use the JIT compile cache pattern
+7. Your kernel must use optimized B200 (sm100a) features as much as possible (ex. TMA ld/st, tcgen05 mma etc.)
+8. Your kernel must have no debugging code when finalizing, remove AFTER passing modal bench
+9. Your kernel must be written to solution/dsa_attention/kernel_0.py
 
 Suggested steps:
 1. Read through PyTorch baseline and CuTeDSL kernel examples to brainstorm a design for the algorithm
 2. Write a design plan in kernel_0_plan.md, outlining the following:
-  - Tile sizes: B_H (heads per CTA), B_TOPK (tokens per tile), K_TILE (inner dim)
-  - Warp specialization: which warps handle TMA, UTCMMA, softmax, output
-  - TMA configuration: tensor map dims, box dims, swizzle, INT64 packing for ckv
-  - Shared memory plan: buffer layout, pipeline stages, total smem requirement
-  - TMEM column assignments: where Q, P (attention weights), O (output) live
-  - Barrier choreography: which mbarriers gate which producer→consumer edges
-  - Split-KV strategy: num_sm_parts, how to partition topk=2048 across CTAs
-  - Output reduction: combine kernel or TMA bulk reduce for merging partial results
+  - Work partition: How to distribute multiple Qs and topk KVs per Q across all CTAs 
+  - Warp specialization: Which warps handle stages like sparse KV loading, QK MMA, softmax, PV MMA, combine partials etc.
+  - Flow of memory: How should each tensor (like Q, K, V, P, O etc.) be moved between memory subsystems (TMEM, RMEM, SMEM, GMEM)
+  - Asynchronous pipelining:
+    - What types of work can be overlapped (ex. gather KV -> QK MMA)
+    - What types of pipelines should it use (ex. TmaAsync, TmaUmma, AsyncUmma, UmmaAsync, TmaStore etc.)
+    - For each pipeline, which warps are the producer/consumer, what are the num stages (pipeline depth)
+    - For each pipeline and warp, how should SMEM, TMEM, and register be budgeted for occupancy limits
+    - How could resources be prefetched
+  - Shared memory plan: Buffer layouts for tensors, total smem requirement (pipeline stages)
+  - Tensor memory plan: Column assignments for tensors, layouts for tcgen05 mma and ld/st
+  - Synchronization: How should barriers and fences be placed at async pipeline, SMEM, TMEM boundaries
 3. Read through all references to find CuTeDSL abstractions and APIs that simplify any B200 and PTX features you plan to use
    (ex. pipelining and synchronization, building tma/mma atoms, tiling tma/mma, creating memory layouts/descriptors etc.)
-4. Implement the kernel based on the design plan, existing CuTeDSL abstractions and APIs, and common patterns
+4. Implement the kernel based on the design plan, existing CuTeDSL abstractions and APIs, and CuTeDSL patterns & style
 5. Debug printing: until correctness passes explicitly print out ALL of the following:
   - Tensors: layout shapes and strides
   - Layout Algebras: layout shapes and strides
@@ -45,27 +51,27 @@ Suggested steps:
   - (Check return types of helper functions, they could be any of the above and should be printed)
 6. Implement and debug step by step by running the synthetic data check after every change, proceeding only when it passes 
 
-Common patterns:
-1. JIT compile cache:
-  compile_cache = {}
+CuTeDSL patterns & style:
+1. cute.printf() to print dynamic values during GPU runtime
+2. Comment expected layouts for each tensor definition and transformation
+3. JIT compile cache:
+    compile_cache = {}
 
-  def _get_compiled_kernel(...stream):
-      cache_key = (...) # index by shapes
-      compiled = compile_cache.get(cache_key)
-      if compiled is None:
-          compiled = cute.compile(...stream)
-          compile_cache[cache_key] = compiled
-      return compiled
+    def _get_compiled_kernel(...stream):
+        cache_key = (...) # index by shapes
+        compiled = compile_cache.get(cache_key)
+        if compiled is None:
+            compiled = cute.compile(...stream)
+            compile_cache[cache_key] = compiled
+        return compiled
 
-  def _run_kernel(...):
-      import cuda.bindings.driver as cuda
-      ...
-      stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
-      compiled_kernel = _get_compiled_kernel(...stream)
-      compiled_kernel(...stream)
-      return ...
-
-2. Static integers: Allows CuTe to optimize at compile time. Static ints have an underscore prefix when printed.
+    def _run_kernel(...):
+        import cuda.bindings.driver as cuda
+        ...
+        stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+        compiled_kernel = _get_compiled_kernel(...stream)
+        compiled_kernel(...stream)
+        return ...
 
 Common pitfalls:
 1. Understand instruction issue scopes for synchronization (common cause of deadlocks)
@@ -77,8 +83,8 @@ Common pitfalls:
 2. A lot of issues are due to layouts not compute. Validate layouts first through debug printing and reasoning 
 
 Validation (All happens on Modal B200, NEVER compile CUDA locally):
- - Synthetic data check: 
- - Full correctness check: modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --correctness-only
+ - Synthetic data check: python3 scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::kernel
+ - Full correctness check: modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only
 
 PyTorch baseline (for logical reference only): 
 ```
@@ -154,14 +160,15 @@ References:
 2. Pipeline helpers: csrc/cutlass/python/CuTeDSL/cutlass/pipeline
 3. Aux helpers: csrc/cutlass/python/CuTeDSL/cutlass/utils
 4. CuTeDSL guides: csrc/cutlass/examples/python/CuTeDSL/notebooks
-5. Blackwell constraints: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/blackwell_functionality.html
+5. CUTLASS terminologies: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/terminology.html
+6. Blackwell constraints: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/blackwell_functionality.html
 
 CuTeDSL kernel examples:
 1. CuTeDSL Blackwell Kernels: csrc/cutlass/examples/python/CuTeDSL/blackwell
 2. Highly optimized CuTeDSL kernels: references/CuTeDSL-kernels/quack 
 3. Minimal CuTe C++ examples: csrc/cutlass/examples/cute/tutorial/blackwell
 
-Tools You Have
+Tools You Have:
 1. shell: Execute bash commands (use for `modal run`, compilation, git, etc.). Commands run from the project root.
 2. apply_patch: Create, update, or delete files via unified diffs.
 3. web_search: Search the web for documentation, examples, CUDA forums, PTX ISA specs.
@@ -170,6 +177,17 @@ Tools You Have
 6. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05').
 7. web_fetch: Fetch content from a specific URL.
 
+Output format:
+When you are done, return your results with:
+1. generated: paths to generated design plan and DSA kernel
+2. correctness_verified: true if all 23 workloads passed the full correctness check
+3. status: "success" or "compile_error" or "validation_failed"
+4. message: brief summary of what you did and the result
+5. reflection: answer the following
+   - Rank each task in the design plan by difficulty
+   - What bugs did you encounter and how did you fix them? Was there any you couldn't fix?
+   - What information did you wish you had upfront? What resources were most helpful?
+   - What design decisions would you change in hindsight?
 {extra_instructions}
 """
 
@@ -178,7 +196,7 @@ def make_kernel_coder(model: str = "gpt-5.4", extra_instructions: str = "") -> A
     """Create the kernel-coder agent with the given model."""
     return Agent[SharedContext](
         name="kernel-coder",
-        instructions=INSTRUCTIONS.format(extra_instructions=extra_instructions),
+        instructions=INSTRUCTIONS.replace("{extra_instructions}", extra_instructions),
         tools=ALL_TOOLS,
         model=model,
         output_type=CoderResult,

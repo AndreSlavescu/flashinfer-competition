@@ -207,12 +207,11 @@ async def run_loop(
             result = await Runner.run(
                 starting_agent=coder,
                 input=(
-                    "Bootstrap an initial kernel_0.py that passes correctness validation. "
-                    "Start simple — a pure PyTorch implementation is perfectly fine for round 0. "
-                    "The key requirement is that ALL workloads pass --correctness-only."
+                    "Bootstrap kernel_0.py. Follow your instructions — design, implement, "
+                    "debug, and validate until ALL 23 workloads pass correctness."
                 ),
                 context=ctx,
-                max_turns=30,
+                max_turns=300,
                 hooks=hooks,
             )
             coder_out: CoderResult = result.final_output
