@@ -23,54 +23,14 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import shutil
 import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
-import json as _json
-
 from agents import Runner
 from agents.exceptions import MaxTurnsExceeded
-from agents.lifecycle import RunHooksBase
-from agents import Agent as _Agent
-from typing import Any as _Any
-
-
-class _VerboseHooks(RunHooksBase[_Any, _Agent]):
-    """Print each tool call + a result preview as they happen."""
-
-    async def on_llm_end(self, context, agent, response) -> None:
-        """Called after each LLM turn — response.output has tool calls with args."""
-        for item in response.output:
-            item_type = getattr(item, "type", None)
-            if item_type == "function_call":
-                fn_name = getattr(item, "name", "?")
-                args_str = getattr(item, "arguments", "") or ""
-                try:
-                    args = _json.loads(args_str)
-                    key = next(
-                        (k for k in ("file_path", "command", "query", "url", "pattern", "path")
-                         if k in args), None
-                    )
-                    hint = f" {key}={str(args[key])[:80]}" if key else f" {args_str[:60]}"
-                except Exception:
-                    hint = f" {args_str[:60]}"
-                print(f"  [{agent.name}] {fn_name}{hint}")
-            elif item_type == "shell_call":
-                cmds = getattr(getattr(item, "action", None), "commands", []) or []
-                for cmd in cmds[:3]:
-                    print(f"  [{agent.name}] shell: {cmd[:120]}")
-
-    async def on_tool_end(self, context, agent, tool, result: str) -> None:
-        """Called after a tool returns — show a short preview of the result."""
-        preview = (result or "").replace("\n", " ")[:100]
-        print(f"  [{agent.name}]   ✓ {preview}")
-
-
-VERBOSE_HOOKS = _VerboseHooks()
 
 from kernel_agents.context import (
     CoderResult,
@@ -82,6 +42,7 @@ from kernel_agents.context import (
 from kernel_agents.kernel_coder import make_kernel_coder
 from kernel_agents.kernel_optimizer import make_kernel_optimizer
 from kernel_agents.kernel_planner import make_kernel_planner
+from kernel_agents.stream_logging import consume_streamed_run
 
 logger = logging.getLogger(__name__)
 
@@ -229,6 +190,32 @@ def parse_coder_result(raw_output: object) -> CoderResult:
     )
 
 
+async def _run_agent(
+    *,
+    starting_agent: object,
+    input: str,
+    context: SharedContext,
+    max_turns: int,
+    verbose: bool,
+):
+    """Run an agent normally or via the streamed progress path."""
+    if not verbose:
+        return await Runner.run(
+            starting_agent=starting_agent,
+            input=input,
+            context=context,
+            max_turns=max_turns,
+        )
+
+    result = Runner.run_streamed(
+        starting_agent=starting_agent,
+        input=input,
+        context=context,
+        max_turns=max_turns,
+    )
+    return await consume_streamed_run(result)
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -266,9 +253,6 @@ async def run_loop(
     planner = make_kernel_planner(model=model, extra_instructions=planner_extra)
     optimizer = make_kernel_optimizer(model=model, extra_instructions=optimizer_extra)
 
-    # Hooks for live tool-call visibility (activated by --verbose)
-    hooks = VERBOSE_HOOKS if verbose else None  # type: ignore[assignment]
-
     # Resume handling
     start_round = 0
     if resume and state_path.exists():
@@ -284,7 +268,7 @@ async def run_loop(
         raw_coder_output: object | None = None
 
         try:
-            result = await Runner.run(
+            result = await _run_agent(
                 starting_agent=coder,
                 input=(
                     "Generate kernel_0.py. Follow your instructions — design the final "
@@ -294,7 +278,7 @@ async def run_loop(
                 ),
                 context=ctx,
                 max_turns=coder_max_turns,
-                hooks=hooks,
+                verbose=verbose,
             )
             raw_coder_output = result.final_output
             coder_out = parse_coder_result(raw_coder_output)
@@ -347,12 +331,12 @@ async def run_loop(
         )
 
         try:
-            planner_result = await Runner.run(
+            planner_result = await _run_agent(
                 starting_agent=planner,
                 input=planner_input,
                 context=ctx,
                 max_turns=40,
-                hooks=hooks,
+                verbose=verbose,
             )
             pr: PlannerResult = planner_result.final_output
         except MaxTurnsExceeded:
@@ -386,12 +370,12 @@ async def run_loop(
         )
 
         try:
-            optimizer_result = await Runner.run(
+            optimizer_result = await _run_agent(
                 starting_agent=optimizer,
                 input=optimizer_input,
                 context=ctx,
                 max_turns=60,
-                hooks=hooks,
+                verbose=verbose,
             )
             opt: OptimizerResult = optimizer_result.final_output
         except MaxTurnsExceeded:
@@ -429,7 +413,7 @@ async def run_loop(
         shutil.copy2(solution_dir / last_kernel, solution_dir / "kernel.py")
 
         try:
-            epilogue_result = await Runner.run(
+            epilogue_result = await _run_agent(
                 starting_agent=planner,
                 input=(
                     f"Epilogue round. Benchmark kernel.py (copied from {last_kernel}). "
@@ -438,7 +422,7 @@ async def run_loop(
                 ),
                 context=ctx,
                 max_turns=20,
-                hooks=hooks,
+                verbose=verbose,
             )
             ep: PlannerResult = epilogue_result.final_output
             print(f"  Last kernel latency: {ep.latency_ms:.3f}ms")
@@ -504,7 +488,7 @@ def main():
     )
     parser.add_argument(
         "--verbose", action="store_true",
-        help="Enable debug logging",
+        help="Show structured agent progress",
     )
     parser.add_argument(
         "--coder-max-turns", type=int, default=300,
@@ -513,7 +497,7 @@ def main():
     args = parser.parse_args()
 
     logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
+        level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
