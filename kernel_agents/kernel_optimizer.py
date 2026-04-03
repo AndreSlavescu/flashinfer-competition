@@ -71,6 +71,14 @@ Output tensors (pre-allocated, write in-place):
 - If you can't get it correct after 5 compile/validate cycles, return status="validation_failed"
 - All compilation happens on Modal B200 — never compile CUDA locally
 - When in doubt, consult ONE_SHOT_NEEDED.md for CuTeDSL layout and numerical pitfalls
+
+## Output Format
+
+When you are done, return your result with:
+  - kernel_file: path to the kernel file you wrote (e.g. "solution/dsa_attention/kernel_1.py")
+  - correctness_verified: true if all workloads passed --correctness-only
+  - status: "success" or "compile_error" or "validation_failed" or "timeout"
+  - message: brief summary of what you did and the result
 """
 
 

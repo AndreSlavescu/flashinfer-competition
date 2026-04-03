@@ -152,6 +152,83 @@ def find_last_correct_kernel(ctx: SharedContext, solution_dir: Path) -> Path:
     return solution_dir / "kernel.py"
 
 
+def parse_coder_result(raw_output: object) -> CoderResult:
+    """Parse the kernel-coder's plain-text JSON response into a CoderResult."""
+    if isinstance(raw_output, CoderResult):
+        return raw_output
+
+    text = raw_output if isinstance(raw_output, str) else str(raw_output)
+    candidates: list[str] = []
+
+    stripped = text.strip()
+    if stripped:
+        candidates.append(stripped)
+
+    if "```" in text:
+        parts = text.split("```")
+        for i in range(1, len(parts), 2):
+            block = parts[i]
+            if "\n" in block:
+                _, remainder = block.split("\n", 1)
+                candidates.append(remainder.strip())
+            else:
+                candidates.append(block.strip())
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidates.append(text[start:end + 1].strip())
+
+    last_error: Exception | None = None
+    parsed: dict[str, object] | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            maybe = json.loads(candidate)
+        except Exception as exc:
+            last_error = exc
+            continue
+        if isinstance(maybe, dict):
+            parsed = maybe
+            break
+        last_error = ValueError("kernel-coder output was valid JSON but not an object")
+
+    if parsed is None:
+        detail = f" ({last_error})" if last_error else ""
+        raise ValueError(f"Failed to parse kernel-coder JSON output{detail}")
+
+    generated = parsed.get("generated")
+    if isinstance(generated, str):
+        generated = [generated]
+    if not isinstance(generated, list) or not all(isinstance(x, str) for x in generated):
+        raise ValueError("kernel-coder output field 'generated' must be a list of strings")
+
+    correctness_verified = parsed.get("correctness_verified")
+    if not isinstance(correctness_verified, bool):
+        raise ValueError("kernel-coder output field 'correctness_verified' must be a bool")
+
+    status = parsed.get("status")
+    if not isinstance(status, str):
+        raise ValueError("kernel-coder output field 'status' must be a string")
+
+    message = parsed.get("message")
+    if not isinstance(message, str):
+        raise ValueError("kernel-coder output field 'message' must be a string")
+
+    reflection = parsed.get("reflection", "")
+    if not isinstance(reflection, str):
+        reflection = str(reflection)
+
+    return CoderResult(
+        generated=list(generated),
+        correctness_verified=correctness_verified,
+        status=status,
+        message=message,
+        reflection=reflection,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -159,8 +236,10 @@ def find_last_correct_kernel(ctx: SharedContext, solution_dir: Path) -> Path:
 async def run_loop(
     num_rounds: int = 5,
     model: str = "gpt-5.4",
+    coder_model: str = "gpt-5.4-pro",
     resume: bool = False,
     verbose: bool = False,
+    coder_max_turns: int = 300,
     coder_extra: str = "",
     planner_extra: str = "",
     optimizer_extra: str = "",
@@ -183,7 +262,7 @@ async def run_loop(
     )
 
     # Build agents
-    coder = make_kernel_coder(model=model, extra_instructions=coder_extra)
+    coder = make_kernel_coder(model=coder_model, extra_instructions=coder_extra)
     planner = make_kernel_planner(model=model, extra_instructions=planner_extra)
     optimizer = make_kernel_optimizer(model=model, extra_instructions=optimizer_extra)
 
@@ -196,35 +275,46 @@ async def run_loop(
         start_round = load_state(ctx, state_path) + 1
         print(f"Resuming from round {start_round}")
     else:
-        # ── Round 0: Bootstrap ──────────────────────────────────────────
+        # ── Round 0: Generate initial kernel ────────────────────────────
         print("=" * 60)
-        print("ROUND 0: Bootstrap kernel_0.py")
+        print("ROUND 0: Generate kernel_0.py")
         print("=" * 60)
 
         ctx.current_round = 0
+        raw_coder_output: object | None = None
 
         try:
             result = await Runner.run(
                 starting_agent=coder,
                 input=(
-                    "Bootstrap kernel_0.py. Follow your instructions — design, implement, "
-                    "debug, and validate until ALL 23 workloads pass correctness."
+                    "Generate kernel_0.py. Follow your instructions — design the final "
+                    "CuTeDSL kernel, implement, debug, and validate until ALL 23 workloads "
+                    "pass correctness. Do not submit a PyTorch fallback; if the CuTeDSL "
+                    "compute path is not working, return validation_failed."
                 ),
                 context=ctx,
-                max_turns=300,
+                max_turns=coder_max_turns,
                 hooks=hooks,
             )
-            coder_out: CoderResult = result.final_output
+            raw_coder_output = result.final_output
+            coder_out = parse_coder_result(raw_coder_output)
         except MaxTurnsExceeded:
             print("FATAL: kernel-coder hit max turns without producing a result.")
+            sys.exit(1)
+        except Exception as exc:
+            print(f"FATAL: kernel-coder returned an unparsable result: {exc}")
+            if raw_coder_output is not None:
+                print(f"Raw output:\n{raw_coder_output}")
             sys.exit(1)
 
         if not coder_out.correctness_verified:
             print(f"FATAL: kernel-coder failed to produce a correct kernel: {coder_out.message}")
             sys.exit(1)
 
-        print(f"Round 0 complete: {coder_out.kernel_file} [{coder_out.status}]")
+        print(f"Round 0 complete: {coder_out.generated} [{coder_out.status}]")
         print(f"  {coder_out.message}")
+        if coder_out.reflection:
+            print(f"\n  Reflection:\n  {coder_out.reflection[:500]}")
 
         # Copy kernel_0.py → kernel.py as the initial working copy
         shutil.copy2(solution_dir / "kernel_0.py", solution_dir / "kernel.py")
@@ -402,7 +492,11 @@ def main():
     )
     parser.add_argument(
         "--model", type=str, default="gpt-5.4",
-        help="LLM model for all agents (default: gpt-5.4)",
+        help="LLM model for planner and optimizer agents (default: gpt-5.4)",
+    )
+    parser.add_argument(
+        "--coder-model", type=str, default="gpt-5.4-pro",
+        help="LLM model for the round-0 kernel-coder agent (default: gpt-5.4-pro)",
     )
     parser.add_argument(
         "--resume", action="store_true",
@@ -411,6 +505,10 @@ def main():
     parser.add_argument(
         "--verbose", action="store_true",
         help="Enable debug logging",
+    )
+    parser.add_argument(
+        "--coder-max-turns", type=int, default=300,
+        help="Max LLM turns for the round-0 kernel-coder agent (default: 300)",
     )
     args = parser.parse_args()
 
@@ -422,8 +520,10 @@ def main():
     asyncio.run(run_loop(
         num_rounds=args.num_rounds,
         model=args.model,
+        coder_model=args.coder_model,
         resume=args.resume,
         verbose=args.verbose,
+        coder_max_turns=args.coder_max_turns,
     ))
 
 

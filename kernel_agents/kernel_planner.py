@@ -65,6 +65,15 @@ strategy for the next round.
 - NEVER propose an optimization that was already tried and failed (check history below).
 - The planner NEVER modifies kernel code — only writes strategy docs.
 
+## Output Format
+
+When you are done, return your result with:
+  - latency_ms: measured average latency in milliseconds from the benchmark
+  - bottleneck: the single highest-impact bottleneck you identified
+  - strategy_summary: one-line summary of the proposed optimization
+  - strategy_file: path to the strategy file you wrote (e.g. "notes/dsa_attention/strategy_1.md")
+  - is_new_best: true if this kernel is faster than the previous best
+
 ## History of Prior Rounds
 
 {history}

@@ -41,10 +41,11 @@ class SharedContext:
 class CoderResult:
     """Returned by kernel-coder after round 0 bootstrap."""
 
-    kernel_file: str  # path to kernel_0.py
+    generated: list[str]  # paths to generated files (design plan, kernel)
     correctness_verified: bool
     status: str  # "success" | "compile_error" | "validation_failed"
     message: str  # human-readable summary
+    reflection: str  # agent's reflection on difficulty, bugs, resources, hindsight
 
 
 @dataclass

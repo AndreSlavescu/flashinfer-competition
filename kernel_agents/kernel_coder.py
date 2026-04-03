@@ -1,18 +1,21 @@
-"""kernel-coder agent — bootstraps the initial kernel_0.py in round 0."""
+"""kernel-coder agent — generates the initial kernel_0.py in round 0."""
 
 from __future__ import annotations
 
-from agents import Agent
+from agents import Agent, ModelSettings
+from openai.types.shared import Reasoning
 
-from kernel_agents.context import CoderResult, SharedContext
+from kernel_agents.context import SharedContext
 from kernel_agents.tools import ALL_TOOLS
 
 INSTRUCTIONS = """
 You are an expert at GPU kernel programming. Generate a Deepseek Sparse Attention kernel in CuTeDSL for a B200 GPU (sm100a).
 
+BASELINE KERNEL (FOR LOGICAL REFERENCE ONLY): references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
+
 Rules:
-1. Your kernel must compile and pass 23/23 cases in the full correctness check
-2. Your kernel must be written FULLY in CuTeDSL. Don't fallback to PyTorch unless you're debugging
+1. The final kernel_0.py must use CuTeDSL for all attention compute
+2. Your kernel must compile and pass 23/23 cases in the full correctness check
 3. Your kernel must be contained in one kernel_0.py file. Copy over any helpers you use
 4. Your kernel must use type annotations as much as possible to help JIT compiler
 5. Your kernel must use static arguments as much as possible via cutlass.Constexpr
@@ -20,9 +23,13 @@ Rules:
 7. Your kernel must use optimized B200 (sm100a) features as much as possible (ex. TMA ld/st, tcgen05 mma etc.)
 8. Your kernel must have no debugging code when finalizing, remove AFTER passing modal bench
 9. Your kernel must be written to solution/dsa_attention/kernel_0.py
+10. PyTorch is allowed only for prologue/epilogue tasks: validation, allocation, descriptor/layout construction, compile cache lookup, stream acquisition, kernel launch, and output copy
+11. Forbidden in the final kernel_0.py: torch.matmul, torch.bmm, torch.einsum, torch.softmax, torch.logsumexp, masked_fill, advanced-index or index_select sparse KV gathers, or any other PyTorch tensor ops that compute logits, probabilities, outputs, or LSE
+12. kernel_0_plan.md must describe only the final CuTeDSL design. Do not describe a bootstrap path, a future optimized path, or a PyTorch fallback
+13. If you cannot get the CuTeDSL compute path working, return status="validation_failed". A numerically correct PyTorch fallback still counts as failure
 
 Suggested steps:
-1. Read through PyTorch baseline and CuTeDSL kernel examples to brainstorm a design for the algorithm
+1. Read CuTeDSL kernel examples first to brainstorm a design for the algorithm. Use the PyTorch baseline only to confirm semantics and edge cases
 2. Write a design plan in kernel_0_plan.md, outlining the following:
   - Work partition: How to distribute multiple Qs and topk KVs per Q across all CTAs 
   - Warp specialization: Which warps handle stages like sparse KV loading, QK MMA, softmax, PV MMA, combine partials etc.
@@ -39,6 +46,7 @@ Suggested steps:
 3. Read through all references to find CuTeDSL abstractions and APIs that simplify any B200 and PTX features you plan to use
    (ex. pipelining and synchronization, building tma/mma atoms, tiling tma/mma, creating memory layouts/descriptors etc.)
 4. Implement the kernel based on the design plan, existing CuTeDSL abstractions and APIs, and CuTeDSL patterns & style
+   - All attention math must execute in CuTeDSL: sparse KV gather, QK score computation, masking, softmax/LSE, PV accumulation, split reduction, and final output write
 5. Debug printing: until correctness passes explicitly print out ALL of the following:
   - Tensors: layout shapes and strides
   - Layout Algebras: layout shapes and strides
@@ -54,7 +62,7 @@ Suggested steps:
 CuTeDSL patterns & style:
 1. cute.printf() to print dynamic values during GPU runtime
 2. Comment expected layouts for each tensor definition and transformation
-3. JIT compile cache:
+3. Cache the artifacts from JIT compilation:
     compile_cache = {}
 
     def _get_compiled_kernel(...stream):
@@ -86,75 +94,6 @@ Validation (All happens on Modal B200, NEVER compile CUDA locally):
  - Synthetic data check: python3 scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::kernel
  - Full correctness check: modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only
 
-PyTorch baseline (for logical reference only): 
-```
-import math
-import torch
-
-@torch.no_grad()
-def run(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale):
-    num_tokens, num_qo_heads, head_dim_ckv = q_nope.shape
-    head_dim_kpe = q_pe.shape[-1]
-    num_pages, page_size, _ = ckv_cache.shape
-    topk = sparse_indices.shape[-1]
-
-    # Check constants
-    assert num_qo_heads == 16
-    assert head_dim_ckv == 512
-    assert head_dim_kpe == 64
-    assert page_size == 64
-    assert topk == 2048
-
-    # Check constraints
-    assert sparse_indices.shape[0] == num_tokens
-    assert sparse_indices.shape[-1] == topk
-    assert ckv_cache.shape[1] == page_size
-
-    device = q_nope.device
-
-    # Flatten paged KV cache to token-level: [num_pages, page_size, dim] -> [num_pages * page_size, dim]
-    Kc_all = ckv_cache.reshape(-1, head_dim_ckv).to(torch.float32)  # [total_kv_tokens, head_dim_ckv]
-    Kp_all = kpe_cache.reshape(-1, head_dim_kpe).to(torch.float32)  # [total_kv_tokens, head_dim_kpe]
-
-    output = torch.zeros(
-        (num_tokens, num_qo_heads, head_dim_ckv), dtype=torch.bfloat16, device=device
-    )
-    lse = torch.full((num_tokens, num_qo_heads), -float("inf"), dtype=torch.float32, device=device)
-
-    for t in range(num_tokens):
-        indices = sparse_indices[t]  # [topk]
-
-        # Handle padding: -1 indicates invalid indices
-        valid_mask = indices != -1
-        valid_indices = indices[valid_mask]
-
-        if valid_indices.numel() == 0:
-            output[t].zero_()
-            continue
-
-        # For page_size=64, indices encode (page_idx * 64 + offset)
-        tok_idx = valid_indices.to(torch.long)
-
-        Kc = Kc_all[tok_idx]  # [num_valid, head_dim_ckv]
-        Kp = Kp_all[tok_idx]  # [num_valid, head_dim_kpe]
-        qn = q_nope[t].to(torch.float32)  # [num_qo_heads, head_dim_ckv]
-        qp = q_pe[t].to(torch.float32)  # [num_qo_heads, head_dim_kpe]
-
-        # Compute attention logits
-        logits = (qn @ Kc.T) + (qp @ Kp.T)  # [num_qo_heads, num_valid]
-        logits_scaled = logits * sm_scale
-
-        # Compute 2-base LSE
-        lse[t] = torch.logsumexp(logits_scaled, dim=-1) / math.log(2.0)
-
-        # Compute attention output
-        attn = torch.softmax(logits_scaled, dim=-1)  # [num_qo_heads, num_valid]
-        out = attn @ Kc  # [num_qo_heads, head_dim_ckv]
-        output[t] = out.to(torch.bfloat16)
-
-    return output, lse
-```
-
 References:
 1. Core library + tma helpers + tcgen05 helpers + warp/warpgroup helpers: csrc/cutlass/python/CuTeDSL/cutlass/cute
 2. Pipeline helpers: csrc/cutlass/python/CuTeDSL/cutlass/pipeline
@@ -178,12 +117,13 @@ Tools You Have:
 7. web_fetch: Fetch content from a specific URL.
 
 Output format:
-When you are done, return your results with:
-1. generated: paths to generated design plan and DSA kernel
+Return ONLY a single valid JSON object. Do not include markdown fences or any extra prose.
+The JSON object must contain exactly these keys:
+1. generated: array of paths to generated design plan and DSA kernel
 2. correctness_verified: true if all 23 workloads passed the full correctness check
 3. status: "success" or "compile_error" or "validation_failed"
 4. message: brief summary of what you did and the result
-5. reflection: answer the following
+5. reflection: a single string containing:
    - Rank each task in the design plan by difficulty
    - What bugs did you encounter and how did you fix them? Was there any you couldn't fix?
    - What information did you wish you had upfront? What resources were most helpful?
@@ -192,12 +132,19 @@ When you are done, return your results with:
 """
 
 
-def make_kernel_coder(model: str = "gpt-5.4", extra_instructions: str = "") -> Agent[SharedContext]:
+def make_kernel_coder(
+    model: str = "gpt-5.4-pro",
+    extra_instructions: str = "",
+) -> Agent[SharedContext]:
     """Create the kernel-coder agent with the given model."""
     return Agent[SharedContext](
         name="kernel-coder",
         instructions=INSTRUCTIONS.replace("{extra_instructions}", extra_instructions),
         tools=ALL_TOOLS,
         model=model,
-        output_type=CoderResult,
+        model_settings=ModelSettings(
+            reasoning=Reasoning(effort="xhigh"),
+            verbosity="high",
+        ),
+        output_type=str,
     )
