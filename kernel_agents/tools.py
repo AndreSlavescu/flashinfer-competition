@@ -38,6 +38,7 @@ DEFAULT_SEARCH_OUTPUT_LIMIT = 20_000
 DEFAULT_SHELL_OUTPUT_LIMIT = 20_000
 DEFAULT_READ_FILE_LIMIT = 40_000
 DEFAULT_WEB_FETCH_LIMIT = 20_000
+DEFAULT_BENCH_LANGUAGE = "python"
 
 
 # ---------------------------------------------------------------------------
@@ -334,12 +335,17 @@ def build_local_shell_skill() -> ShellToolLocalSkill:
     )
 
 
+def build_shell_environment() -> dict[str, object]:
+    """Build the shell environment, attaching the local skill when present."""
+    environment: dict[str, object] = {"type": "local"}
+    if KERNEL_WORKBENCH_SKILL_DIR.is_dir():
+        environment["skills"] = [build_local_shell_skill()]
+    return environment
+
+
 shell_tool = ShellTool(
     executor=ShellExecutor(PROJECT_ROOT),
-    environment={
-        "type": "local",
-        "skills": [build_local_shell_skill()],
-    },
+    environment=build_shell_environment(),
 )
 
 
@@ -692,7 +698,7 @@ async def run_correctness_check(
     ctx: RunContextWrapper[SharedContext],
     solution_dir: str = "",
     entry_point: str = "kernel.py::kernel",
-    lang: str = "triton",
+    lang: str = DEFAULT_BENCH_LANGUAGE,
 ) -> str:
     """Run the Modal correctness-only benchmark flow."""
     try:
@@ -739,7 +745,7 @@ async def run_full_benchmark(
     ctx: RunContextWrapper[SharedContext],
     solution_dir: str = "",
     entry_point: str = "kernel.py::kernel",
-    lang: str = "triton",
+    lang: str = DEFAULT_BENCH_LANGUAGE,
 ) -> str:
     """Run the full Modal benchmark flow."""
     try:
@@ -792,6 +798,7 @@ async def web_fetch(
     del ctx
 
     try:
+        # Keep this import lazy so urllib remains a real fallback.
         import httpx
     except ImportError:
         import urllib.request

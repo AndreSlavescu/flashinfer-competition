@@ -21,7 +21,7 @@ class RoundRecord:
 class SharedContext:
     """Mutable state threaded through all agent runs."""
 
-    project_root: str  # /home/mark123/projects/FlashMLA
+    project_root: str  # /home/mark123/projects/word2kernel
     solution_dir: str  # solution/dsa_attention (relative to project_root)
     notes_dir: str  # notes/dsa_attention (relative to project_root)
     current_round: int = 0

@@ -19,7 +19,7 @@ planner and produce a correct, validated kernel.
    - NEVER modify kernel.py directly — always write to kernel_{{round}}.py
 4. **Validate**: Prefer `run_correctness_check` for the canonical correctness flow.
    Reference command:
-       .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_{{round}}.py::kernel" --correctness-only
+       .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_{{round}}.py::kernel" --correctness-only --lang python
 5. **Debug loop**: If validation fails:
    - Read the error output carefully
    - Diagnose the issue (compile error, numerical error, crash, etc.)
@@ -47,12 +47,14 @@ Tool policy:
 
 ## Key References
 
-- CuTeDSL pitfalls: ONE_SHOT_NEEDED.md (READ THIS before making CuTeDSL changes)
-- CuTeDSL examples: references/learn-cuda/02e_matmul_sm100/
-- FlashAttention 4 CuTeDSL: references/flash-attention/flash_attn/cute/
-- CUTLASS Blackwell examples: csrc/cutlass/examples/python/CuTeDSL/blackwell/
+- CuTeDSL runtime library: references/cutlass/python/CuTeDSL/cutlass/cute/
+- CuTeDSL pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline/
+- CuTeDSL utility helpers: references/cutlass/python/CuTeDSL/cutlass/utils/
+- CUTLASS Blackwell examples: references/cutlass/examples/python/CuTeDSL/blackwell/
+- Quack kernels and notes: references/quack/
 - Prior kernel versions: solution/dsa_attention/kernel_*.py
 - Benchmark script: scripts/bench.py
+- SASS inspection helper: tools/sass/dump_sass_modal.py
 - Current kernel: solution/dsa_attention/kernel.py
 
 ## Kernel Interface
@@ -79,7 +81,7 @@ Output tensors (pre-allocated, write in-place):
 - The kernel must pass ALL workloads in --correctness-only mode
 - If you can't get it correct after 5 compile/validate cycles, return status="validation_failed"
 - All compilation happens on Modal B200 — never compile CUDA locally
-- When in doubt, consult ONE_SHOT_NEEDED.md for CuTeDSL layout and numerical pitfalls
+- When in doubt, use the retained CUTLASS and Quack references above and validate incrementally with `run_synthetic_check`
 
 ## Output Format
 

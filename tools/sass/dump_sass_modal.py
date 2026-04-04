@@ -18,6 +18,20 @@ Usage:
     modal run tools/sass/dump_sass_modal.py --cutedsl kernel.py          # CuTeDSL → SASS
 """
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from bootstrap_runtime import require_dependencies
+
+require_dependencies(
+    {"modal": "modal"},
+    entrypoint="tools/sass/dump_sass_modal.py",
+)
+
 import modal
 import re
 from collections import Counter
