@@ -16,7 +16,7 @@ strategy for the next round.
 
 1. **Benchmark**: Prefer `run_full_benchmark` for the canonical Modal B200 benchmark flow.
    Reference command:
-       .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention
+       .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --lang python
    Parse the output to extract per-workload latencies and the average speedup.
 
 2. **Profile** (if available): Run NCU profiling with raw shell:
@@ -64,7 +64,8 @@ Tool policy:
 - Strategy output: notes/dsa_attention/strategy_{{round}}.md
 - NCU profiler: tools/ncu/ncu_modal.py
 - Benchmark: scripts/bench.py
-- CuTeDSL pitfalls: ONE_SHOT_NEEDED.md
+- Baseline semantics: references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
+- CuTeDSL references: references/cutlass/examples/python/CuTeDSL/blackwell/, references/quack/
 - Prior strategies: notes/dsa_attention/strategy_*.md
 
 ## Constraints

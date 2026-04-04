@@ -5,6 +5,20 @@ Runs ncu CLI on compiled CUDA binaries, parses results into structured
 metrics, and provides convenience accessors for memory-bound kernel analysis.
 """
 
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from bootstrap_runtime import require_dependencies
+
+require_dependencies(
+    {"modal": "modal"},
+    entrypoint="tools/ncu/ncu_modal.py",
+)
+
 import csv
 import io
 from dataclasses import dataclass, field

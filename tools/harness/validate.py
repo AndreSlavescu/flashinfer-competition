@@ -10,7 +10,6 @@ All defenses are transparent and non-optional. The harness validates that:
 6. Outputs match the reference kernel within tight tolerances
 """
 
-import sys
 import time
 import threading
 from dataclasses import dataclass, field
@@ -18,6 +17,8 @@ from pathlib import Path
 from typing import Callable, Dict, Optional, Tuple
 
 import torch
+
+from .compare import check_is_allclose, get_cos_diff
 
 # ---------------------------------------------------------------------------
 # Module-level cached references (captured at import time, before any kernel
@@ -30,12 +31,9 @@ _ORIGINAL_THREAD_COUNT = threading.active_count
 _ORIGINAL_CURRENT_STREAM = torch.cuda.current_stream
 
 # ---------------------------------------------------------------------------
-# Import correctness utilities from existing kernelkit
+# Project root for local references
 # ---------------------------------------------------------------------------
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(_PROJECT_ROOT / "tests"))
-
-from kernelkit.compare import check_is_allclose, get_cos_diff  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +233,7 @@ def generate_test_inputs(
 # ---------------------------------------------------------------------------
 def _run_reference_kernel(inputs: dict) -> Tuple[torch.Tensor, torch.Tensor]:
     """Run the reference kernel and return (output, lse)."""
+    import sys
     sys.path.insert(0, str(_PROJECT_ROOT / "references"))
     import importlib
     ref_mod = importlib.import_module("dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64")

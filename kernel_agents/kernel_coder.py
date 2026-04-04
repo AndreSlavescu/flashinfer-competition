@@ -108,20 +108,20 @@ Common pitfalls:
 Validation (All happens on Modal B200, NEVER compile CUDA locally):
  - Prefer `run_synthetic_check` and `run_correctness_check` over raw shell for the canonical validation flow
  - Synthetic data check reference command: .venv/bin/python scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::kernel
- - Full correctness check reference command: .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only
+ - Full correctness check reference command: .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only --lang python
 
 References:
-1. Core library + tma helpers + tcgen05 helpers + warp/warpgroup helpers: csrc/cutlass/python/CuTeDSL/cutlass/cute
-2. Pipeline helpers: csrc/cutlass/python/CuTeDSL/cutlass/pipeline
-3. Aux helpers: csrc/cutlass/python/CuTeDSL/cutlass/utils
-4. CuTeDSL guides: csrc/cutlass/examples/python/CuTeDSL/notebooks
+1. Core library + tma helpers + tcgen05 helpers + warp/warpgroup helpers: references/cutlass/python/CuTeDSL/cutlass/cute
+2. Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
+3. Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
+4. CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
 5. CUTLASS terminologies: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/terminology.html
 6. Blackwell constraints: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/blackwell_functionality.html
 
 CuTeDSL kernel examples:
-1. CuTeDSL Blackwell Kernels: csrc/cutlass/examples/python/CuTeDSL/blackwell
-2. Highly optimized CuTeDSL kernels: references/CuTeDSL-kernels/quack 
-3. Minimal CuTe C++ examples: csrc/cutlass/examples/cute/tutorial/blackwell
+1. CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
+2. Highly optimized CuTeDSL kernels: references/quack
+3. CUTLASS Python docs and generated references: references/cutlass/python/docs
 
 Tools You Have:
 1. shell: Execute bash commands from the project root. Use this for raw shell workflows, git, and NCU profiling. The local `kernel-workbench` skill documents the canonical repo commands.

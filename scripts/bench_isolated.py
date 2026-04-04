@@ -18,11 +18,21 @@ Usage:
     modal run scripts/bench_isolated.py --repeats 50 --seed 123
 """
 
+import sys
 from pathlib import Path
 
-import modal
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
-PROJECT_ROOT = Path(__file__).parent.parent
+from bootstrap_runtime import require_dependencies
+
+require_dependencies(
+    {"modal": "modal"},
+    entrypoint="scripts/bench_isolated.py",
+)
+
+import modal
 
 app = modal.App("flashinfer-pygpubench")
 
@@ -34,6 +44,18 @@ image = (
         "numpy",
         "pygpubench",
     )
+    .add_local_dir(
+        str(PROJECT_ROOT / "solution"),
+        remote_path="/root/project/solution",
+    )
+    .add_local_dir(
+        str(PROJECT_ROOT / "tools"),
+        remote_path="/root/project/tools",
+    )
+    .add_local_dir(
+        str(PROJECT_ROOT / "references"),
+        remote_path="/root/project/references",
+    )
 )
 
 
@@ -41,24 +63,6 @@ image = (
     image=image,
     gpu="B200:1",
     timeout=600,
-    mounts=[
-        modal.Mount.from_local_dir(
-            str(PROJECT_ROOT / "solution"),
-            remote_path="/root/project/solution",
-        ),
-        modal.Mount.from_local_dir(
-            str(PROJECT_ROOT / "tools"),
-            remote_path="/root/project/tools",
-        ),
-        modal.Mount.from_local_dir(
-            str(PROJECT_ROOT / "references"),
-            remote_path="/root/project/references",
-        ),
-        modal.Mount.from_local_dir(
-            str(PROJECT_ROOT / "tests"),
-            remote_path="/root/project/tests",
-        ),
-    ],
 )
 def run_isolated_bench(
     repeats: int = 50,

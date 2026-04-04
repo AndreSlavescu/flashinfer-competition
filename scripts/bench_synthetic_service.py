@@ -14,6 +14,17 @@ import time
 from hashlib import sha256
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from bootstrap_runtime import require_dependencies
+
+require_dependencies(
+    {"modal": "modal"},
+    entrypoint="scripts/bench_synthetic_service.py",
+)
+
 import modal
 
 from bench_synthetic_common import (
@@ -52,11 +63,14 @@ REFERENCE_HASH_SOURCE_PATH = (
     LOCAL_REFERENCE_SOURCE_PATH if LOCAL_REFERENCE_SOURCE_PATH.exists() else REMOTE_REFERENCE_PATH
 )
 REFERENCE_SHA256 = sha256(REFERENCE_HASH_SOURCE_PATH.read_bytes()).hexdigest()
-WORK_ROOT = Path("/tmp/flashmla_synthetic_fast")
+WORK_ROOT = Path("/tmp/word2kernel_synthetic_fast")
 SOLUTION_ROOT = WORK_ROOT / "solution"
 FIXTURE_ROOT = Path(FIXTURE_MOUNT)
 FIXTURE_VOLUME = modal.Volume.from_name(FIXTURE_VOLUME_NAME, create_if_missing=True)
-ENABLE_MEMORY_SNAPSHOT = os.environ.get("FLASHMLA_ENABLE_MEMORY_SNAPSHOT") == "1"
+ENABLE_MEMORY_SNAPSHOT = (
+    os.environ.get("WORD2KERNEL_ENABLE_MEMORY_SNAPSHOT") == "1"
+    or os.environ.get("FLASHMLA_ENABLE_MEMORY_SNAPSHOT") == "1"
+)
 
 app = modal.App(APP_NAME)
 
@@ -99,9 +113,9 @@ def _load_python_module(module_name: str, module_path: Path):
 def _load_reference_module():
     global _REFERENCE_MODULE
     if _REFERENCE_MODULE is None:
-        sys.modules.pop("flashmla_fast_reference", None)
+        sys.modules.pop("word2kernel_fast_reference", None)
         _REFERENCE_MODULE = _load_python_module(
-            "flashmla_fast_reference",
+            "word2kernel_fast_reference",
             REMOTE_REFERENCE_PATH,
         )
     return _REFERENCE_MODULE
@@ -330,7 +344,7 @@ def _ensure_solution_module(raw_files: dict[str, str], entry_point: str, entry_f
     SOLUTION_ROOT.mkdir(parents=True, exist_ok=True)
     clear_directory_contents(SOLUTION_ROOT)
     write_raw_files(SOLUTION_ROOT, raw_files)
-    clear_solution_modules(raw_files, extra_module_names=("flashmla_fast_solution",))
+    clear_solution_modules(raw_files, extra_module_names=("word2kernel_fast_solution",))
     if str(SOLUTION_ROOT) not in sys.path:
         sys.path.insert(0, str(SOLUTION_ROOT))
     entry_parent = str((SOLUTION_ROOT / entry_file).parent)
@@ -338,7 +352,7 @@ def _ensure_solution_module(raw_files: dict[str, str], entry_point: str, entry_f
         sys.path.insert(0, entry_parent)
 
     module = _load_python_module(
-        "flashmla_fast_solution",
+        "word2kernel_fast_solution",
         SOLUTION_ROOT / entry_file,
     )
     _SOLUTION_CACHE["payload_hash"] = payload_hash

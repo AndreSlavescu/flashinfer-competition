@@ -15,6 +15,17 @@ import sys
 import time
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from bootstrap_runtime import require_dependencies
+
+require_dependencies(
+    {"modal": "modal"},
+    entrypoint="scripts/bench_synthetic.py",
+)
+
 import modal
 
 from bench_synthetic_common import (
@@ -24,9 +35,6 @@ from bench_synthetic_common import (
     parse_entry_point,
     print_synthetic_results,
 )
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
 
 def resolve_solution_dir(solution_dir: str) -> Path:
     solution_path = Path(solution_dir)

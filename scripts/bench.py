@@ -1,5 +1,5 @@
 """
-FlashInfer Competition — Benchmark & Correctness Runner on Modal B200.
+word2kernel benchmark and correctness runner on Modal B200.
 
 Packs a kernel solution, uploads the competition dataset to a Modal volume,
 runs the official flashinfer-bench evaluation, or executes a fast synthetic
@@ -12,7 +12,7 @@ Usage:
     # Run benchmark for DSA sparse attention kernel:
     modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention
 
-    # Run benchmark for DSA indexer kernel:
+    # Run benchmark for DSA indexer kernel (placeholder scaffold by default):
     modal run scripts/bench.py --track dsa_indexer --solution-dir solution/dsa_indexer
 
     # Quick correctness-only check (1 iteration, no warmup):
@@ -25,7 +25,8 @@ Usage:
     # Fallback synthetic correctness sweep (slower; uses ephemeral modal run):
     modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --synthetic
 
-    # Specify language (default: triton):
+    # Specify language (default: python for CuTeDSL .py kernels):
+    modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --lang python
     modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --lang cuda
 
     # Entry point format: "<file>::<function>" (e.g. "kernel.py::kernel" or "kernel.cu::kernel"):
@@ -38,9 +39,22 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from bootstrap_runtime import require_dependencies
+
+require_dependencies(
+    {"modal": "modal"},
+    entrypoint="scripts/bench.py",
+)
+
 import modal
 
-PROJECT_ROOT = Path(__file__).parent.parent
+DEFAULT_BENCH_LANGUAGE = "python"
+SUPPORTED_LANGUAGES = {"python", "triton", "cuda"}
+VALID_SOURCE_EXTENSIONS = {".py", ".cu", ".cuh", ".cpp", ".c", ".h", ".hpp", ".cc", ".cxx"}
 
 # ---------------------------------------------------------------------------
 # Track definitions — maps short names to official definition names
@@ -106,7 +120,7 @@ def run_benchmark_remote(
 
     import torch
     from flashinfer_bench import Benchmark, BenchmarkConfig, BuildSpec, Solution, TraceSet
-    from flashinfer_bench.agents import pack_solution_from_files
+    from flashinfer_bench.data import SourceFile
 
     print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"CUDA: {torch.version.cuda}")
@@ -115,18 +129,28 @@ def run_benchmark_remote(
     if raw_files and pack_args:
         with tempfile.TemporaryDirectory() as tmpdir:
             for fname, b64content in raw_files.items():
-                (Path(tmpdir) / fname).write_bytes(base64.b64decode(b64content))
+                target = Path(tmpdir) / fname
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(base64.b64decode(b64content))
             spec = BuildSpec(
                 language=pack_args["lang"],
                 target_hardware=["cuda"],
                 entry_point=pack_args["entry_point"],
             )
-            solution = pack_solution_from_files(
-                path=tmpdir,
-                spec=spec,
+            sources = [
+                SourceFile(
+                    path=rel_path,
+                    content=(Path(tmpdir) / rel_path).read_text(encoding="utf-8"),
+                )
+                for rel_path in sorted(raw_files)
+                if Path(rel_path).suffix.lower() in VALID_SOURCE_EXTENSIONS
+            ]
+            solution = Solution(
                 name=pack_args["name"],
                 definition=pack_args["definition"],
                 author=pack_args["author"],
+                spec=spec,
+                sources=sources,
             )
             solution_json = solution.model_dump_json(indent=2)
 
@@ -246,7 +270,7 @@ def run_synthetic_remote(
     print(f"GPU: {torch.cuda.get_device_name(0)}")
     print(f"CUDA: {torch.version.cuda}")
 
-    entry_file = Path(entry_file).name
+    entry_file = Path(entry_file).as_posix()
     if entry_file not in raw_files:
         available = ", ".join(sorted(raw_files))
         return {
@@ -259,14 +283,16 @@ def run_synthetic_remote(
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
         for fname, b64content in raw_files.items():
-            (tmpdir_path / fname).write_bytes(base64.b64decode(b64content))
+            target = tmpdir_path / fname
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(base64.b64decode(b64content))
         reference_path = tmpdir_path / "reference.py"
         reference_path.write_bytes(base64.b64decode(reference_b64))
         sys.path.insert(0, tmpdir)
 
         try:
-            reference_mod = load_module("flashmla_reference", reference_path)
-            solution_mod = load_module("flashmla_solution", tmpdir_path / entry_file)
+            reference_mod = load_module("word2kernel_reference", reference_path)
+            solution_mod = load_module("word2kernel_solution", tmpdir_path / entry_file)
         except Exception:
             if sys.path and sys.path[0] == tmpdir:
                 sys.path.pop(0)
@@ -449,15 +475,22 @@ def setup_trace_volume(dataset_tar: bytes):
 # Local helpers
 # ---------------------------------------------------------------------------
 def collect_solution_files(solution_dir: str) -> dict:
-    """Read all .py/.cu/.cuh files from solution_dir into a dict {filename: content}."""
+    """Read supported source files from solution_dir into {relative_path: base64}."""
     import base64
-    files = {}
+
+    files: dict[str, str] = {}
     solution_path = Path(solution_dir)
-    for ext in ("*.py", "*.cu", "*.cuh", "*.h"):
-        for f in solution_path.glob(ext):
-            if f.name.startswith("__"):
-                continue
-            files[f.name] = base64.b64encode(f.read_bytes()).decode()
+    for path in sorted(solution_path.rglob("*")):
+        if not path.is_file():
+            continue
+        if "__pycache__" in path.parts:
+            continue
+        if path.suffix.lower() not in VALID_SOURCE_EXTENSIONS:
+            continue
+        rel_path = path.relative_to(solution_path).as_posix()
+        if Path(rel_path).name.startswith("__"):
+            continue
+        files[rel_path] = base64.b64encode(path.read_bytes()).decode()
     return files
 
 
@@ -468,8 +501,14 @@ def parse_entry_point(entry_point: str) -> tuple[str, str]:
             f"Invalid entry point '{entry_point}'. Expected format '<file>::<function>'."
         )
     entry_file, entry_func = entry_point.split("::", 1)
-    entry_file = Path(entry_file).name
-    if not entry_file or not entry_func:
+    entry_path = Path(entry_file)
+    entry_file = entry_path.as_posix()
+    if (
+        not entry_file
+        or entry_file.startswith("/")
+        or ".." in entry_path.parts
+        or not entry_func
+    ):
         raise ValueError(
             f"Invalid entry point '{entry_point}'. Expected format '<file>::<function>'."
         )
@@ -593,7 +632,7 @@ def print_synthetic_results(results: list[dict]):
 def main(
     track: str = "dsa_attention",
     solution_dir: str = "solution/dsa_attention",
-    lang: str = "triton",
+    lang: str = DEFAULT_BENCH_LANGUAGE,
     entry_point: str = "kernel.py::kernel",
     name: str = "dev-kernel",
     author: str = "team",
@@ -606,7 +645,7 @@ def main(
     Args:
         track: Track short name (dsa_attention | dsa_indexer)
         solution_dir: Path to solution source files
-        lang: Language (triton | cuda)
+        lang: Language (python | triton | cuda)
         entry_point: Kernel entry point function name
         name: Solution name for tracking
         correctness_only: Skip perf measurement, just check correctness
@@ -615,6 +654,10 @@ def main(
     """
     if track not in TRACK_DEFS:
         print(f"Unknown track '{track}'. Available: {list(TRACK_DEFS.keys())}")
+        sys.exit(1)
+
+    if lang not in SUPPORTED_LANGUAGES:
+        print(f"Unknown language '{lang}'. Available: {sorted(SUPPORTED_LANGUAGES)}")
         sys.exit(1)
 
     if synthetic and setup_volume:
@@ -676,6 +719,8 @@ def main(
     print(f"Track: {track} ({TRACK_DEFS[track]})")
     print(f"Solution: {solution_path}")
     print(f"Language: {lang}")
+    if track == "dsa_indexer":
+        print("Note: dsa_indexer is scaffold-only in this trimmed repo until you add a real kernel.")
     if synthetic:
         mode = "synthetic correctness sweep"
     else:
@@ -686,7 +731,11 @@ def main(
     print("\nCollecting solution files...")
     raw_files = collect_solution_files(str(solution_path))
     if not raw_files:
-        print(f"No kernel files found in {solution_path}")
+        print(f"No supported source files found in {solution_path}")
+        if track == "dsa_indexer":
+            print("This scaffold is intentionally placeholder-only; add kernel.py before benchmarking.")
+        else:
+            print("Add a kernel entry file such as kernel.py or kernel_0.py before benchmarking.")
         sys.exit(1)
     print(f"  Files: {', '.join(raw_files.keys())}")
 

@@ -16,8 +16,20 @@ Usage:
 
 from __future__ import annotations
 
-from dotenv import load_dotenv
-load_dotenv()  # loads OPENAI_API_KEY (and any other vars) from .env
+from bootstrap_runtime import load_repo_dotenv, require_dependencies
+
+require_dependencies(
+    {
+        "agents": "openai-agents",
+        "dotenv": "python-dotenv",
+        "modal": "modal",
+        "openai": "openai",
+        "pydantic": "pydantic",
+    },
+    entrypoint="main.py",
+    include_env_hint=True,
+)
+load_repo_dotenv()
 
 import argparse
 import asyncio
@@ -462,6 +474,7 @@ async def run_loop(
     state_path = solution_dir / "loop_state.json"
 
     # Ensure directories exist
+    solution_dir.mkdir(parents=True, exist_ok=True)
     notes_dir.mkdir(parents=True, exist_ok=True)
 
     # Initialize context

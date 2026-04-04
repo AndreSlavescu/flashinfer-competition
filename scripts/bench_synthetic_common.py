@@ -33,8 +33,14 @@ def parse_entry_point(entry_point: str) -> tuple[str, str]:
         )
 
     entry_file, entry_func = entry_point.split("::", 1)
-    entry_file = Path(entry_file).as_posix()
-    if not entry_file or entry_file.startswith("/") or not entry_func:
+    entry_path = Path(entry_file)
+    entry_file = entry_path.as_posix()
+    if (
+        not entry_file
+        or entry_file.startswith("/")
+        or ".." in entry_path.parts
+        or not entry_func
+    ):
         raise ValueError(
             f"Invalid entry point '{entry_point}'. Expected format '<file>::<function>'."
         )
