@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from agents import Agent, ModelSettings
 from openai.types.shared import Reasoning
 
-from kernel_agents.context import SharedContext
+from kernel_agents.context import CoderResult, SharedContext
 from kernel_agents.tools import ALL_TOOLS
+
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
+Verbosity = Literal["low", "medium", "high"]
+
+REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+VERBOSITY_CHOICES: tuple[Verbosity, ...] = ("low", "medium", "high")
 
 INSTRUCTIONS = """
 You are an expert at GPU kernel programming. Generate a Deepseek Sparse Attention kernel in CuTeDSL for a B200 GPU (sm100a).
@@ -27,10 +41,11 @@ Rules:
 11. Forbidden in the final kernel_0.py: torch.matmul, torch.bmm, torch.einsum, torch.softmax, torch.logsumexp, masked_fill, advanced-index or index_select sparse KV gathers, or any other PyTorch tensor ops that compute logits, probabilities, outputs, or LSE
 12. kernel_0_plan.md must describe only the final CuTeDSL design. Do not describe a bootstrap path, a future optimized path, or a PyTorch fallback
 13. If you cannot get the CuTeDSL compute path working, return status="validation_failed". A numerically correct PyTorch fallback still counts as failure
+14. Before your first implementation attempt, you MUST write solution/dsa_attention/kernel_0_plan.md with the final CuTeDSL design you intend to build
 
 Suggested steps:
 1. Read CuTeDSL kernel examples first to brainstorm a design for the algorithm. Use the PyTorch baseline only to confirm semantics and edge cases
-2. Write a design plan in kernel_0_plan.md, outlining the following:
+2. Before editing kernel_0.py, write the design plan in solution/dsa_attention/kernel_0_plan.md, outlining the following:
   - Work partition: How to distribute multiple Qs and topk KVs per Q across all CTAs 
   - Warp specialization: Which warps handle stages like sparse KV loading, QK MMA, softmax, PV MMA, combine partials etc.
   - Flow of memory: How should each tensor (like Q, K, V, P, O etc.) be moved between memory subsystems (TMEM, RMEM, SMEM, GMEM)
@@ -57,7 +72,7 @@ Suggested steps:
   - Tensor fragments and slices: full object AND all index mappings
   - Pipelines and barriers: full objects
   - (Check return types of helper functions, they could be any of the above and should be printed)
-6. Implement and debug step by step by running the synthetic data check after every change, proceeding only when it passes 
+6. Implement and debug step by step by running `run_synthetic_check` after every change, proceeding only when it passes 
 
 CuTeDSL patterns & style:
 1. cute.printf() to print dynamic values during GPU runtime
@@ -91,8 +106,9 @@ Common pitfalls:
 2. A lot of issues are due to layouts not compute. Validate layouts first through debug printing and reasoning 
 
 Validation (All happens on Modal B200, NEVER compile CUDA locally):
- - Synthetic data check: python3 scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::kernel
- - Full correctness check: modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only
+ - Prefer `run_synthetic_check` and `run_correctness_check` over raw shell for the canonical validation flow
+ - Synthetic data check reference command: .venv/bin/python scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::kernel
+ - Full correctness check reference command: .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only
 
 References:
 1. Core library + tma helpers + tcgen05 helpers + warp/warpgroup helpers: csrc/cutlass/python/CuTeDSL/cutlass/cute
@@ -108,13 +124,16 @@ CuTeDSL kernel examples:
 3. Minimal CuTe C++ examples: csrc/cutlass/examples/cute/tutorial/blackwell
 
 Tools You Have:
-1. shell: Execute bash commands (use for `modal run`, compilation, git, etc.). Commands run from the project root.
-2. apply_patch: Create, update, or delete files via unified diffs.
+1. shell: Execute bash commands from the project root. Use this for raw shell workflows, git, and NCU profiling. The local `kernel-workbench` skill documents the canonical repo commands.
+2. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
 3. web_search: Search the web for documentation, examples, CUDA forums, PTX ISA specs.
-4. read_file: Read any file with line numbers. Supports range reads (start_line, end_line).
-5. glob_files: Find files by pattern (e.g. '**/*.py', 'solution/**/*.cu').
-6. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05').
-7. web_fetch: Fetch content from a specific URL.
+4. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
+5. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
+6. read_file: Read any file with line numbers. Supports range reads (start_line, end_line).
+7. glob_files: Find files by pattern (e.g. '**/*.py', 'solution/**/*.cu').
+8. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05').
+9. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
+10. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
 
 Output format:
 Return ONLY a single valid JSON object. Do not include markdown fences or any extra prose.
@@ -133,7 +152,9 @@ The JSON object must contain exactly these keys:
 
 
 def make_kernel_coder(
-    model: str = "gpt-5.4-pro",
+    model: str = "gpt-5.4",
+    reasoning_effort: ReasoningEffort = "xhigh",
+    verbosity: Verbosity = "low",
     extra_instructions: str = "",
 ) -> Agent[SharedContext]:
     """Create the kernel-coder agent with the given model."""
@@ -143,8 +164,8 @@ def make_kernel_coder(
         tools=ALL_TOOLS,
         model=model,
         model_settings=ModelSettings(
-            reasoning=Reasoning(effort="xhigh"),
-            verbosity="high",
+            reasoning=Reasoning(effort=reasoning_effort),
+            verbosity=verbosity,
         ),
-        output_type=str,
+        output_type=CoderResult,
     )

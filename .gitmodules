@@ -31,3 +31,6 @@
 [submodule "tools/pygpubench"]
 	path = tools/pygpubench
 	url = https://github.com/AndreSlavescu/pygpubench.git
+[submodule "references/openai-agents-python"]
+	path = references/openai-agents-python
+	url = https://github.com/openai/openai-agents-python.git

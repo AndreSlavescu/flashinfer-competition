@@ -26,6 +26,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import asdict
 from pathlib import Path
 
@@ -39,7 +40,11 @@ from kernel_agents.context import (
     RoundRecord,
     SharedContext,
 )
-from kernel_agents.kernel_coder import make_kernel_coder
+from kernel_agents.kernel_coder import (
+    REASONING_EFFORT_CHOICES,
+    VERBOSITY_CHOICES,
+    make_kernel_coder,
+)
 from kernel_agents.kernel_optimizer import make_kernel_optimizer
 from kernel_agents.kernel_planner import make_kernel_planner
 from kernel_agents.stream_logging import consume_streamed_run
@@ -190,6 +195,31 @@ def parse_coder_result(raw_output: object) -> CoderResult:
     )
 
 
+def format_run_telemetry(label: str, elapsed_s: float, result: object) -> str:
+    """Format wall-clock and token usage data for a completed agent run."""
+    parts = [f"{label} telemetry: wall_time_s={elapsed_s:.1f}"]
+
+    context_wrapper = getattr(result, "context_wrapper", None)
+    usage = getattr(context_wrapper, "usage", None)
+    if usage is None:
+        return ", ".join(parts)
+
+    requests = getattr(usage, "requests", None)
+    if requests is not None:
+        parts.append(f"requests={requests}")
+
+    total_tokens = getattr(usage, "total_tokens", None)
+    if total_tokens is not None:
+        parts.append(f"total_tokens={total_tokens}")
+
+    output_tokens_details = getattr(usage, "output_tokens_details", None)
+    reasoning_tokens = getattr(output_tokens_details, "reasoning_tokens", None)
+    if reasoning_tokens is not None:
+        parts.append(f"reasoning_tokens={reasoning_tokens}")
+
+    return ", ".join(parts)
+
+
 async def _run_agent(
     *,
     starting_agent: object,
@@ -197,15 +227,17 @@ async def _run_agent(
     context: SharedContext,
     max_turns: int,
     verbose: bool,
-):
+) -> tuple[object, float]:
     """Run an agent normally or via the streamed progress path."""
+    started_at = time.perf_counter()
     if not verbose:
-        return await Runner.run(
+        result = await Runner.run(
             starting_agent=starting_agent,
             input=input,
             context=context,
             max_turns=max_turns,
         )
+        return result, time.perf_counter() - started_at
 
     result = Runner.run_streamed(
         starting_agent=starting_agent,
@@ -213,7 +245,7 @@ async def _run_agent(
         context=context,
         max_turns=max_turns,
     )
-    return await consume_streamed_run(result)
+    return await consume_streamed_run(result), time.perf_counter() - started_at
 
 
 # ---------------------------------------------------------------------------
@@ -223,10 +255,12 @@ async def _run_agent(
 async def run_loop(
     num_rounds: int = 5,
     model: str = "gpt-5.4",
-    coder_model: str = "gpt-5.4-pro",
+    coder_model: str = "gpt-5.4",
     resume: bool = False,
     verbose: bool = False,
     coder_max_turns: int = 300,
+    coder_reasoning_effort: str = "xhigh",
+    coder_verbosity: str = "low",
     coder_extra: str = "",
     planner_extra: str = "",
     optimizer_extra: str = "",
@@ -249,7 +283,12 @@ async def run_loop(
     )
 
     # Build agents
-    coder = make_kernel_coder(model=coder_model, extra_instructions=coder_extra)
+    coder = make_kernel_coder(
+        model=coder_model,
+        reasoning_effort=coder_reasoning_effort,
+        verbosity=coder_verbosity,
+        extra_instructions=coder_extra,
+    )
     planner = make_kernel_planner(model=model, extra_instructions=planner_extra)
     optimizer = make_kernel_optimizer(model=model, extra_instructions=optimizer_extra)
 
@@ -268,13 +307,14 @@ async def run_loop(
         raw_coder_output: object | None = None
 
         try:
-            result = await _run_agent(
+            result, elapsed_s = await _run_agent(
                 starting_agent=coder,
                 input=(
-                    "Generate kernel_0.py. Follow your instructions — design the final "
-                    "CuTeDSL kernel, implement, debug, and validate until ALL 23 workloads "
-                    "pass correctness. Do not submit a PyTorch fallback; if the CuTeDSL "
-                    "compute path is not working, return validation_failed."
+                    "Generate kernel_0.py. Follow your instructions — first write "
+                    "solution/dsa_attention/kernel_0_plan.md with the final CuTeDSL design, "
+                    "then implement, debug, and validate until ALL 23 workloads pass "
+                    "correctness. Do not submit a PyTorch fallback; if the CuTeDSL compute "
+                    "path is not working, return validation_failed."
                 ),
                 context=ctx,
                 max_turns=coder_max_turns,
@@ -295,6 +335,7 @@ async def run_loop(
             print(f"FATAL: kernel-coder failed to produce a correct kernel: {coder_out.message}")
             sys.exit(1)
 
+        print(f"  {format_run_telemetry('kernel-coder', elapsed_s, result)}")
         print(f"Round 0 complete: {coder_out.generated} [{coder_out.status}]")
         print(f"  {coder_out.message}")
         if coder_out.reflection:
@@ -331,13 +372,14 @@ async def run_loop(
         )
 
         try:
-            planner_result = await _run_agent(
+            planner_result, planner_elapsed_s = await _run_agent(
                 starting_agent=planner,
                 input=planner_input,
                 context=ctx,
                 max_turns=40,
                 verbose=verbose,
             )
+            print(f"  {format_run_telemetry('kernel-planner', planner_elapsed_s, planner_result)}")
             pr: PlannerResult = planner_result.final_output
         except MaxTurnsExceeded:
             print(f"WARNING: Planner hit max turns in round {i}. Skipping this round.")
@@ -370,12 +412,15 @@ async def run_loop(
         )
 
         try:
-            optimizer_result = await _run_agent(
+            optimizer_result, optimizer_elapsed_s = await _run_agent(
                 starting_agent=optimizer,
                 input=optimizer_input,
                 context=ctx,
                 max_turns=60,
                 verbose=verbose,
+            )
+            print(
+                f"  {format_run_telemetry('kernel-optimizer', optimizer_elapsed_s, optimizer_result)}"
             )
             opt: OptimizerResult = optimizer_result.final_output
         except MaxTurnsExceeded:
@@ -413,7 +458,7 @@ async def run_loop(
         shutil.copy2(solution_dir / last_kernel, solution_dir / "kernel.py")
 
         try:
-            epilogue_result = await _run_agent(
+            epilogue_result, epilogue_elapsed_s = await _run_agent(
                 starting_agent=planner,
                 input=(
                     f"Epilogue round. Benchmark kernel.py (copied from {last_kernel}). "
@@ -423,6 +468,9 @@ async def run_loop(
                 context=ctx,
                 max_turns=20,
                 verbose=verbose,
+            )
+            print(
+                f"  {format_run_telemetry('epilogue-planner', epilogue_elapsed_s, epilogue_result)}"
             )
             ep: PlannerResult = epilogue_result.final_output
             print(f"  Last kernel latency: {ep.latency_ms:.3f}ms")
@@ -479,8 +527,8 @@ def main():
         help="LLM model for planner and optimizer agents (default: gpt-5.4)",
     )
     parser.add_argument(
-        "--coder-model", type=str, default="gpt-5.4-pro",
-        help="LLM model for the round-0 kernel-coder agent (default: gpt-5.4-pro)",
+        "--coder-model", type=str, default="gpt-5.4",
+        help="LLM model for the round-0 kernel-coder agent (default: gpt-5.4)",
     )
     parser.add_argument(
         "--resume", action="store_true",
@@ -493,6 +541,18 @@ def main():
     parser.add_argument(
         "--coder-max-turns", type=int, default=300,
         help="Max LLM turns for the round-0 kernel-coder agent (default: 300)",
+    )
+    parser.add_argument(
+        "--coder-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="xhigh",
+        help="Reasoning effort for the round-0 kernel-coder agent (default: xhigh)",
+    )
+    parser.add_argument(
+        "--coder-verbosity",
+        choices=VERBOSITY_CHOICES,
+        default="low",
+        help="Verbosity for the round-0 kernel-coder agent (default: low)",
     )
     args = parser.parse_args()
 
@@ -508,6 +568,8 @@ def main():
         resume=args.resume,
         verbose=args.verbose,
         coder_max_turns=args.coder_max_turns,
+        coder_reasoning_effort=args.coder_reasoning_effort,
+        coder_verbosity=args.coder_verbosity,
     ))
 
 
