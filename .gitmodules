@@ -1,0 +1,18 @@
+[submodule "references/cutlass"]
+	path = references/cutlass
+	url = https://github.com/NVIDIA/cutlass.git
+[submodule "quack"]
+	path = references/quack
+	url = https://github.com/Dao-AILab/quack.git
+[submodule "openai-agents-python"]
+	path = openai-agents-python
+	url = https://github.com/openai/openai-agents-python.git
+[submodule "flashinfer-bench-starter-kit"]
+	path = flashinfer-bench-starter-kit
+	url = https://github.com/flashinfer-ai/flashinfer-bench-starter-kit.git
+[submodule "flashinfer-bench"]
+	path = flashinfer-bench
+	url = https://github.com/flashinfer-ai/flashinfer-bench.git
+[submodule "tools/pygpubench"]
+	path = tools/pygpubench
+	url = https://github.com/gpu-mode/pygpubench.git
