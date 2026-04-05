@@ -13,6 +13,7 @@ import shlex
 import signal
 import subprocess
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 from agents import (
@@ -35,16 +36,35 @@ KERNEL_WORKBENCH_SKILL_DIR = (
     PROJECT_ROOT / "kernel_agents" / "skills" / "kernel-workbench"
 )
 DEFAULT_SEARCH_OUTPUT_LIMIT = 20_000
+DEFAULT_SHELL_OUTPUT_LIMIT = 20_000
 DEFAULT_READ_FILE_LIMIT = 40_000
 DEFAULT_WEB_FETCH_LIMIT = 20_000
 DEFAULT_SEARCH_MATCH_LIMIT = 100
 REFERENCE_READ_WINDOW_LINES = 400
 DEFAULT_BENCH_LANGUAGE = "python"
+SHELL_OVERFLOW_FILE_NAME = "last_shell_overflow.txt"
+SHELL_OVERFLOW_BANNER = (
+    "retrieved trimmed shell output; full transcript saved to "
+    f"{SHELL_OVERFLOW_FILE_NAME} and it will be replaced by the next overflowing shell-like tool call. "
+    "Form a concrete hypothesis before running another potentially overflowing shell command. "
+    f"Use read_file or grep_search on {SHELL_OVERFLOW_FILE_NAME} if you need more detail."
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CommandRunResult:
+    """Structured result for a local subprocess helper command."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+    timed_out: bool
+    overflow_notice: str | None = None
 
 def _project_root_from_context(ctx: RunContextWrapper[SharedContext] | None) -> Path:
     """Resolve the active project root from run context or fall back to this repo."""
@@ -181,6 +201,197 @@ def _command_display(command: Sequence[str]) -> str:
     return shlex.join(list(command))
 
 
+def _shell_overflow_path(project_root: Path) -> Path:
+    """Resolve the stable shell overflow transcript path."""
+    return project_root / SHELL_OVERFLOW_FILE_NAME
+
+
+def _render_shell_preview_block(output: ShellCommandOutput) -> str:
+    """Render a single shell output entry into preview text."""
+    lines: list[str] = []
+    if output.command:
+        lines.append(f"$ {output.command}")
+
+    stdout = output.stdout.rstrip("\n")
+    stderr = output.stderr.rstrip("\n")
+    if stdout:
+        lines.append(stdout)
+    if stderr:
+        if stdout:
+            lines.append("")
+        lines.append("stderr:")
+        lines.append(stderr)
+
+    if output.exit_code not in (None, 0):
+        lines.append(f"exit code: {output.exit_code}")
+    if output.status == "timeout":
+        lines.append("status: timeout")
+
+    return "\n".join(lines).strip() or "(no output)"
+
+
+def _render_shell_outputs_text(outputs: Sequence[ShellCommandOutput]) -> str:
+    """Render shell outputs into a single text transcript for overflow checks."""
+    if not outputs:
+        return "(no output)"
+    return "\n\n".join(_render_shell_preview_block(output) for output in outputs)
+
+
+def _truncate_shell_outputs(
+    outputs: Sequence[ShellCommandOutput],
+    max_length: int,
+) -> list[ShellCommandOutput]:
+    """Trim shell stdout/stderr sequentially, matching SDK ordering."""
+    if max_length <= 0:
+        return [
+            ShellCommandOutput(
+                stdout="",
+                stderr="",
+                outcome=output.outcome,
+                command=output.command,
+                provider_data=output.provider_data,
+            )
+            for output in outputs
+        ]
+
+    remaining = max_length
+    truncated: list[ShellCommandOutput] = []
+    for output in outputs:
+        stdout = ""
+        stderr = ""
+        if remaining > 0 and output.stdout:
+            stdout = output.stdout[:remaining]
+            remaining -= len(stdout)
+        if remaining > 0 and output.stderr:
+            stderr = output.stderr[:remaining]
+            remaining -= len(stderr)
+        truncated.append(
+            ShellCommandOutput(
+                stdout=stdout,
+                stderr=stderr,
+                outcome=output.outcome,
+                command=output.command,
+                provider_data=output.provider_data,
+            )
+        )
+    return truncated
+
+
+def _render_shell_transcript_block(output: ShellCommandOutput) -> str:
+    """Render a single shell output entry into a full overflow transcript block."""
+    lines: list[str] = []
+    if output.command:
+        lines.append(f"Command: {output.command}")
+    if output.status == "timeout":
+        lines.append("Status: timeout")
+    else:
+        lines.append(f"Exit code: {output.exit_code}")
+    lines.append("STDOUT:")
+    lines.append(output.stdout.rstrip("\n") or "(empty)")
+    lines.append("")
+    lines.append("STDERR:")
+    lines.append(output.stderr.rstrip("\n") or "(empty)")
+    return "\n".join(lines)
+
+
+def _build_shell_overflow_transcript(
+    *,
+    source_tool: str,
+    working_directory: Path,
+    outputs: Sequence[ShellCommandOutput],
+) -> str:
+    """Build the full plain-text transcript written on shell overflow."""
+    lines = [
+        f"Source tool: {source_tool}",
+        f"Working directory: {working_directory}",
+        f"Overflow file: {SHELL_OVERFLOW_FILE_NAME}",
+        "This file is overwritten by the next overflowing shell-like tool call.",
+        "",
+    ]
+    if not outputs:
+        lines.append("(no output)")
+    for index, output in enumerate(outputs, start=1):
+        if outputs:
+            lines.append(f"[Command {index}]")
+            lines.append(_render_shell_transcript_block(output))
+            lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _write_shell_overflow(project_root: Path, transcript: str) -> str:
+    """Persist the current overflowing shell transcript and return the banner."""
+    overflow_path = _shell_overflow_path(project_root)
+    overflow_path.write_text(transcript, encoding="utf-8")
+    return SHELL_OVERFLOW_BANNER
+
+
+def _maybe_write_shell_overflow(
+    *,
+    project_root: Path,
+    source_tool: str,
+    working_directory: Path,
+    outputs: Sequence[ShellCommandOutput],
+    limit: int,
+) -> str | None:
+    """Write the overflow transcript when a shell-like tool exceeds its limit."""
+    transcript = _build_shell_overflow_transcript(
+        source_tool=source_tool,
+        working_directory=working_directory,
+        outputs=outputs,
+    )
+    if limit > 0 and len(transcript) <= limit:
+        return None
+    return _write_shell_overflow(project_root, transcript)
+
+
+def _build_shell_overflow_preview_outputs(
+    outputs: Sequence[ShellCommandOutput],
+    *,
+    limit: int,
+    banner: str,
+) -> list[ShellCommandOutput]:
+    """Replace overflowing shell output with a banner-first bounded preview."""
+    default_outcome = outputs[0].outcome if outputs else ShellCallOutcome(type="exit", exit_code=0)
+    if limit <= 0:
+        return [ShellCommandOutput(stdout="", stderr="", outcome=default_outcome)]
+
+    preview_budget = max(limit - len(banner) - 1, 0)
+    trimmed_outputs = _truncate_shell_outputs(outputs, preview_budget)
+    preview_outputs: list[ShellCommandOutput] = []
+    remaining = preview_budget
+    for index, output in enumerate(trimmed_outputs):
+        block = _render_shell_preview_block(output)
+        shown = block[:remaining] if remaining > 0 else ""
+        remaining -= len(shown)
+        if index == 0:
+            shown = _prepend_notice(shown, banner) if shown else _truncate_output(
+                banner,
+                limit=limit,
+                suffix="",
+            )
+        preview_outputs.append(
+            ShellCommandOutput(
+                stdout=shown,
+                stderr="",
+                outcome=output.outcome,
+                provider_data={"original_command": output.command} if output.command else None,
+            )
+        )
+        if remaining <= 0:
+            break
+
+    if not preview_outputs:
+        preview_outputs.append(
+            ShellCommandOutput(
+                stdout=_truncate_output(banner, limit=limit, suffix=""),
+                stderr="",
+                outcome=default_outcome,
+                provider_data={"original_command": outputs[0].command} if outputs and outputs[0].command else None,
+            )
+        )
+    return preview_outputs
+
+
 def _extract_section(text: str, marker: str) -> str:
     """Extract a trailing section from a CLI transcript."""
     lines = text.splitlines()
@@ -234,7 +445,8 @@ async def _run_command(
     project_root: Path,
     command: Sequence[str],
     timeout_s: int,
-) -> tuple[int, str, str, bool]:
+    source_tool: str,
+) -> CommandRunResult:
     """Run a fixed command locally and capture UTF-8 output."""
     proc = await asyncio.create_subprocess_exec(
         *command,
@@ -254,7 +466,29 @@ async def _run_command(
 
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
-    return proc.returncode or 0, stdout, stderr, timed_out
+    output = ShellCommandOutput(
+        command=_command_display(command),
+        stdout=stdout,
+        stderr=stderr,
+        outcome=ShellCallOutcome(
+            type="timeout" if timed_out else "exit",
+            exit_code=getattr(proc, "returncode", None),
+        ),
+    )
+    overflow_notice = _maybe_write_shell_overflow(
+        project_root=project_root,
+        source_tool=source_tool,
+        working_directory=project_root,
+        outputs=[output],
+        limit=DEFAULT_SHELL_OUTPUT_LIMIT,
+    )
+    return CommandRunResult(
+        returncode=proc.returncode or 0,
+        stdout=stdout,
+        stderr=stderr,
+        timed_out=timed_out,
+        overflow_notice=overflow_notice,
+    )
 
 
 def _resolve_solution_dir(
@@ -301,6 +535,7 @@ class ShellExecutor:
         action = request.data.action
         working_directory = _project_root_from_context(request.ctx_wrapper)
         timeout = (action.timeout_ms or 0) / 1000 or None
+        output_limit = action.max_output_length if action.max_output_length is not None else DEFAULT_SHELL_OUTPUT_LIMIT
 
         outputs: list[ShellCommandOutput] = []
         for command in action.commands:
@@ -341,8 +576,25 @@ class ShellExecutor:
             if timed_out:
                 break
 
+        full_output_text = _render_shell_outputs_text(outputs)
+        overflow_notice = None
+        if len(full_output_text) > output_limit:
+            overflow_notice = _maybe_write_shell_overflow(
+                project_root=working_directory,
+                source_tool="shell",
+                working_directory=working_directory,
+                outputs=outputs,
+                limit=output_limit,
+            )
+        if overflow_notice:
+            outputs = _build_shell_overflow_preview_outputs(
+                outputs,
+                limit=output_limit,
+                banner=overflow_notice,
+            )
         return ShellResult(
             output=outputs,
+            max_output_length=output_limit if overflow_notice else None,
             provider_data={"working_directory": str(working_directory)},
         )
 
@@ -727,19 +979,21 @@ async def run_synthetic_check(
         command.append("--rebuild-fixture")
 
     timeout_s = 1800
-    returncode, stdout, stderr, timed_out = await _run_command(
+    result = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
+        source_tool="run_synthetic_check",
     )
-    return _summarize_synthetic_output(
+    summary = _summarize_synthetic_output(
         command,
-        returncode,
-        stdout,
-        stderr,
-        timed_out,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+        result.timed_out,
         timeout_s,
     )
+    return _prepend_notice(summary, result.overflow_notice or "")
 
 
 @function_tool
@@ -774,19 +1028,21 @@ async def run_correctness_check(
         command.extend(["--lang", lang])
 
     timeout_s = 5400
-    returncode, stdout, stderr, timed_out = await _run_command(
+    result = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
+        source_tool="run_correctness_check",
     )
-    return _summarize_benchmark_output(
+    summary = _summarize_benchmark_output(
         command,
-        returncode,
-        stdout,
-        stderr,
-        timed_out,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+        result.timed_out,
         timeout_s,
     )
+    return _prepend_notice(summary, result.overflow_notice or "")
 
 
 @function_tool
@@ -820,19 +1076,21 @@ async def run_full_benchmark(
         command.extend(["--lang", lang])
 
     timeout_s = 5400
-    returncode, stdout, stderr, timed_out = await _run_command(
+    result = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
+        source_tool="run_full_benchmark",
     )
-    return _summarize_benchmark_output(
+    summary = _summarize_benchmark_output(
         command,
-        returncode,
-        stdout,
-        stderr,
-        timed_out,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+        result.timed_out,
         timeout_s,
     )
+    return _prepend_notice(summary, result.overflow_notice or "")
 
 # ---------------------------------------------------------------------------
 # Custom exact-URL fallback
@@ -903,4 +1161,17 @@ ALL_TOOLS = [
     run_synthetic_check,
     run_correctness_check,
     run_full_benchmark,
+]
+
+# Subset for the kernel-designer agent: read-only exploration + plan writing,
+# no validation/benchmark tools (those belong to the coder).
+DESIGNER_TOOLS = [
+    shell_tool,
+    apply_patch_tool,
+    web_search_tool,
+    web_fetch,
+    codex_kernel_assist,
+    read_file,
+    glob_files,
+    grep_search,
 ]
