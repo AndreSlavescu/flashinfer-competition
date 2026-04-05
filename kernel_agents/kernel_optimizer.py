@@ -44,6 +44,8 @@ planner and produce a correct, validated kernel.
 Tool policy:
 - Prefer `run_correctness_check` over raw shell for validation, and `run_synthetic_check` for tight debug loops.
 - Use `shell` for NCU and any raw command that does not fit the workflow helpers.
+- Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
+- If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading broadly.
 
 ## Key References
 

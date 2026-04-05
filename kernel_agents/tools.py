@@ -35,9 +35,10 @@ KERNEL_WORKBENCH_SKILL_DIR = (
     PROJECT_ROOT / "kernel_agents" / "skills" / "kernel-workbench"
 )
 DEFAULT_SEARCH_OUTPUT_LIMIT = 20_000
-DEFAULT_SHELL_OUTPUT_LIMIT = 20_000
 DEFAULT_READ_FILE_LIMIT = 40_000
 DEFAULT_WEB_FETCH_LIMIT = 20_000
+DEFAULT_SEARCH_MATCH_LIMIT = 100
+REFERENCE_READ_WINDOW_LINES = 400
 DEFAULT_BENCH_LANGUAGE = "python"
 
 
@@ -110,20 +111,46 @@ def _truncate_block(text: str, *, max_lines: int = 48, max_chars: int = 10_000) 
     return _truncate_output("\n".join(lines), limit=max_chars)
 
 
-def _truncate_shell_streams(stdout: str, stderr: str, limit: int | None) -> tuple[str, str]:
-    """Honor max_output_length by trimming combined shell output."""
-    if limit is None or limit <= 0:
-        return stdout, stderr
+def _prepend_notice(text: str, notice: str) -> str:
+    """Attach a single-line notice ahead of tool output."""
+    if not notice:
+        return text
+    if not text:
+        return notice
+    return f"{notice}\n{text}"
 
-    total = len(stdout) + len(stderr)
-    if total <= limit:
-        return stdout, stderr
 
-    if len(stdout) >= limit:
-        return _truncate_output(stdout, limit), ""
+def _is_reference_display_path(display_path: str) -> bool:
+    """Return True when a project-relative path points into the references tree."""
+    return display_path == "references" or display_path.startswith("references/")
 
-    stderr_limit = max(limit - len(stdout), 0)
-    return stdout, _truncate_output(stderr, stderr_limit)
+
+def _format_search_success(output: str, search_path: str) -> str:
+    """Render successful search output with trim notices when caps are hit."""
+    notices: list[str] = []
+    match_lines = output.splitlines()
+    if len(match_lines) >= DEFAULT_SEARCH_MATCH_LIMIT:
+        notices.append(
+            (
+                f"retrieved trimmed search results for {search_path}; showing up to the first "
+                f"{DEFAULT_SEARCH_MATCH_LIMIT} matches. Refine pattern, path, or file_glob to continue."
+            )
+        )
+
+    was_char_truncated = len(output) > DEFAULT_SEARCH_OUTPUT_LIMIT
+    rendered = _truncate_output(
+        output,
+        limit=DEFAULT_SEARCH_OUTPUT_LIMIT,
+        suffix="\n... (search output truncated)",
+    )
+    if was_char_truncated:
+        notices.append(
+            (
+                f"retrieved trimmed search results for {search_path} at "
+                f"{DEFAULT_SEARCH_OUTPUT_LIMIT} chars; refine pattern, path, or file_glob to continue."
+            )
+        )
+    return _prepend_notice(rendered, "\n".join(notices))
 
 
 def _format_search_result(
@@ -138,11 +165,7 @@ def _format_search_result(
     err = stderr.decode("utf-8", errors="replace") if isinstance(stderr, (bytes, bytearray)) else stderr
 
     if returncode == 0:
-        return _truncate_output(
-            out,
-            limit=DEFAULT_SEARCH_OUTPUT_LIMIT,
-            suffix="\n... (search output truncated)",
-        )
+        return _format_search_success(out, search_path)
     if returncode == 1 and not err.strip():
         return "No matches found."
 
@@ -278,7 +301,6 @@ class ShellExecutor:
         action = request.data.action
         working_directory = _project_root_from_context(request.ctx_wrapper)
         timeout = (action.timeout_ms or 0) / 1000 or None
-        output_limit = action.max_output_length or DEFAULT_SHELL_OUTPUT_LIMIT
 
         outputs: list[ShellCommandOutput] = []
         for command in action.commands:
@@ -303,7 +325,6 @@ class ShellExecutor:
 
             stdout = stdout_bytes.decode("utf-8", errors="replace")
             stderr = stderr_bytes.decode("utf-8", errors="replace")
-            stdout, stderr = _truncate_shell_streams(stdout, stderr, output_limit)
 
             outputs.append(
                 ShellCommandOutput(
@@ -455,15 +476,43 @@ async def read_file(
         return f"ERROR: {exc}"
 
     lines = text.splitlines(keepends=True)
+    total_lines = len(lines)
     start_index = max(0, start_line - 1) if start_line > 0 else 0
-    end_index = end_line if end_line > 0 else len(lines)
+    end_index = end_line if end_line > 0 else total_lines
+    notices: list[str] = []
+
+    if (
+        start_line <= 0
+        and end_line <= 0
+        and _is_reference_display_path(display_path)
+        and total_lines > REFERENCE_READ_WINDOW_LINES
+    ):
+        start_index = 0
+        end_index = REFERENCE_READ_WINDOW_LINES
+        notices.append(
+            (
+                f"retrieved trimmed {display_path}:[1]-[{end_index}] of {total_lines} lines; "
+                "request start_line/end_line for another section."
+            )
+        )
+
     selected = lines[start_index:end_index]
     numbered = [f"{start_index + idx + 1}: {line}" for idx, line in enumerate(selected)]
-    return _truncate_output(
-        "".join(numbered),
+    rendered_text = "".join(numbered)
+    was_truncated = len(rendered_text) > DEFAULT_READ_FILE_LIMIT
+    rendered = _truncate_output(
+        rendered_text,
         limit=DEFAULT_READ_FILE_LIMIT,
         suffix="\n... (truncated at 40k chars)",
     )
+    if was_truncated:
+        notices.append(
+            (
+                f"retrieved trimmed {display_path}:[{start_index + 1}]-[{min(end_index, total_lines)}] "
+                f"at {DEFAULT_READ_FILE_LIMIT} chars; request a narrower line range if you need more."
+            )
+        )
+    return _prepend_notice(rendered, "\n".join(notices))
 
 
 @function_tool
@@ -542,7 +591,7 @@ async def grep_search(
         return f"ERROR: Path not found: {search_path}"
 
     target = "." if search_path_obj == project_root else search_path
-    cmd = ["rg", "-n", "--max-count=100", "--max-columns=200"]
+    cmd = ["rg", "-n", f"--max-count={DEFAULT_SEARCH_MATCH_LIMIT}", "--max-columns=200"]
     if file_glob:
         cmd.extend(["--glob", file_glob])
     cmd.extend(["-e", pattern, target])
@@ -557,7 +606,7 @@ async def grep_search(
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         return _format_search_result("rg", proc.returncode, stdout, stderr, search_path)
     except FileNotFoundError:
-        fallback = ["grep", "-ErnI", "-m", "100"]
+        fallback = ["grep", "-ErnI", "-m", str(DEFAULT_SEARCH_MATCH_LIMIT)]
         if file_glob:
             fallback.extend(["--include", file_glob])
         fallback.extend(["-e", pattern, target])
@@ -794,7 +843,7 @@ async def web_fetch(
     ctx: RunContextWrapper[SharedContext],
     url: str,
 ) -> str:
-    """Fetch content from a URL and return the text body (truncated to 50k chars)."""
+    """Fetch content from a URL and return the text body (truncated to 20k chars)."""
     del ctx
 
     try:
@@ -806,7 +855,17 @@ async def web_fetch(
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
-                return resp.read().decode("utf-8", errors="replace")[:DEFAULT_WEB_FETCH_LIMIT]
+                text = resp.read().decode("utf-8", errors="replace")
+                if len(text) <= DEFAULT_WEB_FETCH_LIMIT:
+                    return text
+                shown = text[:DEFAULT_WEB_FETCH_LIMIT]
+                return _prepend_notice(
+                    shown,
+                    (
+                        f"retrieved trimmed {url}:[1]-[{DEFAULT_WEB_FETCH_LIMIT}] "
+                        f"of {len(text)} chars"
+                    ),
+                )
         except Exception as exc:
             return f"ERROR: {exc}"
 
@@ -814,7 +873,16 @@ async def web_fetch(
         async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            return resp.text[:DEFAULT_WEB_FETCH_LIMIT]
+            if len(resp.text) <= DEFAULT_WEB_FETCH_LIMIT:
+                return resp.text
+            shown = resp.text[:DEFAULT_WEB_FETCH_LIMIT]
+            return _prepend_notice(
+                shown,
+                (
+                    f"retrieved trimmed {url}:[1]-[{DEFAULT_WEB_FETCH_LIMIT}] "
+                    f"of {len(resp.text)} chars"
+                ),
+            )
     except Exception as exc:
         return f"ERROR: {exc}"
 

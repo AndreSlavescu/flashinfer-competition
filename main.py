@@ -41,11 +41,9 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
 
 from agents import ModelRetrySettings, ModelSettings, RunConfig, Runner, retry_policies
 from agents.exceptions import MaxTurnsExceeded
-from agents.run import CallModelData, ModelInputData
 
 from kernel_agents.context import (
     CoderResult,
@@ -66,23 +64,6 @@ from kernel_agents.stream_logging import consume_streamed_run
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
-TRIMMABLE_TOOL_OUTPUT_TYPES = frozenset(
-    {
-        "function_call_output",
-        "shell_call_output",
-        "local_shell_call_output",
-        "apply_patch_call_output",
-        "tool_search_output",
-    }
-)
-MAX_INLINE_TOOL_OUTPUT_CHARS = 4_000
-INLINE_TOOL_OUTPUT_PREVIEW_CHARS = 1_200
-OLDER_TOOL_OUTPUT_CHARS = 1_200
-OLDER_TOOL_OUTPUT_PREVIEW_CHARS = 300
-EMERGENCY_TOOL_OUTPUT_CHARS = 400
-EMERGENCY_TOOL_OUTPUT_PREVIEW_CHARS = 120
-RECENT_TOOL_OUTPUTS_TO_KEEP = 2
-MAX_MODEL_INPUT_CHARS = 120_000
 
 
 # ---------------------------------------------------------------------------
@@ -250,152 +231,6 @@ def format_run_telemetry(label: str, elapsed_s: float, result: object) -> str:
 
     return ", ".join(parts)
 
-
-def _serialize_for_budget(value: object) -> str:
-    """Best-effort serialization for approximate prompt-size budgeting."""
-    try:
-        return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    except TypeError:
-        return str(value)
-
-
-def _summarize_large_output(label: str, payload: object, preview_chars: int) -> str:
-    """Convert a large tool payload into a concise textual preview."""
-    payload_text = _serialize_for_budget(payload)
-    preview = payload_text[:preview_chars]
-    ellipsis = "..." if len(payload_text) > preview_chars else ""
-    shown = min(len(payload_text), preview_chars)
-    return (
-        f"[Trimmed {label} - {len(payload_text)} chars, showing first {shown}]\n"
-        f"{preview}{ellipsis}"
-    )
-
-
-def _trim_tool_output_item(
-    item: dict[str, object],
-    *,
-    max_chars: int,
-    preview_chars: int,
-) -> dict[str, object] | None:
-    """Trim a single tool output item while preserving a replayable shape."""
-    item_type = item.get("type")
-
-    if item_type == "function_call_output":
-        payload = item.get("output", "")
-        if len(_serialize_for_budget(payload)) <= max_chars:
-            return None
-        trimmed = dict(item)
-        trimmed["output"] = _summarize_large_output("function output", payload, preview_chars)
-        return trimmed
-
-    if item_type == "apply_patch_call_output":
-        payload = item.get("output", "")
-        if len(_serialize_for_budget(payload)) <= max_chars:
-            return None
-        trimmed = dict(item)
-        trimmed["output"] = _summarize_large_output("apply_patch output", payload, preview_chars)
-        return trimmed
-
-    if item_type in {"shell_call_output", "local_shell_call_output"}:
-        payload = item.get("shell_output", item.get("output", []))
-        if len(_serialize_for_budget(payload)) <= max_chars:
-            return None
-        trimmed = dict(item)
-        shell_summary = _summarize_large_output("shell output", payload, preview_chars)
-        compact_entry = {
-            "stdout": shell_summary,
-            "stderr": "",
-            "outcome": {"type": "exit", "exit_code": 0},
-        }
-        trimmed["output"] = [compact_entry]
-        if "shell_output" in trimmed:
-            trimmed["shell_output"] = [compact_entry]
-        return trimmed
-
-    if item_type == "tool_search_output":
-        payload = item.get("results")
-        if not isinstance(payload, list):
-            payload = item.get("tools", [])
-        if len(_serialize_for_budget(payload)) <= max_chars:
-            return None
-        trimmed = dict(item)
-        summary = _summarize_large_output("tool search output", payload, preview_chars)
-        if isinstance(trimmed.get("results"), list):
-            trimmed["results"] = [{"text": summary}]
-        else:
-            trimmed["tools"] = []
-            trimmed["summary"] = summary
-        return trimmed
-
-    return None
-
-
-def _trim_model_input(data: CallModelData[Any]) -> ModelInputData:
-    """Trim oversized tool outputs so one long agent run does not exhaust TPM."""
-    model_data = data.model_data
-    items = list(model_data.input)
-    tool_output_indices = [
-        index
-        for index, item in enumerate(items)
-        if isinstance(item, dict) and item.get("type") in TRIMMABLE_TOOL_OUTPUT_TYPES
-    ]
-    if not tool_output_indices:
-        return model_data
-
-    def apply_pass(
-        input_items: list[object],
-        *,
-        max_chars: int,
-        preview_chars: int,
-        keep_recent: int,
-    ) -> list[object]:
-        protected_start = (
-            tool_output_indices[-keep_recent]
-            if keep_recent > 0 and len(tool_output_indices) >= keep_recent
-            else len(input_items)
-        )
-        updated = list(input_items)
-        for index in tool_output_indices:
-            if index >= protected_start:
-                continue
-            item = updated[index]
-            if not isinstance(item, dict):
-                continue
-            trimmed = _trim_tool_output_item(
-                item,
-                max_chars=max_chars,
-                preview_chars=preview_chars,
-            )
-            if trimmed is not None:
-                updated[index] = trimmed
-        return updated
-
-    def total_chars(input_items: list[object]) -> int:
-        return sum(len(_serialize_for_budget(item)) for item in input_items)
-
-    items = apply_pass(
-        items,
-        max_chars=MAX_INLINE_TOOL_OUTPUT_CHARS,
-        preview_chars=INLINE_TOOL_OUTPUT_PREVIEW_CHARS,
-        keep_recent=0,
-    )
-    items = apply_pass(
-        items,
-        max_chars=OLDER_TOOL_OUTPUT_CHARS,
-        preview_chars=OLDER_TOOL_OUTPUT_PREVIEW_CHARS,
-        keep_recent=RECENT_TOOL_OUTPUTS_TO_KEEP,
-    )
-    if total_chars(items) > MAX_MODEL_INPUT_CHARS:
-        items = apply_pass(
-            items,
-            max_chars=EMERGENCY_TOOL_OUTPUT_CHARS,
-            preview_chars=EMERGENCY_TOOL_OUTPUT_PREVIEW_CHARS,
-            keep_recent=1,
-        )
-
-    return ModelInputData(input=items, instructions=model_data.instructions)
-
-
 def make_run_config() -> RunConfig:
     """Build a shared RunConfig for long tool-using agent runs."""
     retry_settings = ModelRetrySettings(
@@ -413,10 +248,7 @@ def make_run_config() -> RunConfig:
             retry_policies.http_status([408, 409, 429, 500, 502, 503, 504]),
         ),
     )
-    return RunConfig(
-        call_model_input_filter=_trim_model_input,
-        model_settings=ModelSettings(retry=retry_settings),
-    )
+    return RunConfig(model_settings=ModelSettings(retry=retry_settings))
 
 
 async def _run_agent(
