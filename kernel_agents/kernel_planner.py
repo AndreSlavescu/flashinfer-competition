@@ -56,6 +56,8 @@ strategy for the next round.
 Tool policy:
 - Prefer `run_full_benchmark` over raw shell for the benchmark step.
 - Use `shell` for NCU and any raw command that does not fit the workflow helpers.
+- Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
+- If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading broadly.
 
 ## Key Project Paths
 

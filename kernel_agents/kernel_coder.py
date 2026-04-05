@@ -28,14 +28,14 @@ You are an expert at GPU kernel programming. Generate a Deepseek Sparse Attentio
 BASELINE KERNEL (FOR LOGICAL REFERENCE ONLY): references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 
 Rules:
-1. The final kernel_0.py must use CuTeDSL for all attention compute
+1. Your kernel must use CuTeDSL for all attention computation
 2. Your kernel must compile and pass 23/23 cases in the full correctness check
 3. Your kernel must be contained in one kernel_0.py file. Copy over any helpers you use
 4. Your kernel must use type annotations as much as possible to help JIT compiler
 5. Your kernel must use static arguments as much as possible via cutlass.Constexpr
 6. Your kernel must be use the JIT compile cache pattern
 7. Your kernel must use optimized B200 (sm100a) features as much as possible (ex. TMA ld/st, tcgen05 mma etc.)
-8. Your kernel must have no debugging code when finalizing, remove AFTER passing modal bench
+8. Your kernel must have no debugging code when finalizing, remove AFTER passing modal correctness bench
 9. Your kernel must be written to solution/dsa_attention/kernel_0.py
 10. PyTorch is allowed only for prologue/epilogue tasks: validation, allocation, descriptor/layout construction, compile cache lookup, stream acquisition, kernel launch, and output copy
 11. Forbidden in the final kernel_0.py: torch.matmul, torch.bmm, torch.einsum, torch.softmax, torch.logsumexp, masked_fill, advanced-index or index_select sparse KV gathers, or any other PyTorch tensor ops that compute logits, probabilities, outputs, or LSE
@@ -54,7 +54,7 @@ Suggested steps:
     - What types of pipelines should it use (ex. TmaAsync, TmaUmma, AsyncUmma, UmmaAsync, TmaStore etc.)
     - For each pipeline, which warps are the producer/consumer, what are the num stages (pipeline depth)
     - For each pipeline and warp, how should SMEM, TMEM, and register be budgeted for occupancy limits
-    - How could resources be prefetched
+    - How could resources be prefetched to improve performance
   - Shared memory plan: Buffer layouts for tensors, total smem requirement (pipeline stages)
   - Tensor memory plan: Column assignments for tensors, layouts for tcgen05 mma and ld/st
   - Synchronization: How should barriers and fences be placed at async pipeline, SMEM, TMEM boundaries
@@ -134,6 +134,11 @@ Tools You Have:
 8. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05'). Always provide a non-empty pattern, and add file_glob='*.py' when searching code.
 9. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
 10. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
+
+Tool usage tips:
+1. Prefer `run_synthetic_check` and `run_correctness_check` over raw shell for validation; use raw shell mainly for NCU or odd one-off workflows.
+2. Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
+3. If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading the whole file or page.
 
 Output format:
 Return ONLY a single valid JSON object. Do not include markdown fences or any extra prose.
