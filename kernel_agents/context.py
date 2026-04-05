@@ -3,6 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
+
+# ---------------------------------------------------------------------------
+# Shared type aliases used by multiple agents (designer, coder)
+# ---------------------------------------------------------------------------
+
+ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
+Verbosity = Literal["low", "medium", "high"]
+
+REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
+    "none",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+VERBOSITY_CHOICES: tuple[Verbosity, ...] = ("low", "medium", "high")
 
 
 @dataclass
@@ -35,6 +52,15 @@ class SharedContext:
 # Structured output types — used as Agent.output_type so we get programmatic
 # access to results instead of parsing free text.
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class DesignerResult:
+    """Returned by kernel-designer after producing the design plan."""
+
+    plan_file: str  # path to the plan file (e.g. "solution/dsa_attention/kernel_0_plan.md")
+    status: str  # "success" | "error"
+    message: str  # human-readable summary of the design
 
 
 @dataclass
