@@ -109,8 +109,8 @@ class SharedContext:
     best_round: int = -1
     history: list[RoundRecord] = field(default_factory=list)
     model_name: str = "gpt-5.4"
-    quality_profile: QualityProfile = "legacy"
-    tool_limits: ToolLimitSettings = field(default_factory=lambda: LEGACY_TOOL_LIMITS)
+    quality_profile: QualityProfile = "public_codex"
+    tool_limits: ToolLimitSettings = field(default_factory=lambda: PUBLIC_CODEX_TOOL_LIMITS)
     codex_worker_mode: CodexWorkerMode = "off"
     codex_thread_id_coder_engineer: str | None = None
     codex_thread_id_optimizer_engineer: str | None = None

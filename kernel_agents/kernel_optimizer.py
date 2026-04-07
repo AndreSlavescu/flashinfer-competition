@@ -37,7 +37,6 @@ planner and produce a correct, validated kernel.
 
 Tool policy:
 - Prefer `run_correctness_check` for validation, and `run_synthetic_check` for tight debug loops.
-- Use `run_ncu_profile` for profiling and `run_sass_analysis` for instruction-level analysis.
 - Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 - If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading broadly.
 - If a long-running tool says `last_shell_overflow.txt` was written, inspect it with `read_file` or `grep_search` before running another potentially overflowing tool. Treat it as ephemeral: the next overflowing tool call replaces it.

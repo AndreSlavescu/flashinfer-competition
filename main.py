@@ -36,7 +36,6 @@ import asyncio
 import json
 import logging
 import shutil
-import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -216,7 +215,7 @@ def public_codex_input_filter(filter_payload: CallModelData[SharedContext]) -> M
     )
 
 
-def make_run_config(quality_profile: QualityProfile = "legacy") -> RunConfig:
+def make_run_config(quality_profile: QualityProfile = "public_codex") -> RunConfig:
     """Build a shared RunConfig for long tool-using agent runs."""
     retry_settings = ModelRetrySettings(
         max_retries=4,
@@ -298,7 +297,7 @@ async def run_loop(
     model: str = "gpt-5.4",
     coder_model: str = "gpt-5.4",
     designer_model: str = "gpt-5.4",
-    quality_profile: QualityProfile = "legacy",
+    quality_profile: QualityProfile = "public_codex",
     codex_worker_mode: CodexWorkerMode = "off",
     codex_worker_model: str = "gpt-5-codex",
     codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
@@ -463,7 +462,6 @@ async def run_loop(
 
         # Build history string
         history_str = format_history(ctx.history)
-
         # ── Planner ────────────────────────────────────────────────────
         print(f"\n--- Planner (round {i}) ---")
         planner_input = (
@@ -555,67 +553,15 @@ async def run_loop(
 
         save_state(ctx, state_path)
 
-    # ── Epilogue: Bench the last kernel for best_kernel tracking ───────
-    last_kernel = f"kernel_{num_rounds}.py"
-    if (solution_dir / last_kernel).exists():
-        print()
-        print("=" * 60)
-        print(f"EPILOGUE: Benchmark {last_kernel}")
-        print("=" * 60)
-
-        shutil.copy2(solution_dir / last_kernel, solution_dir / "kernel.py")
-
-        try:
-            epilogue_result, epilogue_elapsed_s = await _run_agent(
-                starting_agent=planner,
-                input=(
-                    f"Epilogue round. Benchmark kernel.py (copied from {last_kernel}). "
-                    f"Report the latency. You do NOT need to write a strategy file — "
-                    f"just benchmark and report the PlannerResult."
-                ),
-                context=ctx,
-                max_turns=20,
-                verbose=verbose,
-            )
-            print(
-                f"  {format_run_telemetry('epilogue-planner', epilogue_elapsed_s, epilogue_result)}"
-            )
-            ep = require_structured_output(epilogue_result, PlannerResult)
-            print(f"  Last kernel latency: {ep.latency_ms:.3f}ms")
-
-            if ep.latency_ms < ctx.best_latency_ms:
-                ctx.best_latency_ms = ep.latency_ms
-                ctx.best_round = num_rounds
-                shutil.copy2(solution_dir / "kernel.py", solution_dir / "best_kernel.py")
-                print(f"  NEW BEST: {ep.latency_ms:.3f}ms (from round {num_rounds})")
-        except MaxTurnsExceeded:
-            print("WARNING: Epilogue planner hit max turns.")
-        except Exception as exc:
-            print(f"FATAL: epilogue planner returned an invalid structured result: {exc}")
-            sys.exit(1)
-
-    # ── Final benchmark ────────────────────────────────────────────────
+    # ── Final summary ──────────────────────────────────────────────────
     print()
     print("=" * 60)
-    print("FINAL BENCHMARK")
+    print("FINAL SUMMARY")
     print("=" * 60)
-    print(f"Best kernel: round {ctx.best_round} ({ctx.best_latency_ms:.3f}ms)")
-
-    if (solution_dir / "best_kernel.py").exists():
-        # bench.py auto-selects best_kernel.py for full perf benchmark
-        result = subprocess.run(
-            [
-                sys.executable, "-m", "modal", "run",
-                "scripts/bench.py",
-                "--track", "dsa_attention",
-                "--solution-dir", "solution/dsa_attention",
-            ],
-            cwd=str(PROJECT_ROOT),
-        )
-        if result.returncode != 0:
-            print(f"Final benchmark exited with code {result.returncode}")
+    if (solution_dir / "best_kernel.py").exists() and ctx.best_round >= 0:
+        print(f"Best kernel so far: round {ctx.best_round} ({ctx.best_latency_ms:.3f}ms)")
     else:
-        print("No best_kernel.py found — skipping final benchmark.")
+        print("No best kernel has been recorded yet.")
 
     save_state(ctx, state_path)
     print("\nDone.")
@@ -648,8 +594,8 @@ def main():
     parser.add_argument(
         "--quality-profile",
         choices=QUALITY_PROFILE_CHOICES,
-        default="legacy",
-        help="Tool-limit and run-config profile to use (default: legacy)",
+        default="public_codex",
+        help="Tool-limit and run-config profile to use (default: public_codex)",
     )
     parser.add_argument(
         "--codex-worker-mode",

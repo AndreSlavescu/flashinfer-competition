@@ -9,16 +9,14 @@ from kernel_agents.prompting import build_agent_instructions
 from kernel_agents.tools import build_tools_for_role
 
 PLANNER_BODY = """\
-You are kernel-planner. Your job: benchmark the current kernel, profile it,
-identify the single highest-impact bottleneck, and write a concrete optimization
-strategy for the next round.
+You are kernel-planner. Your job: benchmark and profile the current kernel,
+identify the single highest-impact bottleneck, and write a concrete
+optimization strategy for the next round.
 
 ## Workflow
 
-1. **Benchmark**: Prefer `run_full_benchmark` for the canonical Modal B200 benchmark flow.
-   Reference command:
-       .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --lang python
-   Parse the output to extract per-workload latencies and the average speedup.
+1. **Benchmark**: Use `run_full_benchmark` on the current kernel whenever available.
+   Use its parsed latency as the source of truth for `latency_ms`.
 
 2. **Profile** (if available): Use `run_ncu_profile` to get GPU hardware metrics.
    Look at: DRAM throughput, SM utilization, L2 hit rate, warp stall reasons, occupancy.
@@ -40,7 +38,7 @@ strategy for the next round.
    ## Implementation Notes (specific functions/lines to change, code patterns to follow)
 
 Tool policy:
-- Prefer `run_full_benchmark` for the benchmark step.
+- Use `run_full_benchmark` to measure the current kernel before proposing the next optimization.
 - Use `run_ncu_profile` for profiling and `run_sass_analysis` for instruction-level analysis.
 - Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 - If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading broadly.
@@ -83,8 +81,8 @@ def make_kernel_planner(
 ) -> Agent[SharedContext]:
     """Create the kernel-planner agent with the given model.
 
-    Note: The caller input provides the active round number and prior-round
-    history summary.
+Note: The caller input provides the active round number and prior-round
+history summary.
     """
     tools = build_tools_for_role("planner", codex_worker_mode=context.codex_worker_mode)
     return Agent[SharedContext](
