@@ -1219,12 +1219,15 @@ _BASE_REPO_TOOLS = [
     list_directory,
 ]
 
-_PERFORMANCE_TOOLS = [
+_VALIDATION_TOOLS = [
     diff_files,
-    run_ncu_profile,
-    run_sass_analysis,
     run_synthetic_check,
     run_correctness_check,
+]
+
+_PLANNER_ANALYSIS_TOOLS = [
+    run_ncu_profile,
+    run_sass_analysis,
     run_full_benchmark,
 ]
 
@@ -1239,8 +1242,11 @@ def build_tools_for_role(
     """Build the tool surface for a specific agent role."""
     tools = list(_BASE_REPO_TOOLS)
 
-    if role != "designer":
-        tools.extend(_PERFORMANCE_TOOLS)
+    if role in {"coder", "optimizer", "planner"}:
+        tools.extend(_VALIDATION_TOOLS)
+
+    if role == "planner":
+        tools.extend(_PLANNER_ANALYSIS_TOOLS)
 
     if codex_worker_mode == "coder_optimizer":
         if role == "coder":
