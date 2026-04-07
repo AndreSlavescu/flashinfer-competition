@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from pydantic import BaseModel, ConfigDict, Field
+
 # ---------------------------------------------------------------------------
 # Shared type aliases used by multiple agents (designer, coder)
 # ---------------------------------------------------------------------------
@@ -49,47 +51,86 @@ class SharedContext:
 
 
 # ---------------------------------------------------------------------------
-# Structured output types — used as Agent.output_type so we get programmatic
+# Structured output models — used as Agent.output_type so we get programmatic
 # access to results instead of parsing free text.
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class DesignerResult:
+class StructuredResult(BaseModel):
+    """Base model for agent final outputs with strict top-level schemas."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DesignerResult(StructuredResult):
     """Returned by kernel-designer after producing the design plan."""
 
-    plan_file: str  # path to the plan file (e.g. "solution/dsa_attention/kernel_0_plan.md")
-    status: str  # "success" | "error"
-    message: str  # human-readable summary of the design
+    plan_file: str = Field(
+        description="Path to the design plan file written by the agent.",
+    )
+    status: Literal["success", "error"] = Field(
+        description="Whether the designer successfully produced the design plan.",
+    )
+    message: str = Field(
+        description="Brief human-readable summary of the design approach or failure.",
+    )
 
 
-@dataclass
-class CoderResult:
+class CoderResult(StructuredResult):
     """Returned by kernel-coder after round 0 bootstrap."""
 
-    generated: list[str]  # paths to generated files (design plan, kernel)
-    correctness_verified: bool
-    status: str  # "success" | "compile_error" | "validation_failed"
-    message: str  # human-readable summary
-    reflection: str  # agent's reflection on difficulty, bugs, resources, hindsight
+    generated: list[str] = Field(
+        description="Paths to the generated kernel artifacts produced by the agent.",
+    )
+    correctness_verified: bool = Field(
+        description="Whether the generated kernel passed the full correctness check.",
+    )
+    status: Literal["success", "compile_error", "validation_failed"] = Field(
+        description="Final implementation outcome for the bootstrap kernel.",
+    )
+    message: str = Field(
+        description="Brief human-readable summary of the implementation result.",
+    )
+    reflection: str = Field(
+        description=(
+            "Reflection covering task difficulty, encountered bugs, helpful resources, "
+            "and hindsight design changes."
+        ),
+    )
 
 
-@dataclass
-class PlannerResult:
+class PlannerResult(StructuredResult):
     """Returned by kernel-planner after profiling + strategy writing."""
 
-    latency_ms: float  # measured avg latency of the current kernel
-    bottleneck: str  # identified bottleneck
-    strategy_summary: str  # 1-line summary of proposed optimization
-    strategy_file: str  # path to strategy_{i}.md
-    is_new_best: bool  # whether this kernel beat the previous best
+    latency_ms: float = Field(
+        description="Measured average latency in milliseconds for the current kernel.",
+    )
+    bottleneck: str = Field(
+        description="Single highest-impact bottleneck identified in the current kernel.",
+    )
+    strategy_summary: str = Field(
+        description="One-line summary of the proposed optimization for the next round.",
+    )
+    strategy_file: str = Field(
+        description="Path to the strategy markdown file written by the planner.",
+    )
+    is_new_best: bool = Field(
+        description="Whether the benchmarked kernel is faster than the previous best.",
+    )
 
 
-@dataclass
-class OptimizerResult:
+class OptimizerResult(StructuredResult):
     """Returned by kernel-optimizer after implementing + validating."""
 
-    kernel_file: str  # path to kernel_{i}.py
-    correctness_verified: bool  # passed --correctness-only
-    status: str  # "success" | "compile_error" | "validation_failed" | "timeout"
-    message: str  # human-readable summary
+    kernel_file: str = Field(
+        description="Path to the optimized kernel file written by the agent.",
+    )
+    correctness_verified: bool = Field(
+        description="Whether the optimized kernel passed correctness validation.",
+    )
+    status: Literal["success", "compile_error", "validation_failed", "timeout"] = Field(
+        description="Final implementation outcome for the optimization round.",
+    )
+    message: str = Field(
+        description="Brief human-readable summary of the optimization result.",
+    )

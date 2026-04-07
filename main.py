@@ -41,22 +41,23 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+from typing import TypeVar
 
 from agents import ModelRetrySettings, ModelSettings, RunConfig, Runner, retry_policies
 from agents.exceptions import MaxTurnsExceeded
 
 from kernel_agents.context import (
+    REASONING_EFFORT_CHOICES,
+    VERBOSITY_CHOICES,
     CoderResult,
+    DesignerResult,
     OptimizerResult,
     PlannerResult,
     RoundRecord,
     SharedContext,
 )
-from kernel_agents.kernel_coder import (
-    REASONING_EFFORT_CHOICES,
-    VERBOSITY_CHOICES,
-    make_kernel_coder,
-)
+from kernel_agents.kernel_coder import make_kernel_coder
+from kernel_agents.kernel_designer import make_kernel_designer
 from kernel_agents.kernel_optimizer import make_kernel_optimizer
 from kernel_agents.kernel_planner import make_kernel_planner
 from kernel_agents.stream_logging import consume_streamed_run
@@ -130,81 +131,15 @@ def find_last_correct_kernel(ctx: SharedContext, solution_dir: Path) -> Path:
     return solution_dir / "kernel.py"
 
 
-def parse_coder_result(raw_output: object) -> CoderResult:
-    """Parse the kernel-coder's plain-text JSON response into a CoderResult."""
-    if isinstance(raw_output, CoderResult):
-        return raw_output
+TStructuredOutput = TypeVar("TStructuredOutput")
 
-    text = raw_output if isinstance(raw_output, str) else str(raw_output)
-    candidates: list[str] = []
 
-    stripped = text.strip()
-    if stripped:
-        candidates.append(stripped)
-
-    if "```" in text:
-        parts = text.split("```")
-        for i in range(1, len(parts), 2):
-            block = parts[i]
-            if "\n" in block:
-                _, remainder = block.split("\n", 1)
-                candidates.append(remainder.strip())
-            else:
-                candidates.append(block.strip())
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidates.append(text[start:end + 1].strip())
-
-    last_error: Exception | None = None
-    parsed: dict[str, object] | None = None
-    for candidate in candidates:
-        if not candidate:
-            continue
-        try:
-            maybe = json.loads(candidate)
-        except Exception as exc:
-            last_error = exc
-            continue
-        if isinstance(maybe, dict):
-            parsed = maybe
-            break
-        last_error = ValueError("kernel-coder output was valid JSON but not an object")
-
-    if parsed is None:
-        detail = f" ({last_error})" if last_error else ""
-        raise ValueError(f"Failed to parse kernel-coder JSON output{detail}")
-
-    generated = parsed.get("generated")
-    if isinstance(generated, str):
-        generated = [generated]
-    if not isinstance(generated, list) or not all(isinstance(x, str) for x in generated):
-        raise ValueError("kernel-coder output field 'generated' must be a list of strings")
-
-    correctness_verified = parsed.get("correctness_verified")
-    if not isinstance(correctness_verified, bool):
-        raise ValueError("kernel-coder output field 'correctness_verified' must be a bool")
-
-    status = parsed.get("status")
-    if not isinstance(status, str):
-        raise ValueError("kernel-coder output field 'status' must be a string")
-
-    message = parsed.get("message")
-    if not isinstance(message, str):
-        raise ValueError("kernel-coder output field 'message' must be a string")
-
-    reflection = parsed.get("reflection", "")
-    if not isinstance(reflection, str):
-        reflection = str(reflection)
-
-    return CoderResult(
-        generated=list(generated),
-        correctness_verified=correctness_verified,
-        status=status,
-        message=message,
-        reflection=reflection,
-    )
+def require_structured_output(result: object, cls: type[TStructuredOutput]) -> TStructuredOutput:
+    """Extract a typed final output from an Agents SDK run result."""
+    final_output_as = getattr(result, "final_output_as", None)
+    if not callable(final_output_as):
+        raise TypeError(f"Run result does not expose final_output_as() for {cls.__name__}")
+    return final_output_as(cls, raise_if_incorrect_type=True)
 
 
 def format_run_telemetry(label: str, elapsed_s: float, result: object) -> str:
@@ -290,12 +225,17 @@ async def run_loop(
     num_rounds: int = 5,
     model: str = "gpt-5.4",
     coder_model: str = "gpt-5.4",
+    designer_model: str = "gpt-5.4",
     resume: bool = False,
     verbose: bool = False,
     coder_max_turns: int = 300,
     coder_reasoning_effort: str = "xhigh",
     coder_verbosity: str = "low",
+    designer_max_turns: int = 80,
+    designer_reasoning_effort: str = "xhigh",
+    designer_verbosity: str = "low",
     coder_extra: str = "",
+    designer_extra: str = "",
     planner_extra: str = "",
     optimizer_extra: str = "",
 ) -> None:
@@ -318,6 +258,12 @@ async def run_loop(
     )
 
     # Build agents
+    designer = make_kernel_designer(
+        model=designer_model,
+        reasoning_effort=designer_reasoning_effort,
+        verbosity=designer_verbosity,
+        extra_instructions=designer_extra,
+    )
     coder = make_kernel_coder(
         model=coder_model,
         reasoning_effort=coder_reasoning_effort,
@@ -333,20 +279,55 @@ async def run_loop(
         start_round = load_state(ctx, state_path) + 1
         print(f"Resuming from round {start_round}")
     else:
-        # ── Round 0: Generate initial kernel ────────────────────────────
+        # ── Round 0a: Design kernel architecture ─────────────────────────
         print("=" * 60)
-        print("ROUND 0: Generate kernel_0.py")
+        print("ROUND 0a: Design kernel_0_plan.md")
         print("=" * 60)
 
         ctx.current_round = 0
-        raw_coder_output: object | None = None
+        try:
+            designer_result, designer_elapsed_s = await _run_agent(
+                starting_agent=designer,
+                input=(
+                    "Design the kernel architecture. Read the CuTeDSL references and "
+                    "Blackwell kernel examples, then write the design plan to "
+                    "solution/dsa_attention/kernel_0_plan.md. The plan must describe "
+                    "a CuTeDSL kernel that uses optimized B200 features (TMA, tcgen05, "
+                    "warp specialization, async pipelining). Do not describe a PyTorch "
+                    "fallback or a simple bootstrap path."
+                ),
+                context=ctx,
+                max_turns=designer_max_turns,
+                verbose=verbose,
+            )
+            designer_out = require_structured_output(designer_result, DesignerResult)
+        except MaxTurnsExceeded:
+            print("FATAL: kernel-designer hit max turns without producing a plan.")
+            sys.exit(1)
+        except Exception as exc:
+            print(f"FATAL: kernel-designer returned an invalid structured result: {exc}")
+            sys.exit(1)
+
+        if designer_out.status != "success":
+            print(f"FATAL: kernel-designer failed: {designer_out.message}")
+            sys.exit(1)
+
+        print(f"  {format_run_telemetry('kernel-designer', designer_elapsed_s, designer_result)}")
+        print(f"  Design plan: {designer_out.plan_file}")
+        print(f"  {designer_out.message}")
+
+        # ── Round 0b: Implement kernel from design plan ────────────────────
+        print()
+        print("=" * 60)
+        print("ROUND 0b: Implement kernel_0.py from design plan")
+        print("=" * 60)
 
         try:
             result, elapsed_s = await _run_agent(
                 starting_agent=coder,
                 input=(
-                    "Generate kernel_0.py. Follow your instructions — first write "
-                    "solution/dsa_attention/kernel_0_plan.md with the final CuTeDSL design, "
+                    "Implement kernel_0.py based on the design plan at "
+                    f"{designer_out.plan_file}. Read the plan first, "
                     "then implement, debug, and validate until ALL 23 workloads pass "
                     "correctness. Do not submit a PyTorch fallback; if the CuTeDSL compute "
                     "path is not working, return validation_failed."
@@ -355,15 +336,12 @@ async def run_loop(
                 max_turns=coder_max_turns,
                 verbose=verbose,
             )
-            raw_coder_output = result.final_output
-            coder_out = parse_coder_result(raw_coder_output)
+            coder_out = require_structured_output(result, CoderResult)
         except MaxTurnsExceeded:
             print("FATAL: kernel-coder hit max turns without producing a result.")
             sys.exit(1)
         except Exception as exc:
-            print(f"FATAL: kernel-coder returned an unparsable result: {exc}")
-            if raw_coder_output is not None:
-                print(f"Raw output:\n{raw_coder_output}")
+            print(f"FATAL: kernel-coder returned an invalid structured result: {exc}")
             sys.exit(1)
 
         if not coder_out.correctness_verified:
@@ -415,7 +393,7 @@ async def run_loop(
                 verbose=verbose,
             )
             print(f"  {format_run_telemetry('kernel-planner', planner_elapsed_s, planner_result)}")
-            pr: PlannerResult = planner_result.final_output
+            pr = require_structured_output(planner_result, PlannerResult)
         except MaxTurnsExceeded:
             print(f"WARNING: Planner hit max turns in round {i}. Skipping this round.")
             ctx.history.append(RoundRecord(
@@ -425,6 +403,9 @@ async def run_loop(
             ))
             save_state(ctx, state_path)
             continue
+        except Exception as exc:
+            print(f"FATAL: kernel-planner returned an invalid structured result in round {i}: {exc}")
+            sys.exit(1)
 
         print(f"  Latency: {pr.latency_ms:.3f}ms")
         print(f"  Bottleneck: {pr.bottleneck}")
@@ -457,7 +438,7 @@ async def run_loop(
             print(
                 f"  {format_run_telemetry('kernel-optimizer', optimizer_elapsed_s, optimizer_result)}"
             )
-            opt: OptimizerResult = optimizer_result.final_output
+            opt = require_structured_output(optimizer_result, OptimizerResult)
         except MaxTurnsExceeded:
             print(f"WARNING: Optimizer hit max turns in round {i}.")
             opt = OptimizerResult(
@@ -466,6 +447,9 @@ async def run_loop(
                 status="timeout",
                 message="Hit max_turns limit",
             )
+        except Exception as exc:
+            print(f"FATAL: kernel-optimizer returned an invalid structured result in round {i}: {exc}")
+            sys.exit(1)
 
         status_icon = "OK" if opt.correctness_verified else "FAIL"
         print(f"  [{status_icon}] {opt.kernel_file}: {opt.message}")
@@ -507,7 +491,7 @@ async def run_loop(
             print(
                 f"  {format_run_telemetry('epilogue-planner', epilogue_elapsed_s, epilogue_result)}"
             )
-            ep: PlannerResult = epilogue_result.final_output
+            ep = require_structured_output(epilogue_result, PlannerResult)
             print(f"  Last kernel latency: {ep.latency_ms:.3f}ms")
 
             if ep.latency_ms < ctx.best_latency_ms:
@@ -517,6 +501,9 @@ async def run_loop(
                 print(f"  NEW BEST: {ep.latency_ms:.3f}ms (from round {num_rounds})")
         except MaxTurnsExceeded:
             print("WARNING: Epilogue planner hit max turns.")
+        except Exception as exc:
+            print(f"FATAL: epilogue planner returned an invalid structured result: {exc}")
+            sys.exit(1)
 
     # ── Final benchmark ────────────────────────────────────────────────
     print()
@@ -566,6 +553,10 @@ def main():
         help="LLM model for the round-0 kernel-coder agent (default: gpt-5.4)",
     )
     parser.add_argument(
+        "--designer-model", type=str, default="gpt-5.4",
+        help="LLM model for the round-0 kernel-designer agent (default: gpt-5.4)",
+    )
+    parser.add_argument(
         "--resume", action="store_true",
         help="Resume from last checkpoint (loop_state.json)",
     )
@@ -589,6 +580,22 @@ def main():
         default="low",
         help="Verbosity for the round-0 kernel-coder agent (default: low)",
     )
+    parser.add_argument(
+        "--designer-max-turns", type=int, default=80,
+        help="Max LLM turns for the round-0 kernel-designer agent (default: 80)",
+    )
+    parser.add_argument(
+        "--designer-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="xhigh",
+        help="Reasoning effort for the round-0 kernel-designer agent (default: xhigh)",
+    )
+    parser.add_argument(
+        "--designer-verbosity",
+        choices=VERBOSITY_CHOICES,
+        default="low",
+        help="Verbosity for the round-0 kernel-designer agent (default: low)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -600,11 +607,15 @@ def main():
         num_rounds=args.num_rounds,
         model=args.model,
         coder_model=args.coder_model,
+        designer_model=args.designer_model,
         resume=args.resume,
         verbose=args.verbose,
         coder_max_turns=args.coder_max_turns,
         coder_reasoning_effort=args.coder_reasoning_effort,
         coder_verbosity=args.coder_verbosity,
+        designer_max_turns=args.designer_max_turns,
+        designer_reasoning_effort=args.designer_reasoning_effort,
+        designer_verbosity=args.designer_verbosity,
     ))
 
 
