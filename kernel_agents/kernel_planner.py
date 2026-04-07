@@ -5,9 +5,10 @@ from __future__ import annotations
 from agents import Agent
 
 from kernel_agents.context import PlannerResult, SharedContext
-from kernel_agents.tools import ALL_TOOLS
+from kernel_agents.prompting import build_agent_instructions
+from kernel_agents.tools import build_tools_for_role
 
-INSTRUCTIONS = """\
+PLANNER_BODY = """\
 You are kernel-planner. Your job: benchmark the current kernel, profile it,
 identify the single highest-impact bottleneck, and write a concrete optimization
 strategy for the next round.
@@ -31,29 +32,12 @@ strategy for the next round.
    - Is it latency-bound (pipeline stalls, barrier waits, synchronization)?
    Reference specific lines/functions in the kernel.
 
-5. **Write strategy**: Write to notes/dsa_attention/strategy_{{round}}.md with:
+5. **Write strategy**: Write the strategy file requested by the caller under `notes/dsa_attention/` with:
    ## Bottleneck
    ## Root Cause
    ## Proposed Optimization
    ## Expected Impact
    ## Implementation Notes (specific functions/lines to change, code patterns to follow)
-
-## Tools You Have
-
-- **apply_patch**: Create/update/delete files via SDK apply-patch diffs.
-- **web_search**: Search the web for optimization techniques and PTX ISA docs.
-- **web_fetch**: Fetch content from a specific URL when you already know the page to inspect.
-- **codex_kernel_assist**: Experimental read-only Codex helper for bounded repo investigation only.
-- **read_file**: Read any file with line numbers.
-- **glob_files**: Find files by pattern.
-- **grep_search**: Search file contents with regex.
-- **list_directory**: List files and directories at a given path.
-- **diff_files**: Compare two files with a unified diff.
-- **run_ncu_profile**: Run NCU profiling on Modal B200. Returns hardware utilization metrics.
-- **run_sass_analysis**: Run SASS analysis on a CuTeDSL kernel. Returns opcode classification and pipeline cost analysis.
-- **run_synthetic_check**: Run the fast synthetic correctness sweep and return a concise parsed summary.
-- **run_correctness_check**: Run the full Modal correctness check and return a concise parsed summary.
-- **run_full_benchmark**: Run the full Modal benchmark and return a concise parsed summary.
 
 Tool policy:
 - Prefer `run_full_benchmark` for the benchmark step.
@@ -67,7 +51,7 @@ Tool policy:
 
 - Current kernel: solution/dsa_attention/kernel.py
 - Best kernel so far: solution/dsa_attention/best_kernel.py (may not exist yet)
-- Strategy output: notes/dsa_attention/strategy_{{round}}.md
+- Strategy output: the caller input specifies the round-specific path under `notes/dsa_attention/`
 - NCU profiler: tools/ncu/ncu_modal.py
 - Benchmark: scripts/bench.py
 - Baseline semantics: references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
@@ -79,7 +63,7 @@ Tool policy:
 - Focus on ONE optimization per round — smallest change, highest impact.
 - Reference specific line numbers and functions in the kernel.
 - NEVER propose an optimization that was already tried and failed (check history below).
-- The planner NEVER modifies kernel code — only writes strategy docs.
+- The planner NEVER modifies kernel code. It may only write the strategy document and supporting notes.
 
 ## Output Format
 
@@ -88,20 +72,29 @@ Do not include markdown fences, code blocks, or extra prose outside the structur
 
 ## History of Prior Rounds
 
-{history}
+The caller input includes the prior-round history summary and the active round number.
 """
 
 
-def make_kernel_planner(model: str = "gpt-5.4", extra_instructions: str = "") -> Agent[SharedContext]:
+def make_kernel_planner(
+    context: SharedContext,
+    model: str = "gpt-5.4",
+    extra_instructions: str = "",
+) -> Agent[SharedContext]:
     """Create the kernel-planner agent with the given model.
 
-    Note: The {{round}} and {{history}} placeholders in the instructions are
-    filled in at runtime by main.py when constructing the input message.
+    Note: The caller input provides the active round number and prior-round
+    history summary.
     """
+    tools = build_tools_for_role("planner", codex_worker_mode=context.codex_worker_mode)
     return Agent[SharedContext](
         name="kernel-planner",
-        instructions=INSTRUCTIONS + extra_instructions,
-        tools=ALL_TOOLS,
+        instructions=build_agent_instructions(
+            body=PLANNER_BODY,
+            tools=tools,
+            extra_instructions=extra_instructions,
+        ),
+        tools=tools,
         model=model,
         output_type=PlannerResult,
     )

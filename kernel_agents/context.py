@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
 Verbosity = Literal["low", "medium", "high"]
+QualityProfile = Literal["legacy", "public_codex"]
+CodexWorkerMode = Literal["off", "coder_optimizer"]
+CodexWorkerReasoningEffort = Literal["low", "medium", "high", "xhigh"]
 
 REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
     "none",
@@ -22,6 +25,64 @@ REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
     "xhigh",
 )
 VERBOSITY_CHOICES: tuple[Verbosity, ...] = ("low", "medium", "high")
+QUALITY_PROFILE_CHOICES: tuple[QualityProfile, ...] = ("legacy", "public_codex")
+CODEX_WORKER_MODE_CHOICES: tuple[CodexWorkerMode, ...] = ("off", "coder_optimizer")
+CODEX_WORKER_REASONING_EFFORT_CHOICES: tuple[CodexWorkerReasoningEffort, ...] = (
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+)
+
+
+@dataclass(frozen=True)
+class ToolLimitSettings:
+    """Per-profile tool output and listing limits."""
+
+    shell_output_limit_chars: int
+    search_output_limit_chars: int
+    web_fetch_limit_chars: int
+    read_file_limit_chars: int
+    diff_limit_chars: int
+    search_match_limit: int
+    glob_match_limit: int
+    list_directory_cap: int
+    reference_read_window_lines: int
+    grep_max_columns: int
+
+
+LEGACY_TOOL_LIMITS = ToolLimitSettings(
+    shell_output_limit_chars=20_000,
+    search_output_limit_chars=20_000,
+    web_fetch_limit_chars=20_000,
+    read_file_limit_chars=40_000,
+    diff_limit_chars=40_000,
+    search_match_limit=100,
+    glob_match_limit=200,
+    list_directory_cap=500,
+    reference_read_window_lines=400,
+    grep_max_columns=200,
+)
+
+PUBLIC_CODEX_TOOL_LIMITS = ToolLimitSettings(
+    shell_output_limit_chars=100_000,
+    search_output_limit_chars=100_000,
+    web_fetch_limit_chars=100_000,
+    read_file_limit_chars=200_000,
+    diff_limit_chars=200_000,
+    search_match_limit=200,
+    glob_match_limit=500,
+    list_directory_cap=500,
+    reference_read_window_lines=1200,
+    grep_max_columns=400,
+)
+
+
+def tool_limits_for_profile(profile: QualityProfile) -> ToolLimitSettings:
+    """Resolve the configured tool-limit profile."""
+    if profile == "public_codex":
+        return PUBLIC_CODEX_TOOL_LIMITS
+    return LEGACY_TOOL_LIMITS
 
 
 @dataclass
@@ -48,6 +109,11 @@ class SharedContext:
     best_round: int = -1
     history: list[RoundRecord] = field(default_factory=list)
     model_name: str = "gpt-5.4"
+    quality_profile: QualityProfile = "legacy"
+    tool_limits: ToolLimitSettings = field(default_factory=lambda: LEGACY_TOOL_LIMITS)
+    codex_worker_mode: CodexWorkerMode = "off"
+    codex_thread_id_coder_engineer: str | None = None
+    codex_thread_id_optimizer_engineer: str | None = None
 
 
 # ---------------------------------------------------------------------------

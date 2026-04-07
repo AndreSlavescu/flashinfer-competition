@@ -5,10 +5,20 @@ from __future__ import annotations
 from agents import Agent, ModelSettings
 from openai.types.shared import Reasoning
 
-from kernel_agents.context import CoderResult, ReasoningEffort, SharedContext, Verbosity
-from kernel_agents.tools import ALL_TOOLS
+from kernel_agents.context import (
+    CoderResult,
+    CodexWorkerReasoningEffort,
+    ReasoningEffort,
+    SharedContext,
+    Verbosity,
+)
+from kernel_agents.prompting import (
+    CODER_CODEX_WORKER_BLOCK,
+    build_agent_instructions,
+)
+from kernel_agents.tools import build_tools_for_role, tool_names
 
-INSTRUCTIONS = """
+CODER_BODY = """
 You are an expert at GPU kernel programming. Implement a Deepseek Sparse Attention kernel in CuTeDSL for a B200 GPU (sm100a) based on the provided design plan.
 
 BASELINE KERNEL (FOR LOGICAL REFERENCE ONLY): references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
@@ -93,46 +103,47 @@ CuTeDSL kernel examples:
 2. Highly optimized CuTeDSL kernels: references/quack
 3. CUTLASS Python docs and generated references: references/cutlass/python/docs
 
-Tools You Have:
-1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-2. web_search: Search the web for documentation, examples, CUDA forums, PTX ISA specs.
-3. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
-4. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-5. read_file: Read any file with line numbers. Supports range reads (start_line, end_line).
-6. glob_files: Find files by pattern. Prefer pattern='**/*.py' with directory='references' rather than embedding the directory into the pattern.
-7. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05'). Always provide a non-empty pattern, and add file_glob='*.py' when searching code.
-8. list_directory: List files and directories at a given path.
-9. diff_files: Compare two files with a unified diff. Useful for comparing kernel versions.
-10. run_ncu_profile: Run NCU profiling on Modal B200. Returns hardware utilization metrics.
-11. run_sass_analysis: Run SASS analysis on a CuTeDSL kernel. Returns opcode classification and pipeline cost analysis.
-12. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
-13. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
-
-Tool usage tips:
 1. Prefer `run_synthetic_check` and `run_correctness_check` for validation.
 2. Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 3. If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading the whole file or page.
 4. If a long-running tool says `last_shell_overflow.txt` was written, inspect it with `read_file` or `grep_search` before running another potentially overflowing tool. Treat it as ephemeral: the next overflowing tool call replaces it.
 5. Do not create spill files for persistent-data tools. For `read_file`, `glob_files`, `grep_search`, and `web_fetch`, refine the tool call instead.
+6. Use the parsed validation tools as the canonical source of correctness state instead of manually reasoning from raw shell logs.
 
 Output format:
 Return structured output matching the configured `CoderResult` schema.
 Do not include markdown fences, code blocks, or extra prose outside the structured response.
-{extra_instructions}
 """
 
 
 def make_kernel_coder(
+    context: SharedContext,
     model: str = "gpt-5.4",
     reasoning_effort: ReasoningEffort = "xhigh",
     verbosity: Verbosity = "low",
     extra_instructions: str = "",
+    codex_worker_model: str = "gpt-5-codex",
+    codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
 ) -> Agent[SharedContext]:
     """Create the kernel-coder agent with the given model."""
+    tools = build_tools_for_role(
+        "coder",
+        codex_worker_mode=context.codex_worker_mode,
+        codex_worker_model=codex_worker_model,
+        codex_worker_reasoning_effort=codex_worker_reasoning_effort,
+    )
+    names = set(tool_names(tools))
     return Agent[SharedContext](
         name="kernel-coder",
-        instructions=INSTRUCTIONS.replace("{extra_instructions}", extra_instructions),
-        tools=ALL_TOOLS,
+        instructions=build_agent_instructions(
+            body=CODER_BODY,
+            tools=tools,
+            extra_instructions=extra_instructions,
+            codex_worker_block=(
+                CODER_CODEX_WORKER_BLOCK if "codex_coder_engineer" in names else ""
+            ),
+        ),
+        tools=tools,
         model=model,
         model_settings=ModelSettings(
             reasoning=Reasoning(effort=reasoning_effort),
