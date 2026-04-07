@@ -76,7 +76,7 @@ Common pitfalls:
 2. A lot of issues are due to layouts not compute. Validate layouts first through debug printing and reasoning
 
 Validation (All happens on Modal B200, NEVER compile CUDA locally):
- - Prefer `run_synthetic_check` and `run_correctness_check` over raw shell for the canonical validation flow
+ - Use `run_synthetic_check` and `run_correctness_check` for the canonical validation flow
  - Synthetic data check reference command: .venv/bin/python scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::kernel
  - Full correctness check reference command: .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point "kernel_0.py::kernel" --correctness-only --lang python
 
@@ -94,22 +94,25 @@ CuTeDSL kernel examples:
 3. CUTLASS Python docs and generated references: references/cutlass/python/docs
 
 Tools You Have:
-1. shell: Execute bash commands from the project root. Use this for raw shell workflows, git, and NCU profiling. The local `kernel-workbench` skill documents the canonical repo commands.
-2. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-3. web_search: Search the web for documentation, examples, CUDA forums, PTX ISA specs.
-4. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
-5. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-6. read_file: Read any file with line numbers. Supports range reads (start_line, end_line).
-7. glob_files: Find files by pattern. Prefer pattern='**/*.py' with directory='references' rather than embedding the directory into the pattern.
-8. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05'). Always provide a non-empty pattern, and add file_glob='*.py' when searching code.
-9. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
-10. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
+1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
+2. web_search: Search the web for documentation, examples, CUDA forums, PTX ISA specs.
+3. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
+4. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
+5. read_file: Read any file with line numbers. Supports range reads (start_line, end_line).
+6. glob_files: Find files by pattern. Prefer pattern='**/*.py' with directory='references' rather than embedding the directory into the pattern.
+7. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05'). Always provide a non-empty pattern, and add file_glob='*.py' when searching code.
+8. list_directory: List files and directories at a given path.
+9. diff_files: Compare two files with a unified diff. Useful for comparing kernel versions.
+10. run_ncu_profile: Run NCU profiling on Modal B200. Returns hardware utilization metrics.
+11. run_sass_analysis: Run SASS analysis on a CuTeDSL kernel. Returns opcode classification and pipeline cost analysis.
+12. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
+13. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
 
 Tool usage tips:
-1. Prefer `run_synthetic_check` and `run_correctness_check` over raw shell for validation; use raw shell mainly for NCU or odd one-off workflows.
+1. Prefer `run_synthetic_check` and `run_correctness_check` for validation.
 2. Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 3. If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading the whole file or page.
-4. If a shell-related tool says `last_shell_overflow.txt` was written, inspect it with `read_file` or `grep_search` before launching another potentially overflowing shell command. Treat it as ephemeral: the next overflowing shell-like tool call replaces it.
+4. If a long-running tool says `last_shell_overflow.txt` was written, inspect it with `read_file` or `grep_search` before running another potentially overflowing tool. Treat it as ephemeral: the next overflowing tool call replaces it.
 5. Do not create spill files for persistent-data tools. For `read_file`, `glob_files`, `grep_search`, and `web_fetch`, refine the tool call instead.
 
 Output format:
