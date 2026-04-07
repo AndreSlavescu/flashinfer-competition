@@ -1,16 +1,17 @@
 """Shared tool definitions for all kernel generation agents.
 
-Uses SDK built-in tools where available (ShellTool, ApplyPatchTool, WebSearchTool,
-codex_tool). Repo inspection and benchmark wrappers remain custom function tools.
+Uses SDK built-in tools where available (ApplyPatchTool, WebSearchTool,
+codex_tool). Repo inspection, benchmark, and profiling wrappers are custom
+function tools.
 """
 
 from __future__ import annotations
 
 import asyncio
+import difflib
 import os
 import re
 import shlex
-import signal
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -19,22 +20,17 @@ from pathlib import Path
 from agents import (
     ApplyPatchTool,
     RunContextWrapper,
-    ShellTool,
-    ShellToolLocalSkill,
     WebSearchTool,
     apply_diff,
     function_tool,
 )
 from agents.editor import ApplyPatchOperation, ApplyPatchResult
 from agents.extensions.experimental.codex import ThreadOptions, codex_tool
-from agents.tool import ShellCallOutcome, ShellCommandOutput, ShellCommandRequest, ShellResult
+from agents.tool import ShellCallOutcome, ShellCommandOutput
 
 from kernel_agents.context import SharedContext
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-KERNEL_WORKBENCH_SKILL_DIR = (
-    PROJECT_ROOT / "kernel_agents" / "skills" / "kernel-workbench"
-)
 DEFAULT_SEARCH_OUTPUT_LIMIT = 20_000
 DEFAULT_SHELL_OUTPUT_LIMIT = 20_000
 DEFAULT_READ_FILE_LIMIT = 40_000
@@ -206,77 +202,6 @@ def _shell_overflow_path(project_root: Path) -> Path:
     return project_root / SHELL_OVERFLOW_FILE_NAME
 
 
-def _render_shell_preview_block(output: ShellCommandOutput) -> str:
-    """Render a single shell output entry into preview text."""
-    lines: list[str] = []
-    if output.command:
-        lines.append(f"$ {output.command}")
-
-    stdout = output.stdout.rstrip("\n")
-    stderr = output.stderr.rstrip("\n")
-    if stdout:
-        lines.append(stdout)
-    if stderr:
-        if stdout:
-            lines.append("")
-        lines.append("stderr:")
-        lines.append(stderr)
-
-    if output.exit_code not in (None, 0):
-        lines.append(f"exit code: {output.exit_code}")
-    if output.status == "timeout":
-        lines.append("status: timeout")
-
-    return "\n".join(lines).strip() or "(no output)"
-
-
-def _render_shell_outputs_text(outputs: Sequence[ShellCommandOutput]) -> str:
-    """Render shell outputs into a single text transcript for overflow checks."""
-    if not outputs:
-        return "(no output)"
-    return "\n\n".join(_render_shell_preview_block(output) for output in outputs)
-
-
-def _truncate_shell_outputs(
-    outputs: Sequence[ShellCommandOutput],
-    max_length: int,
-) -> list[ShellCommandOutput]:
-    """Trim shell stdout/stderr sequentially, matching SDK ordering."""
-    if max_length <= 0:
-        return [
-            ShellCommandOutput(
-                stdout="",
-                stderr="",
-                outcome=output.outcome,
-                command=output.command,
-                provider_data=output.provider_data,
-            )
-            for output in outputs
-        ]
-
-    remaining = max_length
-    truncated: list[ShellCommandOutput] = []
-    for output in outputs:
-        stdout = ""
-        stderr = ""
-        if remaining > 0 and output.stdout:
-            stdout = output.stdout[:remaining]
-            remaining -= len(stdout)
-        if remaining > 0 and output.stderr:
-            stderr = output.stderr[:remaining]
-            remaining -= len(stderr)
-        truncated.append(
-            ShellCommandOutput(
-                stdout=stdout,
-                stderr=stderr,
-                outcome=output.outcome,
-                command=output.command,
-                provider_data=output.provider_data,
-            )
-        )
-    return truncated
-
-
 def _render_shell_transcript_block(output: ShellCommandOutput) -> str:
     """Render a single shell output entry into a full overflow transcript block."""
     lines: list[str] = []
@@ -342,54 +267,6 @@ def _maybe_write_shell_overflow(
     if limit > 0 and len(transcript) <= limit:
         return None
     return _write_shell_overflow(project_root, transcript)
-
-
-def _build_shell_overflow_preview_outputs(
-    outputs: Sequence[ShellCommandOutput],
-    *,
-    limit: int,
-    banner: str,
-) -> list[ShellCommandOutput]:
-    """Replace overflowing shell output with a banner-first bounded preview."""
-    default_outcome = outputs[0].outcome if outputs else ShellCallOutcome(type="exit", exit_code=0)
-    if limit <= 0:
-        return [ShellCommandOutput(stdout="", stderr="", outcome=default_outcome)]
-
-    preview_budget = max(limit - len(banner) - 1, 0)
-    trimmed_outputs = _truncate_shell_outputs(outputs, preview_budget)
-    preview_outputs: list[ShellCommandOutput] = []
-    remaining = preview_budget
-    for index, output in enumerate(trimmed_outputs):
-        block = _render_shell_preview_block(output)
-        shown = block[:remaining] if remaining > 0 else ""
-        remaining -= len(shown)
-        if index == 0:
-            shown = _prepend_notice(shown, banner) if shown else _truncate_output(
-                banner,
-                limit=limit,
-                suffix="",
-            )
-        preview_outputs.append(
-            ShellCommandOutput(
-                stdout=shown,
-                stderr="",
-                outcome=output.outcome,
-                provider_data={"original_command": output.command} if output.command else None,
-            )
-        )
-        if remaining <= 0:
-            break
-
-    if not preview_outputs:
-        preview_outputs.append(
-            ShellCommandOutput(
-                stdout=_truncate_output(banner, limit=limit, suffix=""),
-                stderr="",
-                outcome=default_outcome,
-                provider_data={"original_command": outputs[0].command} if outputs and outputs[0].command else None,
-            )
-        )
-    return preview_outputs
 
 
 def _extract_section(text: str, marker: str) -> str:
@@ -508,118 +385,6 @@ def _track_for_solution_dir(solution_dir: str) -> str:
     """Infer the benchmark track from the solution directory name."""
     name = Path(solution_dir).name
     return name or "dsa_attention"
-
-
-# ---------------------------------------------------------------------------
-# Built-in: ShellTool — local executor + shell skill
-# ---------------------------------------------------------------------------
-
-class ShellExecutor:
-    """Executes shell commands locally; approvals are handled by ShellTool."""
-
-    def __init__(self, cwd: Path | None = None) -> None:
-        self.cwd = Path(cwd or PROJECT_ROOT).resolve()
-
-    @staticmethod
-    def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
-        """Terminate the shell command and any children it spawned."""
-        if proc.pid is None:
-            proc.kill()
-            return
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-
-    async def __call__(self, request: ShellCommandRequest) -> ShellResult:
-        action = request.data.action
-        working_directory = _project_root_from_context(request.ctx_wrapper)
-        timeout = (action.timeout_ms or 0) / 1000 or None
-        output_limit = action.max_output_length if action.max_output_length is not None else DEFAULT_SHELL_OUTPUT_LIMIT
-
-        outputs: list[ShellCommandOutput] = []
-        for command in action.commands:
-            proc = await asyncio.create_subprocess_shell(
-                command,
-                cwd=working_directory,
-                env=os.environ.copy(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                start_new_session=True,
-            )
-            timed_out = False
-            try:
-                stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                    proc.communicate(),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                timed_out = True
-                self._kill_process_group(proc)
-                stdout_bytes, stderr_bytes = await proc.communicate()
-
-            stdout = stdout_bytes.decode("utf-8", errors="replace")
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-
-            outputs.append(
-                ShellCommandOutput(
-                    command=command,
-                    stdout=stdout,
-                    stderr=stderr,
-                    outcome=ShellCallOutcome(
-                        type="timeout" if timed_out else "exit",
-                        exit_code=getattr(proc, "returncode", None),
-                    ),
-                )
-            )
-
-            if timed_out:
-                break
-
-        full_output_text = _render_shell_outputs_text(outputs)
-        overflow_notice = None
-        if len(full_output_text) > output_limit:
-            overflow_notice = _maybe_write_shell_overflow(
-                project_root=working_directory,
-                source_tool="shell",
-                working_directory=working_directory,
-                outputs=outputs,
-                limit=output_limit,
-            )
-        if overflow_notice:
-            outputs = _build_shell_overflow_preview_outputs(
-                outputs,
-                limit=output_limit,
-                banner=overflow_notice,
-            )
-        return ShellResult(
-            output=outputs,
-            max_output_length=output_limit if overflow_notice else None,
-            provider_data={"working_directory": str(working_directory)},
-        )
-
-
-def build_local_shell_skill() -> ShellToolLocalSkill:
-    """Build the local shell skill bundle for canonical repo workflows."""
-    return ShellToolLocalSkill(
-        name="kernel-workbench",
-        description="Repo command playbook for file inspection, validation, and benchmarking.",
-        path=str(KERNEL_WORKBENCH_SKILL_DIR),
-    )
-
-
-def build_shell_environment() -> dict[str, object]:
-    """Build the shell environment, attaching the local skill when present."""
-    environment: dict[str, object] = {"type": "local"}
-    if KERNEL_WORKBENCH_SKILL_DIR.is_dir():
-        environment["skills"] = [build_local_shell_skill()]
-    return environment
-
-
-shell_tool = ShellTool(
-    executor=ShellExecutor(PROJECT_ROOT),
-    environment=build_shell_environment(),
-)
 
 
 # ---------------------------------------------------------------------------
@@ -1146,11 +911,215 @@ async def web_fetch(
 
 
 # ---------------------------------------------------------------------------
+# Directory listing + file comparison tools
+# ---------------------------------------------------------------------------
+
+@function_tool
+async def list_directory(
+    ctx: RunContextWrapper[SharedContext],
+    path: str = "",
+) -> str:
+    """List files and directories at a given path.
+
+    Args:
+        path: Absolute or project-relative directory path. Empty string means
+            the repo root.
+    """
+    project_root = _project_root_from_context(ctx)
+    try:
+        target = (
+            _resolve_workspace_path(project_root, path) if path else project_root
+        )
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    display = _display_path(target, project_root)
+    if not target.exists():
+        return f"ERROR: Path not found: {display}"
+    if not target.is_dir():
+        return f"ERROR: Not a directory: {display}"
+
+    entries: list[str] = []
+    try:
+        for child in sorted(target.iterdir(), key=lambda p: (not p.is_dir(), p.name)):
+            if child.is_dir():
+                entries.append(f"d  {child.name}/")
+            else:
+                size = child.stat().st_size
+                if size < 1024:
+                    size_str = f"{size} B"
+                elif size < 1024 * 1024:
+                    size_str = f"{size / 1024:.1f} KB"
+                else:
+                    size_str = f"{size / (1024 * 1024):.1f} MB"
+                entries.append(f"f  {child.name}  ({size_str})")
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    if not entries:
+        return f"{display}/  (empty directory)"
+
+    cap = 500
+    header = f"{display}/  ({len(entries)} entries)"
+    if len(entries) > cap:
+        header += f" — showing first {cap}"
+        entries = entries[:cap]
+    return header + "\n" + "\n".join(entries)
+
+
+@function_tool
+async def diff_files(
+    ctx: RunContextWrapper[SharedContext],
+    file_a: str,
+    file_b: str,
+    context_lines: int = 3,
+) -> str:
+    """Compare two files and return a unified diff.
+
+    Args:
+        file_a: Path to the first file (project-relative or absolute).
+        file_b: Path to the second file (project-relative or absolute).
+        context_lines: Number of context lines around each change (default 3).
+    """
+    project_root = _project_root_from_context(ctx)
+    try:
+        path_a = _resolve_workspace_path(project_root, file_a)
+        path_b = _resolve_workspace_path(project_root, file_b)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    display_a = _display_path(path_a, project_root)
+    display_b = _display_path(path_b, project_root)
+
+    for p, d in [(path_a, display_a), (path_b, display_b)]:
+        if not p.exists():
+            return f"ERROR: File not found: {d}"
+        if not p.is_file():
+            return f"ERROR: Not a file: {d}"
+
+    try:
+        lines_a = path_a.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+        lines_b = path_b.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    diff = list(difflib.unified_diff(
+        lines_a,
+        lines_b,
+        fromfile=display_a,
+        tofile=display_b,
+        n=context_lines,
+    ))
+    if not diff:
+        return "Files are identical."
+    return _truncate_output("".join(diff), limit=DEFAULT_READ_FILE_LIMIT)
+
+
+# ---------------------------------------------------------------------------
+# Profiling workflow tools
+# ---------------------------------------------------------------------------
+
+@function_tool
+async def run_ncu_profile(
+    ctx: RunContextWrapper[SharedContext],
+    solution_dir: str = "",
+    entry_point: str = "kernel.py::kernel",
+) -> str:
+    """Run NCU profiling on Modal B200 to get GPU hardware utilization metrics.
+
+    Returns DRAM throughput, SM utilization, L2 hit rate, warp stall reasons,
+    and occupancy data.
+
+    Args:
+        solution_dir: Solution directory (default: from context). Reserved for
+            future parameterisation of the NCU entrypoint.
+        entry_point: Kernel entry point (default kernel.py::kernel). Reserved
+            for future parameterisation of the NCU entrypoint.
+    """
+    # Forward-compat: solution_dir and entry_point are accepted but not yet
+    # wired into the command.  When tools/ncu/ncu_modal.py gains --solution-dir
+    # and --entry-point flags, only the command list below needs to change.
+    command = [".venv/bin/modal", "run", "tools/ncu/ncu_modal.py"]
+
+    timeout_s = 1800
+    result = await _run_command(
+        project_root=_project_root_from_context(ctx),
+        command=command,
+        timeout_s=timeout_s,
+        source_tool="run_ncu_profile",
+    )
+
+    lines = [f"Command: {_command_display(command)}"]
+    if result.timed_out:
+        lines.append(f"Status: timed out after {timeout_s}s")
+    else:
+        lines.append(f"Exit code: {result.returncode}")
+    output = (result.stdout.strip() or result.stderr.strip() or "(no output)")
+    lines.append(output)
+    report = "\n".join(lines)
+    report = _truncate_output(report, limit=DEFAULT_SHELL_OUTPUT_LIMIT)
+    return _prepend_notice(report, result.overflow_notice or "")
+
+
+@function_tool
+async def run_sass_analysis(
+    ctx: RunContextWrapper[SharedContext],
+    kernel_file: str = "",
+    mode: str = "cutedsl",
+) -> str:
+    """Run SASS instruction set analysis on a kernel via Modal B200.
+
+    Compiles the kernel, extracts the cubin, disassembles it, and returns a
+    pipeline analysis with opcode classification and cost estimates.
+
+    Args:
+        kernel_file: Path to the kernel file to analyse (project-relative or
+            absolute). Defaults to the current kernel in the solution directory.
+        mode: Analysis mode — ``cutedsl`` (default) or ``cubin``.
+    """
+    project_root = _project_root_from_context(ctx)
+
+    if not kernel_file:
+        solution_dir = ctx.context.solution_dir or "solution/dsa_attention"
+        kernel_file = f"{solution_dir}/kernel.py"
+
+    try:
+        target = _resolve_workspace_path(project_root, kernel_file)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    display = _display_path(target, project_root)
+    if not target.exists():
+        return f"ERROR: File not found: {display}"
+
+    flag = "--cutedsl" if mode != "cubin" else "--cubin"
+    command = [".venv/bin/modal", "run", "tools/sass/dump_sass_modal.py", flag, str(target)]
+
+    timeout_s = 1200
+    result = await _run_command(
+        project_root=project_root,
+        command=command,
+        timeout_s=timeout_s,
+        source_tool="run_sass_analysis",
+    )
+
+    lines = [f"Command: {_command_display(command)}"]
+    if result.timed_out:
+        lines.append(f"Status: timed out after {timeout_s}s")
+    else:
+        lines.append(f"Exit code: {result.returncode}")
+    output = (result.stdout.strip() or result.stderr.strip() or "(no output)")
+    lines.append(output)
+    report = "\n".join(lines)
+    report = _truncate_output(report, limit=DEFAULT_SHELL_OUTPUT_LIMIT)
+    return _prepend_notice(report, result.overflow_notice or "")
+
+
+# ---------------------------------------------------------------------------
 # Collected tool list for agent registration
 # ---------------------------------------------------------------------------
 
 ALL_TOOLS = [
-    shell_tool,
     apply_patch_tool,
     web_search_tool,
     web_fetch,
@@ -1158,6 +1127,10 @@ ALL_TOOLS = [
     read_file,
     glob_files,
     grep_search,
+    list_directory,
+    diff_files,
+    run_ncu_profile,
+    run_sass_analysis,
     run_synthetic_check,
     run_correctness_check,
     run_full_benchmark,
@@ -1166,7 +1139,6 @@ ALL_TOOLS = [
 # Subset for the kernel-designer agent: read-only exploration + plan writing,
 # no validation/benchmark tools (those belong to the coder).
 DESIGNER_TOOLS = [
-    shell_tool,
     apply_patch_tool,
     web_search_tool,
     web_fetch,
@@ -1174,4 +1146,5 @@ DESIGNER_TOOLS = [
     read_file,
     glob_files,
     grep_search,
+    list_directory,
 ]
