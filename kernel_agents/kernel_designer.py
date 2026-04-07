@@ -11,9 +11,10 @@ from kernel_agents.context import (
     SharedContext,
     Verbosity,
 )
-from kernel_agents.tools import DESIGNER_TOOLS
+from kernel_agents.prompting import build_agent_instructions
+from kernel_agents.tools import build_tools_for_role
 
-INSTRUCTIONS = """
+DESIGNER_BODY = """
 You are an expert at GPU kernel programming. Design a Deepseek Sparse Attention kernel in CuTeDSL for a B200 GPU (sm100a).
 
 BASELINE KERNEL (FOR LOGICAL REFERENCE ONLY): references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
@@ -63,39 +64,34 @@ CuTeDSL kernel examples:
 2. Highly optimized CuTeDSL kernels: references/quack
 3. CUTLASS Python docs and generated references: references/cutlass/python/docs
 
-Tools You Have:
-1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-2. web_search: Search the web for documentation, examples, CUDA forums, PTX ISA specs.
-3. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
-4. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-5. read_file: Read any file with line numbers. Supports range reads (start_line, end_line).
-6. glob_files: Find files by pattern. Prefer pattern='**/*.py' with directory='references' rather than embedding the directory into the pattern.
-7. grep_search: Search file contents with regex (e.g. 'def kernel', 'tcgen05'). Always provide a non-empty pattern, and add file_glob='*.py' when searching code.
-8. list_directory: List files and directories at a given path. Useful for exploring the repo structure.
-
-Tool usage tips:
 1. Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 2. If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading the whole file or page.
-3. Do not create spill files for persistent-data tools. For `read_file`, `glob_files`, `grep_search`, and `web_fetch`, refine the tool call instead.
+3. Use the repo inspection tools to ground every CuTeDSL or B200 API choice before finalizing the design plan.
+4. Do not create spill files for persistent-data tools. For `read_file`, `glob_files`, `grep_search`, and `web_fetch`, refine the tool call instead.
 
 Output format:
 Return structured output matching the configured `DesignerResult` schema.
 Do not include markdown fences, code blocks, or extra prose outside the structured response.
-{extra_instructions}
 """
 
 
 def make_kernel_designer(
+    context: SharedContext,
     model: str = "gpt-5.4",
     reasoning_effort: ReasoningEffort = "xhigh",
     verbosity: Verbosity = "low",
     extra_instructions: str = "",
 ) -> Agent[SharedContext]:
     """Create the kernel-designer agent with the given model."""
+    tools = build_tools_for_role("designer", codex_worker_mode=context.codex_worker_mode)
     return Agent[SharedContext](
         name="kernel-designer",
-        instructions=INSTRUCTIONS.replace("{extra_instructions}", extra_instructions),
-        tools=DESIGNER_TOOLS,
+        instructions=build_agent_instructions(
+            body=DESIGNER_BODY,
+            tools=tools,
+            extra_instructions=extra_instructions,
+        ),
+        tools=tools,
         model=model,
         model_settings=ModelSettings(
             reasoning=Reasoning(effort=reasoning_effort),

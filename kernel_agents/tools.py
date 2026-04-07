@@ -16,6 +16,7 @@ import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from agents import (
     ApplyPatchTool,
@@ -25,26 +26,43 @@ from agents import (
     function_tool,
 )
 from agents.editor import ApplyPatchOperation, ApplyPatchResult
-from agents.extensions.experimental.codex import ThreadOptions, codex_tool
+from agents.extensions.experimental.codex import ThreadOptions, TurnOptions, codex_tool
 from agents.tool import ShellCallOutcome, ShellCommandOutput
 
-from kernel_agents.context import SharedContext
+from kernel_agents.context import (
+    LEGACY_TOOL_LIMITS,
+    CodexWorkerMode,
+    CodexWorkerReasoningEffort,
+    SharedContext,
+    ToolLimitSettings,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SEARCH_OUTPUT_LIMIT = 20_000
-DEFAULT_SHELL_OUTPUT_LIMIT = 20_000
-DEFAULT_READ_FILE_LIMIT = 40_000
-DEFAULT_WEB_FETCH_LIMIT = 20_000
-DEFAULT_SEARCH_MATCH_LIMIT = 100
-REFERENCE_READ_WINDOW_LINES = 400
+DEFAULT_SEARCH_OUTPUT_LIMIT = LEGACY_TOOL_LIMITS.search_output_limit_chars
+DEFAULT_SHELL_OUTPUT_LIMIT = LEGACY_TOOL_LIMITS.shell_output_limit_chars
+DEFAULT_READ_FILE_LIMIT = LEGACY_TOOL_LIMITS.read_file_limit_chars
+DEFAULT_WEB_FETCH_LIMIT = LEGACY_TOOL_LIMITS.web_fetch_limit_chars
+DEFAULT_SEARCH_MATCH_LIMIT = LEGACY_TOOL_LIMITS.search_match_limit
+REFERENCE_READ_WINDOW_LINES = LEGACY_TOOL_LIMITS.reference_read_window_lines
+DEFAULT_DIFF_LIMIT = LEGACY_TOOL_LIMITS.diff_limit_chars
+DEFAULT_GLOB_MATCH_LIMIT = LEGACY_TOOL_LIMITS.glob_match_limit
+DEFAULT_LIST_DIRECTORY_CAP = LEGACY_TOOL_LIMITS.list_directory_cap
+DEFAULT_GREP_MAX_COLUMNS = LEGACY_TOOL_LIMITS.grep_max_columns
 DEFAULT_BENCH_LANGUAGE = "python"
 SHELL_OVERFLOW_FILE_NAME = "last_shell_overflow.txt"
-SHELL_OVERFLOW_BANNER = (
-    "retrieved trimmed shell output; full transcript saved to "
-    f"{SHELL_OVERFLOW_FILE_NAME} and it will be replaced by the next overflowing shell-like tool call. "
-    "Form a concrete hypothesis before running another potentially overflowing shell command. "
-    f"Use read_file or grep_search on {SHELL_OVERFLOW_FILE_NAME} if you need more detail."
-)
+
+
+def _shell_overflow_banner(limit: int) -> str:
+    return (
+        "retrieved trimmed shell output at "
+        f"{limit} chars; full transcript saved to {SHELL_OVERFLOW_FILE_NAME} and it will be "
+        "replaced by the next overflowing shell-like tool call. Form a concrete hypothesis "
+        "before running another potentially overflowing shell command. "
+        f"Use read_file or grep_search on {SHELL_OVERFLOW_FILE_NAME} if you need more detail."
+    )
+
+
+SHELL_OVERFLOW_BANNER = _shell_overflow_banner(DEFAULT_SHELL_OUTPUT_LIMIT)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +88,16 @@ def _project_root_from_context(ctx: RunContextWrapper[SharedContext] | None) -> 
         if isinstance(project_root, str) and project_root:
             return Path(project_root).resolve()
     return PROJECT_ROOT
+
+
+def _tool_limits_from_context(ctx: RunContextWrapper[SharedContext] | None) -> ToolLimitSettings:
+    """Resolve active tool limits from run context or fall back to the legacy profile."""
+    if ctx is not None:
+        context = getattr(ctx, "context", None)
+        tool_limits = getattr(context, "tool_limits", None)
+        if isinstance(tool_limits, ToolLimitSettings):
+            return tool_limits
+    return LEGACY_TOOL_LIMITS
 
 
 def _resolve_workspace_path(
@@ -141,29 +169,29 @@ def _is_reference_display_path(display_path: str) -> bool:
     return display_path == "references" or display_path.startswith("references/")
 
 
-def _format_search_success(output: str, search_path: str) -> str:
+def _format_search_success(output: str, search_path: str, limits: ToolLimitSettings) -> str:
     """Render successful search output with trim notices when caps are hit."""
     notices: list[str] = []
     match_lines = output.splitlines()
-    if len(match_lines) >= DEFAULT_SEARCH_MATCH_LIMIT:
+    if len(match_lines) >= limits.search_match_limit:
         notices.append(
             (
                 f"retrieved trimmed search results for {search_path}; showing up to the first "
-                f"{DEFAULT_SEARCH_MATCH_LIMIT} matches. Refine pattern, path, or file_glob to continue."
+                f"{limits.search_match_limit} matches. Refine pattern, path, or file_glob to continue."
             )
         )
 
-    was_char_truncated = len(output) > DEFAULT_SEARCH_OUTPUT_LIMIT
+    was_char_truncated = len(output) > limits.search_output_limit_chars
     rendered = _truncate_output(
         output,
-        limit=DEFAULT_SEARCH_OUTPUT_LIMIT,
+        limit=limits.search_output_limit_chars,
         suffix="\n... (search output truncated)",
     )
     if was_char_truncated:
         notices.append(
             (
                 f"retrieved trimmed search results for {search_path} at "
-                f"{DEFAULT_SEARCH_OUTPUT_LIMIT} chars; refine pattern, path, or file_glob to continue."
+                f"{limits.search_output_limit_chars} chars; refine pattern, path, or file_glob to continue."
             )
         )
     return _prepend_notice(rendered, "\n".join(notices))
@@ -175,13 +203,14 @@ def _format_search_result(
     stdout: bytes | str,
     stderr: bytes | str,
     search_path: str,
+    limits: ToolLimitSettings,
 ) -> str:
     """Normalize grep/rg subprocess results into trace-friendly strings."""
     out = stdout.decode("utf-8", errors="replace") if isinstance(stdout, (bytes, bytearray)) else stdout
     err = stderr.decode("utf-8", errors="replace") if isinstance(stderr, (bytes, bytearray)) else stderr
 
     if returncode == 0:
-        return _format_search_success(out, search_path)
+        return _format_search_success(out, search_path, limits)
     if returncode == 1 and not err.strip():
         return "No matches found."
 
@@ -243,11 +272,11 @@ def _build_shell_overflow_transcript(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _write_shell_overflow(project_root: Path, transcript: str) -> str:
+def _write_shell_overflow(project_root: Path, transcript: str, limit: int) -> str:
     """Persist the current overflowing shell transcript and return the banner."""
     overflow_path = _shell_overflow_path(project_root)
     overflow_path.write_text(transcript, encoding="utf-8")
-    return SHELL_OVERFLOW_BANNER
+    return _shell_overflow_banner(limit)
 
 
 def _maybe_write_shell_overflow(
@@ -266,7 +295,7 @@ def _maybe_write_shell_overflow(
     )
     if limit > 0 and len(transcript) <= limit:
         return None
-    return _write_shell_overflow(project_root, transcript)
+    return _write_shell_overflow(project_root, transcript, limit)
 
 
 def _extract_section(text: str, marker: str) -> str:
@@ -323,6 +352,7 @@ async def _run_command(
     command: Sequence[str],
     timeout_s: int,
     source_tool: str,
+    limits: ToolLimitSettings,
 ) -> CommandRunResult:
     """Run a fixed command locally and capture UTF-8 output."""
     proc = await asyncio.create_subprocess_exec(
@@ -357,7 +387,7 @@ async def _run_command(
         source_tool=source_tool,
         working_directory=project_root,
         outputs=[output],
-        limit=DEFAULT_SHELL_OUTPUT_LIMIT,
+        limit=limits.shell_output_limit_chars,
     )
     return CommandRunResult(
         returncode=proc.returncode or 0,
@@ -457,6 +487,32 @@ codex_kernel_assist = codex_tool(
 )
 
 
+def _build_codex_worker_tool(
+    *,
+    name: str,
+    run_context_thread_id_key: str,
+    model: str,
+    reasoning_effort: CodexWorkerReasoningEffort,
+) -> object:
+    """Create a write-capable Codex worker tool for bounded coding tasks."""
+    return codex_tool(
+        name=name,
+        sandbox_mode="workspace-write",
+        working_directory=str(PROJECT_ROOT),
+        persist_session=True,
+        use_run_context_thread_id=True,
+        run_context_thread_id_key=run_context_thread_id_key,
+        default_thread_options=ThreadOptions(
+            model=model,
+            model_reasoning_effort=reasoning_effort,
+            network_access_enabled=False,
+            web_search_mode="disabled",
+            approval_policy="never",
+        ),
+        default_turn_options=TurnOptions(idle_timeout_seconds=180),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Custom repo tools
 # ---------------------------------------------------------------------------
@@ -476,6 +532,7 @@ async def read_file(
         end_line: Last line to read (inclusive). 0 = to end.
     """
     project_root = _project_root_from_context(ctx)
+    limits = _tool_limits_from_context(ctx)
     try:
         target = _resolve_workspace_path(project_root, file_path)
     except Exception as exc:
@@ -502,10 +559,10 @@ async def read_file(
         start_line <= 0
         and end_line <= 0
         and _is_reference_display_path(display_path)
-        and total_lines > REFERENCE_READ_WINDOW_LINES
+        and total_lines > limits.reference_read_window_lines
     ):
         start_index = 0
-        end_index = REFERENCE_READ_WINDOW_LINES
+        end_index = limits.reference_read_window_lines
         notices.append(
             (
                 f"retrieved trimmed {display_path}:[1]-[{end_index}] of {total_lines} lines; "
@@ -516,17 +573,17 @@ async def read_file(
     selected = lines[start_index:end_index]
     numbered = [f"{start_index + idx + 1}: {line}" for idx, line in enumerate(selected)]
     rendered_text = "".join(numbered)
-    was_truncated = len(rendered_text) > DEFAULT_READ_FILE_LIMIT
+    was_truncated = len(rendered_text) > limits.read_file_limit_chars
     rendered = _truncate_output(
         rendered_text,
-        limit=DEFAULT_READ_FILE_LIMIT,
-        suffix="\n... (truncated at 40k chars)",
+        limit=limits.read_file_limit_chars,
+        suffix=f"\n... (truncated at {limits.read_file_limit_chars} chars)",
     )
     if was_truncated:
         notices.append(
             (
                 f"retrieved trimmed {display_path}:[{start_index + 1}]-[{min(end_index, total_lines)}] "
-                f"at {DEFAULT_READ_FILE_LIMIT} chars; request a narrower line range if you need more."
+                f"at {limits.read_file_limit_chars} chars; request a narrower line range if you need more."
             )
         )
     return _prepend_notice(rendered, "\n".join(notices))
@@ -548,6 +605,7 @@ async def glob_files(
             the base folder into ``pattern``.
     """
     project_root = _project_root_from_context(ctx)
+    limits = _tool_limits_from_context(ctx)
     try:
         search_dir = (
             _resolve_workspace_path(project_root, directory)
@@ -574,7 +632,17 @@ async def glob_files(
 
     if not matches:
         return "No files found."
-    return "\n".join(sorted(matches)[:200])
+    capped = sorted(matches)
+    if len(capped) > limits.glob_match_limit:
+        shown = "\n".join(capped[:limits.glob_match_limit])
+        return _prepend_notice(
+            shown,
+            (
+                f"retrieved trimmed glob results for {display_dir}; showing up to the first "
+                f"{limits.glob_match_limit} matches. Refine pattern or directory to continue."
+            ),
+        )
+    return "\n".join(capped)
 
 
 @function_tool
@@ -594,6 +662,7 @@ async def grep_search(
         file_glob: Optional filename filter such as ``*.py`` or ``**/*.md``.
     """
     project_root = _project_root_from_context(ctx)
+    limits = _tool_limits_from_context(ctx)
     try:
         search_path_obj = (
             _resolve_workspace_path(project_root, path)
@@ -608,7 +677,12 @@ async def grep_search(
         return f"ERROR: Path not found: {search_path}"
 
     target = "." if search_path_obj == project_root else search_path
-    cmd = ["rg", "-n", f"--max-count={DEFAULT_SEARCH_MATCH_LIMIT}", "--max-columns=200"]
+    cmd = [
+        "rg",
+        "-n",
+        f"--max-count={limits.search_match_limit}",
+        f"--max-columns={limits.grep_max_columns}",
+    ]
     if file_glob:
         cmd.extend(["--glob", file_glob])
     cmd.extend(["-e", pattern, target])
@@ -621,9 +695,9 @@ async def grep_search(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-        return _format_search_result("rg", proc.returncode, stdout, stderr, search_path)
+        return _format_search_result("rg", proc.returncode, stdout, stderr, search_path, limits)
     except FileNotFoundError:
-        fallback = ["grep", "-ErnI", "-m", str(DEFAULT_SEARCH_MATCH_LIMIT)]
+        fallback = ["grep", "-ErnI", "-m", str(limits.search_match_limit)]
         if file_glob:
             fallback.extend(["--include", file_glob])
         fallback.extend(["-e", pattern, target])
@@ -641,6 +715,7 @@ async def grep_search(
                 result.stdout,
                 result.stderr,
                 search_path,
+                limits,
             )
         except Exception as exc:
             return f"ERROR: {exc}"
@@ -722,6 +797,7 @@ async def run_synthetic_check(
     rebuild_fixture: bool = False,
 ) -> str:
     """Run the fast synthetic correctness sweep for a solution directory."""
+    limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
     except Exception as exc:
@@ -749,6 +825,7 @@ async def run_synthetic_check(
         command=command,
         timeout_s=timeout_s,
         source_tool="run_synthetic_check",
+        limits=limits,
     )
     summary = _summarize_synthetic_output(
         command,
@@ -769,6 +846,7 @@ async def run_correctness_check(
     lang: str = DEFAULT_BENCH_LANGUAGE,
 ) -> str:
     """Run the Modal correctness-only benchmark flow."""
+    limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
     except Exception as exc:
@@ -798,6 +876,7 @@ async def run_correctness_check(
         command=command,
         timeout_s=timeout_s,
         source_tool="run_correctness_check",
+        limits=limits,
     )
     summary = _summarize_benchmark_output(
         command,
@@ -818,6 +897,7 @@ async def run_full_benchmark(
     lang: str = DEFAULT_BENCH_LANGUAGE,
 ) -> str:
     """Run the full Modal benchmark flow."""
+    limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
     except Exception as exc:
@@ -846,6 +926,7 @@ async def run_full_benchmark(
         command=command,
         timeout_s=timeout_s,
         source_tool="run_full_benchmark",
+        limits=limits,
     )
     summary = _summarize_benchmark_output(
         command,
@@ -866,8 +947,8 @@ async def web_fetch(
     ctx: RunContextWrapper[SharedContext],
     url: str,
 ) -> str:
-    """Fetch content from a URL and return the text body (truncated to 20k chars)."""
-    del ctx
+    """Fetch content from a URL and return the text body with active-profile truncation."""
+    limits = _tool_limits_from_context(ctx)
 
     try:
         # Keep this import lazy so urllib remains a real fallback.
@@ -879,13 +960,13 @@ async def web_fetch(
             req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 text = resp.read().decode("utf-8", errors="replace")
-                if len(text) <= DEFAULT_WEB_FETCH_LIMIT:
+                if len(text) <= limits.web_fetch_limit_chars:
                     return text
-                shown = text[:DEFAULT_WEB_FETCH_LIMIT]
+                shown = text[:limits.web_fetch_limit_chars]
                 return _prepend_notice(
                     shown,
                     (
-                        f"retrieved trimmed {url}:[1]-[{DEFAULT_WEB_FETCH_LIMIT}] "
+                        f"retrieved trimmed {url}:[1]-[{limits.web_fetch_limit_chars}] "
                         f"of {len(text)} chars"
                     ),
                 )
@@ -896,13 +977,13 @@ async def web_fetch(
         async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-            if len(resp.text) <= DEFAULT_WEB_FETCH_LIMIT:
+            if len(resp.text) <= limits.web_fetch_limit_chars:
                 return resp.text
-            shown = resp.text[:DEFAULT_WEB_FETCH_LIMIT]
+            shown = resp.text[:limits.web_fetch_limit_chars]
             return _prepend_notice(
                 shown,
                 (
-                    f"retrieved trimmed {url}:[1]-[{DEFAULT_WEB_FETCH_LIMIT}] "
+                    f"retrieved trimmed {url}:[1]-[{limits.web_fetch_limit_chars}] "
                     f"of {len(resp.text)} chars"
                 ),
             )
@@ -926,6 +1007,7 @@ async def list_directory(
             the repo root.
     """
     project_root = _project_root_from_context(ctx)
+    limits = _tool_limits_from_context(ctx)
     try:
         target = (
             _resolve_workspace_path(project_root, path) if path else project_root
@@ -959,7 +1041,7 @@ async def list_directory(
     if not entries:
         return f"{display}/  (empty directory)"
 
-    cap = 500
+    cap = limits.list_directory_cap
     header = f"{display}/  ({len(entries)} entries)"
     if len(entries) > cap:
         header += f" — showing first {cap}"
@@ -982,6 +1064,7 @@ async def diff_files(
         context_lines: Number of context lines around each change (default 3).
     """
     project_root = _project_root_from_context(ctx)
+    limits = _tool_limits_from_context(ctx)
     try:
         path_a = _resolve_workspace_path(project_root, file_a)
         path_b = _resolve_workspace_path(project_root, file_b)
@@ -1012,7 +1095,7 @@ async def diff_files(
     ))
     if not diff:
         return "Files are identical."
-    return _truncate_output("".join(diff), limit=DEFAULT_READ_FILE_LIMIT)
+    return _truncate_output("".join(diff), limit=limits.diff_limit_chars)
 
 
 # ---------------------------------------------------------------------------
@@ -1039,6 +1122,7 @@ async def run_ncu_profile(
     # Forward-compat: solution_dir and entry_point are accepted but not yet
     # wired into the command.  When tools/ncu/ncu_modal.py gains --solution-dir
     # and --entry-point flags, only the command list below needs to change.
+    limits = _tool_limits_from_context(ctx)
     command = [".venv/bin/modal", "run", "tools/ncu/ncu_modal.py"]
 
     timeout_s = 1800
@@ -1047,6 +1131,7 @@ async def run_ncu_profile(
         command=command,
         timeout_s=timeout_s,
         source_tool="run_ncu_profile",
+        limits=limits,
     )
 
     lines = [f"Command: {_command_display(command)}"]
@@ -1057,7 +1142,7 @@ async def run_ncu_profile(
     output = (result.stdout.strip() or result.stderr.strip() or "(no output)")
     lines.append(output)
     report = "\n".join(lines)
-    report = _truncate_output(report, limit=DEFAULT_SHELL_OUTPUT_LIMIT)
+    report = _truncate_output(report, limit=limits.shell_output_limit_chars)
     return _prepend_notice(report, result.overflow_notice or "")
 
 
@@ -1078,6 +1163,7 @@ async def run_sass_analysis(
         mode: Analysis mode — ``cutedsl`` (default) or ``cubin``.
     """
     project_root = _project_root_from_context(ctx)
+    limits = _tool_limits_from_context(ctx)
 
     if not kernel_file:
         solution_dir = ctx.context.solution_dir or "solution/dsa_attention"
@@ -1101,6 +1187,7 @@ async def run_sass_analysis(
         command=command,
         timeout_s=timeout_s,
         source_tool="run_sass_analysis",
+        limits=limits,
     )
 
     lines = [f"Command: {_command_display(command)}"]
@@ -1111,7 +1198,7 @@ async def run_sass_analysis(
     output = (result.stdout.strip() or result.stderr.strip() or "(no output)")
     lines.append(output)
     report = "\n".join(lines)
-    report = _truncate_output(report, limit=DEFAULT_SHELL_OUTPUT_LIMIT)
+    report = _truncate_output(report, limit=limits.shell_output_limit_chars)
     return _prepend_notice(report, result.overflow_notice or "")
 
 
@@ -1119,7 +1206,9 @@ async def run_sass_analysis(
 # Collected tool list for agent registration
 # ---------------------------------------------------------------------------
 
-ALL_TOOLS = [
+AgentRole = Literal["designer", "coder", "planner", "optimizer"]
+
+_BASE_REPO_TOOLS = [
     apply_patch_tool,
     web_search_tool,
     web_fetch,
@@ -1128,6 +1217,9 @@ ALL_TOOLS = [
     glob_files,
     grep_search,
     list_directory,
+]
+
+_PERFORMANCE_TOOLS = [
     diff_files,
     run_ncu_profile,
     run_sass_analysis,
@@ -1136,15 +1228,49 @@ ALL_TOOLS = [
     run_full_benchmark,
 ]
 
-# Subset for the kernel-designer agent: read-only exploration + plan writing,
-# no validation/benchmark tools (those belong to the coder).
-DESIGNER_TOOLS = [
-    apply_patch_tool,
-    web_search_tool,
-    web_fetch,
-    codex_kernel_assist,
-    read_file,
-    glob_files,
-    grep_search,
-    list_directory,
-]
+
+def build_tools_for_role(
+    role: AgentRole,
+    *,
+    codex_worker_mode: CodexWorkerMode = "off",
+    codex_worker_model: str = "gpt-5-codex",
+    codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
+) -> list[object]:
+    """Build the tool surface for a specific agent role."""
+    tools = list(_BASE_REPO_TOOLS)
+
+    if role != "designer":
+        tools.extend(_PERFORMANCE_TOOLS)
+
+    if codex_worker_mode == "coder_optimizer":
+        if role == "coder":
+            tools.append(
+                _build_codex_worker_tool(
+                    name="codex_coder_engineer",
+                    run_context_thread_id_key="codex_thread_id_coder_engineer",
+                    model=codex_worker_model,
+                    reasoning_effort=codex_worker_reasoning_effort,
+                )
+            )
+        elif role == "optimizer":
+            tools.append(
+                _build_codex_worker_tool(
+                    name="codex_optimizer_engineer",
+                    run_context_thread_id_key="codex_thread_id_optimizer_engineer",
+                    model=codex_worker_model,
+                    reasoning_effort=codex_worker_reasoning_effort,
+                )
+            )
+
+    return tools
+
+
+def tool_names(tools: Sequence[object]) -> list[str]:
+    """Return the registered tool names in order."""
+    return [str(getattr(tool, "name", "")) for tool in tools if getattr(tool, "name", None)]
+
+
+# Backward-compatible exports for tests and ad hoc imports. New agent wiring
+# should call build_tools_for_role(...) instead of relying on these statics.
+ALL_TOOLS = build_tools_for_role("planner")
+DESIGNER_TOOLS = build_tools_for_role("designer")

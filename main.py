@@ -41,20 +41,28 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from agents import ModelRetrySettings, ModelSettings, RunConfig, Runner, retry_policies
 from agents.exceptions import MaxTurnsExceeded
+from agents.run_config import CallModelData, ModelInputData
 
 from kernel_agents.context import (
+    CODEX_WORKER_MODE_CHOICES,
+    CODEX_WORKER_REASONING_EFFORT_CHOICES,
+    QUALITY_PROFILE_CHOICES,
     REASONING_EFFORT_CHOICES,
     VERBOSITY_CHOICES,
     CoderResult,
+    CodexWorkerMode,
+    CodexWorkerReasoningEffort,
     DesignerResult,
     OptimizerResult,
     PlannerResult,
+    QualityProfile,
     RoundRecord,
     SharedContext,
+    tool_limits_for_profile,
 )
 from kernel_agents.kernel_coder import make_kernel_coder
 from kernel_agents.kernel_designer import make_kernel_designer
@@ -65,6 +73,7 @@ from kernel_agents.stream_logging import consume_streamed_run
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
+PUBLIC_CODEX_COMPACTION_THRESHOLD = 200_000
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +87,10 @@ def save_state(ctx: SharedContext, path: Path) -> None:
         "best_latency_ms": ctx.best_latency_ms,
         "best_round": ctx.best_round,
         "model_name": ctx.model_name,
+        "quality_profile": ctx.quality_profile,
+        "codex_worker_mode": ctx.codex_worker_mode,
+        "codex_thread_id_coder_engineer": ctx.codex_thread_id_coder_engineer,
+        "codex_thread_id_optimizer_engineer": ctx.codex_thread_id_optimizer_engineer,
         "history": [asdict(r) for r in ctx.history],
     }
     path.write_text(json.dumps(state, indent=2))
@@ -90,6 +103,8 @@ def load_state(ctx: SharedContext, path: Path) -> int:
     ctx.best_latency_ms = state["best_latency_ms"]
     ctx.best_round = state["best_round"]
     ctx.history = [RoundRecord(**r) for r in state["history"]]
+    ctx.codex_thread_id_coder_engineer = state.get("codex_thread_id_coder_engineer")
+    ctx.codex_thread_id_optimizer_engineer = state.get("codex_thread_id_optimizer_engineer")
     last_round = state["current_round"]
     logger.info("Resumed from round %d (best=%.3fms @ round %d)",
                 last_round, ctx.best_latency_ms, ctx.best_round)
@@ -166,7 +181,42 @@ def format_run_telemetry(label: str, elapsed_s: float, result: object) -> str:
 
     return ", ".join(parts)
 
-def make_run_config() -> RunConfig:
+def _is_user_message_item(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("type") == "message":
+        return item.get("role") == "user"
+    return item.get("role") == "user" and "content" in item
+
+
+def _is_compaction_item(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("type") == "compaction"
+
+
+def public_codex_input_filter(filter_payload: CallModelData[SharedContext]) -> ModelInputData:
+    """Drop transcript items that predate the latest compaction item."""
+    model_data = filter_payload.model_data
+    latest_compaction_index = None
+    for index, item in enumerate(model_data.input):
+        if _is_compaction_item(item):
+            latest_compaction_index = index
+
+    if latest_compaction_index is None:
+        return model_data
+
+    preserved_user_items = [
+        item
+        for item in model_data.input[:latest_compaction_index]
+        if _is_user_message_item(item)
+    ]
+    compacted_tail = model_data.input[latest_compaction_index:]
+    return ModelInputData(
+        input=[*preserved_user_items, *compacted_tail],
+        instructions=model_data.instructions,
+    )
+
+
+def make_run_config(quality_profile: QualityProfile = "legacy") -> RunConfig:
     """Build a shared RunConfig for long tool-using agent runs."""
     retry_settings = ModelRetrySettings(
         max_retries=4,
@@ -183,7 +233,29 @@ def make_run_config() -> RunConfig:
             retry_policies.http_status([408, 409, 429, 500, 502, 503, 504]),
         ),
     )
-    return RunConfig(model_settings=ModelSettings(retry=retry_settings))
+    model_settings = ModelSettings(retry=retry_settings)
+    call_model_input_filter = None
+    if quality_profile == "public_codex":
+        model_settings = model_settings.resolve(
+            ModelSettings(
+                parallel_tool_calls=False,
+                truncation="auto",
+                store=False,
+                extra_args={
+                    "context_management": [
+                        {
+                            "type": "compaction",
+                            "compact_threshold": PUBLIC_CODEX_COMPACTION_THRESHOLD,
+                        }
+                    ]
+                },
+            )
+        )
+        call_model_input_filter = public_codex_input_filter
+    return RunConfig(
+        model_settings=model_settings,
+        call_model_input_filter=call_model_input_filter,
+    )
 
 
 async def _run_agent(
@@ -196,7 +268,7 @@ async def _run_agent(
 ) -> tuple[object, float]:
     """Run an agent normally or via the streamed progress path."""
     started_at = time.perf_counter()
-    run_config = make_run_config()
+    run_config = make_run_config(context.quality_profile)
     if not verbose:
         result = await Runner.run(
             starting_agent=starting_agent,
@@ -226,6 +298,10 @@ async def run_loop(
     model: str = "gpt-5.4",
     coder_model: str = "gpt-5.4",
     designer_model: str = "gpt-5.4",
+    quality_profile: QualityProfile = "legacy",
+    codex_worker_mode: CodexWorkerMode = "off",
+    codex_worker_model: str = "gpt-5-codex",
+    codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
     resume: bool = False,
     verbose: bool = False,
     coder_max_turns: int = 300,
@@ -255,23 +331,36 @@ async def run_loop(
         solution_dir="solution/dsa_attention",
         notes_dir="notes/dsa_attention",
         model_name=model,
+        quality_profile=quality_profile,
+        tool_limits=tool_limits_for_profile(quality_profile),
+        codex_worker_mode=codex_worker_mode,
     )
 
     # Build agents
     designer = make_kernel_designer(
+        context=ctx,
         model=designer_model,
         reasoning_effort=designer_reasoning_effort,
         verbosity=designer_verbosity,
         extra_instructions=designer_extra,
     )
     coder = make_kernel_coder(
+        context=ctx,
         model=coder_model,
         reasoning_effort=coder_reasoning_effort,
         verbosity=coder_verbosity,
         extra_instructions=coder_extra,
+        codex_worker_model=codex_worker_model,
+        codex_worker_reasoning_effort=codex_worker_reasoning_effort,
     )
-    planner = make_kernel_planner(model=model, extra_instructions=planner_extra)
-    optimizer = make_kernel_optimizer(model=model, extra_instructions=optimizer_extra)
+    planner = make_kernel_planner(context=ctx, model=model, extra_instructions=planner_extra)
+    optimizer = make_kernel_optimizer(
+        context=ctx,
+        model=model,
+        extra_instructions=optimizer_extra,
+        codex_worker_model=codex_worker_model,
+        codex_worker_reasoning_effort=codex_worker_reasoning_effort,
+    )
 
     # Resume handling
     start_round = 0
@@ -557,6 +646,30 @@ def main():
         help="LLM model for the round-0 kernel-designer agent (default: gpt-5.4)",
     )
     parser.add_argument(
+        "--quality-profile",
+        choices=QUALITY_PROFILE_CHOICES,
+        default="legacy",
+        help="Tool-limit and run-config profile to use (default: legacy)",
+    )
+    parser.add_argument(
+        "--codex-worker-mode",
+        choices=CODEX_WORKER_MODE_CHOICES,
+        default="off",
+        help="Expose write-capable Codex workers for selected agents (default: off)",
+    )
+    parser.add_argument(
+        "--codex-worker-model",
+        type=str,
+        default="gpt-5-codex",
+        help="Model used by the write-capable Codex worker tools (default: gpt-5-codex)",
+    )
+    parser.add_argument(
+        "--codex-worker-reasoning-effort",
+        choices=CODEX_WORKER_REASONING_EFFORT_CHOICES,
+        default="high",
+        help="Reasoning effort for the write-capable Codex worker tools (default: high)",
+    )
+    parser.add_argument(
         "--resume", action="store_true",
         help="Resume from last checkpoint (loop_state.json)",
     )
@@ -608,6 +721,10 @@ def main():
         model=args.model,
         coder_model=args.coder_model,
         designer_model=args.designer_model,
+        quality_profile=args.quality_profile,
+        codex_worker_mode=args.codex_worker_mode,
+        codex_worker_model=args.codex_worker_model,
+        codex_worker_reasoning_effort=args.codex_worker_reasoning_effort,
         resume=args.resume,
         verbose=args.verbose,
         coder_max_turns=args.coder_max_turns,
