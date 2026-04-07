@@ -58,6 +58,8 @@ Tool policy:
 - Use `shell` for NCU and any raw command that does not fit the workflow helpers.
 - Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 - If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading broadly.
+- If a shell-related tool says `last_shell_overflow.txt` was written, inspect it with `read_file` or `grep_search` before launching another potentially overflowing shell command. Treat it as ephemeral: the next overflowing shell-like tool call replaces it.
+- Do not create spill files for persistent-data tools. For `read_file`, `glob_files`, `grep_search`, and `web_fetch`, refine the tool call instead.
 
 ## Key Project Paths
 
@@ -79,12 +81,8 @@ Tool policy:
 
 ## Output Format
 
-When you are done, return your result with:
-  - latency_ms: measured average latency in milliseconds from the benchmark
-  - bottleneck: the single highest-impact bottleneck you identified
-  - strategy_summary: one-line summary of the proposed optimization
-  - strategy_file: path to the strategy file you wrote (e.g. "notes/dsa_attention/strategy_1.md")
-  - is_new_best: true if this kernel is faster than the previous best
+When you are done, return structured output matching the configured `PlannerResult` schema.
+Do not include markdown fences, code blocks, or extra prose outside the structured response.
 
 ## History of Prior Rounds
 

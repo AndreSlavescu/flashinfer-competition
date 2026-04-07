@@ -46,6 +46,8 @@ Tool policy:
 - Use `shell` for NCU and any raw command that does not fit the workflow helpers.
 - Prefer `grep_search` before `read_file` when locating symbols or APIs, especially under `references/`.
 - If a tool returns a `retrieved trimmed ...` banner, request a narrower follow-up range instead of rereading broadly.
+- If a shell-related tool says `last_shell_overflow.txt` was written, inspect it with `read_file` or `grep_search` before launching another potentially overflowing shell command. Treat it as ephemeral: the next overflowing shell-like tool call replaces it.
+- Do not create spill files for persistent-data tools. For `read_file`, `glob_files`, `grep_search`, and `web_fetch`, refine the tool call instead.
 
 ## Key References
 
@@ -87,11 +89,8 @@ Output tensors (pre-allocated, write in-place):
 
 ## Output Format
 
-When you are done, return your result with:
-  - kernel_file: path to the kernel file you wrote (e.g. "solution/dsa_attention/kernel_1.py")
-  - correctness_verified: true if all workloads passed --correctness-only
-  - status: "success" or "compile_error" or "validation_failed" or "timeout"
-  - message: brief summary of what you did and the result
+When you are done, return structured output matching the configured `OptimizerResult` schema.
+Do not include markdown fences, code blocks, or extra prose outside the structured response.
 """
 
 
