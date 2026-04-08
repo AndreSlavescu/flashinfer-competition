@@ -25,9 +25,9 @@ from kernel_agents.context import (
         ),
         (
             PlannerResult,
-            {"latency_ms", "bottleneck", "strategy_summary", "strategy_file", "is_new_best"},
+            {"latency_ms", "bottleneck", "strategy_summary", "strategy_file", "is_new_best", "ncu_metrics"},
         ),
-        (OptimizerResult, {"kernel_file", "correctness_verified", "status", "message"}),
+        (OptimizerResult, {"kernel_file", "correctness_verified", "status", "message", "reflection"}),
     ],
 )
 def test_result_models_use_top_level_structured_output(

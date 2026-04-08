@@ -96,12 +96,19 @@ def save_state(ctx: SharedContext, path: Path) -> None:
     logger.info("State saved to %s", path)
 
 
+def _round_record_from_dict(d: dict) -> RoundRecord:
+    """Build a RoundRecord from a JSON dict, tolerating old/missing fields."""
+    known = {f.name for f in RoundRecord.__dataclass_fields__.values()}
+    filtered = {k: v for k, v in d.items() if k in known}
+    return RoundRecord(**filtered)
+
+
 def load_state(ctx: SharedContext, path: Path) -> int:
     """Load loop state from JSON. Returns the last completed round number."""
     state = json.loads(path.read_text())
     ctx.best_latency_ms = state["best_latency_ms"]
     ctx.best_round = state["best_round"]
-    ctx.history = [RoundRecord(**r) for r in state["history"]]
+    ctx.history = [_round_record_from_dict(r) for r in state["history"]]
     ctx.codex_thread_id_coder_engineer = state.get("codex_thread_id_coder_engineer")
     ctx.codex_thread_id_optimizer_engineer = state.get("codex_thread_id_optimizer_engineer")
     last_round = state["current_round"]
@@ -114,18 +121,27 @@ def load_state(ctx: SharedContext, path: Path) -> int:
 # History formatting
 # ---------------------------------------------------------------------------
 
-def format_history(history: list[RoundRecord]) -> str:
+def format_history(history: list[RoundRecord], best_latency_ms: float = float("inf")) -> str:
     """Build a human-readable history summary for agent prompts."""
     if not history:
         return "(No prior rounds — this is the first optimization.)"
     lines = []
+    if best_latency_ms < float("inf"):
+        lines.append(f"  Current best latency: {best_latency_ms:.3f}ms\n")
     for r in history:
         status = "CORRECT" if r.correctness else "FAILED"
         lat = f"{r.latency_ms:.3f}ms" if r.latency_ms is not None else "N/A"
-        lines.append(
+        line = (
             f"  Round {r.round_num}: [{status}] latency={lat} | "
             f"bottleneck='{r.bottleneck}' | strategy='{r.strategy_summary}'"
         )
+        if r.failure_reason:
+            line += f"\n    Failure reason: {r.failure_reason}"
+        if r.strategy_file:
+            line += f"\n    Strategy file: {r.strategy_file}"
+        if r.ncu_metrics:
+            line += f"\n    NCU: {json.dumps(r.ncu_metrics, separators=(',', ':'))}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -309,6 +325,8 @@ async def run_loop(
     designer_max_turns: int = 80,
     designer_reasoning_effort: str = "xhigh",
     designer_verbosity: str = "low",
+    planner_reasoning_effort: str = "high",
+    optimizer_reasoning_effort: str = "high",
     coder_extra: str = "",
     designer_extra: str = "",
     planner_extra: str = "",
@@ -352,10 +370,16 @@ async def run_loop(
         codex_worker_model=codex_worker_model,
         codex_worker_reasoning_effort=codex_worker_reasoning_effort,
     )
-    planner = make_kernel_planner(context=ctx, model=model, extra_instructions=planner_extra)
+    planner = make_kernel_planner(
+        context=ctx,
+        model=model,
+        reasoning_effort=planner_reasoning_effort,
+        extra_instructions=planner_extra,
+    )
     optimizer = make_kernel_optimizer(
         context=ctx,
         model=model,
+        reasoning_effort=optimizer_reasoning_effort,
         extra_instructions=optimizer_extra,
         codex_worker_model=codex_worker_model,
         codex_worker_reasoning_effort=codex_worker_reasoning_effort,
@@ -461,11 +485,12 @@ async def run_loop(
         print(f"Working copy: kernel.py ← {last_correct.name}")
 
         # Build history string
-        history_str = format_history(ctx.history)
+        history_str = format_history(ctx.history, best_latency_ms=ctx.best_latency_ms)
         # ── Planner ────────────────────────────────────────────────────
         print(f"\n--- Planner (round {i}) ---")
         planner_input = (
             f"Round {i}. The current kernel.py was copied from {last_correct.name}.\n\n"
+            f"Current best latency: {ctx.best_latency_ms:.3f}ms (round {ctx.best_round}).\n\n"
             f"History of prior rounds:\n{history_str}\n\n"
             f"Benchmark the current kernel, diagnose the bottleneck, and write "
             f"strategy_{i}.md to notes/dsa_attention/."
@@ -511,7 +536,11 @@ async def run_loop(
             f"Round {i}. Implement the strategy in {pr.strategy_file}.\n"
             f"Read the current kernel at solution/dsa_attention/kernel.py.\n"
             f"Write the optimized kernel to solution/dsa_attention/kernel_{i}.py.\n"
-            f"Validate with --correctness-only. You have up to 5 attempts."
+            f"Validate with --correctness-only. You have up to 5 attempts.\n\n"
+            f"Current best latency: {ctx.best_latency_ms:.3f}ms (round {ctx.best_round}).\n\n"
+            f"History of prior rounds:\n{history_str}\n\n"
+            f"SCOPE: Implement EXACTLY and ONLY what the strategy specifies. "
+            f"Do not refactor unrelated code or change the kernel interface."
         )
 
         try:
@@ -540,6 +569,8 @@ async def run_loop(
 
         status_icon = "OK" if opt.correctness_verified else "FAIL"
         print(f"  [{status_icon}] {opt.kernel_file}: {opt.message}")
+        if opt.reflection:
+            print(f"  Reflection: {opt.reflection[:300]}")
 
         # Record round
         ctx.history.append(RoundRecord(
@@ -549,6 +580,9 @@ async def run_loop(
             correctness=opt.correctness_verified,
             strategy_summary=pr.strategy_summary,
             bottleneck=pr.bottleneck,
+            failure_reason=opt.message if not opt.correctness_verified else "",
+            strategy_file=pr.strategy_file,
+            ncu_metrics=pr.ncu_metrics.model_dump() if pr.ncu_metrics else None,
         ))
 
         save_state(ctx, state_path)
@@ -655,6 +689,18 @@ def main():
         default="low",
         help="Verbosity for the round-0 kernel-designer agent (default: low)",
     )
+    parser.add_argument(
+        "--planner-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="high",
+        help="Reasoning effort for the kernel-planner agent (default: high)",
+    )
+    parser.add_argument(
+        "--optimizer-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="high",
+        help="Reasoning effort for the kernel-optimizer agent (default: high)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -679,6 +725,8 @@ def main():
         designer_max_turns=args.designer_max_turns,
         designer_reasoning_effort=args.designer_reasoning_effort,
         designer_verbosity=args.designer_verbosity,
+        planner_reasoning_effort=args.planner_reasoning_effort,
+        optimizer_reasoning_effort=args.optimizer_reasoning_effort,
     ))
 
 

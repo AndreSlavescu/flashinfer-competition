@@ -6,23 +6,28 @@ from collections.abc import Sequence
 
 from kernel_agents.tools import tool_names
 
-SHARED_QUALITY_BLOCK = """
-## Codex-Style Quality Bar
+B200_HARDWARE_SPEC_BLOCK = """
+## NVIDIA B200 (sm100a) Hardware Specifications
 
-- Autonomy and persistence: Continue until the current subtask is complete or a real blocker remains.
-- Dependency checks: Do prerequisite lookup, reading, and comparison work before taking action.
-- Terminal and tool hygiene: Prefer repo tools and `apply_patch`; do not emulate tools in shell.
-- Parsed validation first: Prefer structured repo validation tools over ad hoc shell parsing whenever a parsed tool exists.
-- Verification loop: Before finalizing, check correctness, grounding, and formatting.
+- SMs: 148 (8 GPCs), 4 sub-cores per SM (warp_id % 4 mapping)
+- HBM3e: 178 GB, 7.67 TB/s peak bandwidth (bus width 7680-bit, mem clock 3996 MHz)
+- L2 Cache: 126.5 MB
+- Shared Memory per SM: 228 KB (48 KB default per block, up to 228 KB with opt-in)
+- TMEM per SM: 512 columns x 128 lanes x 32-bit = 256 KB; alloc granularity 32 cols
+- Register File per SM: 256 KB (65536 x 32-bit), max 256 per thread
+- Warps per SM: up to 64, max 1024 threads per block
+- SM clock: ~1.965 GHz boost (~1.844 GHz sustained under thermal load)
+
+## Key Measured Latencies
+
+- L1 hit: ~36 cycles (18 ns) | L2 hit: ~300 cycles (153 ns) | HBM cold: ~707 cycles (360 ns)
+- TMA load: ~200-400 cycles | tcgen05 MMA: ~32 cycles
+- L1 bypass penalty: 7-8x for working sets < 32 KB, zero beyond L2
 """
 
-COMMON_TOOL_POLICY_BLOCK = """
-## Tool Policy
-
-- Prefer `grep_search`, `glob_files`, `list_directory`, and `read_file` to ground repo facts before acting.
-- If a tool returns a trimmed banner, narrow the next request instead of rerunning the same broad query.
-- Treat `last_shell_overflow.txt` as ephemeral: inspect it before another overflowing shell-like workflow call because the next overflow replaces it.
-"""
+# NOTE: Roofline reference points intentionally omitted — NCU profiling tools
+# already return throughput percentages, hit rates, stall reasons, and
+# memory-bound classification. Agents should reason from actual NCU output.
 
 CODER_CODEX_WORKER_BLOCK = """
 ## Write-Capable Codex Worker
@@ -77,12 +82,13 @@ def build_agent_instructions(
     extra_instructions: str = "",
     codex_worker_block: str = "",
 ) -> str:
-    """Compose a final agent prompt from shared and role-specific blocks."""
-    parts = [
-        body.strip(),
-        SHARED_QUALITY_BLOCK.strip(),
-        COMMON_TOOL_POLICY_BLOCK.strip(),
-    ]
+    """Compose a final agent prompt from role-specific and shared blocks.
+
+    Assembly order: body (identity + instructions + workflow) -> hardware specs
+    (context) -> codex worker block -> tools section -> extra_instructions.
+    """
+    parts = [body.strip()]
+    parts.append(B200_HARDWARE_SPEC_BLOCK.strip())
     if codex_worker_block.strip():
         parts.append(codex_worker_block.strip())
     parts.append(build_tools_section(tools))

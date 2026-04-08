@@ -13,3 +13,5 @@ compile_commands.json
 .venv/
 .env
 .codex
+
+prompt_examples/

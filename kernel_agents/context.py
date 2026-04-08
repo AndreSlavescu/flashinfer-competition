@@ -95,6 +95,9 @@ class RoundRecord:
     correctness: bool
     strategy_summary: str  # 1-line summary
     bottleneck: str  # what was identified
+    failure_reason: str = ""  # why this round failed, empty if success
+    strategy_file: str = ""  # path to the strategy_N.md file
+    ncu_metrics: dict[str, float] | None = None  # full NCU metrics snapshot
 
 
 @dataclass
@@ -165,6 +168,45 @@ class CoderResult(StructuredResult):
     )
 
 
+class NCUMetrics(BaseModel):
+    """Structured NCU profiling metrics matching KEY_METRICS in tools/ncu/ncu_modal.py.
+
+    Field names are short aliases for the canonical NCU metric names.
+    All values default to 0.0 so the planner only needs to fill in what NCU returned.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Throughput (pct of peak sustained)
+    dram_throughput_pct: float = Field(default=0.0, description="dram__throughput.avg.pct_of_peak_sustained_elapsed")
+    sm_throughput_pct: float = Field(default=0.0, description="sm__throughput.avg.pct_of_peak_sustained_elapsed")
+    # Cache hit rates
+    l1_hit_rate_pct: float = Field(default=0.0, description="l1tex__t_sector_hit_rate.pct")
+    l2_hit_rate_pct: float = Field(default=0.0, description="lts__t_sector_hit_rate.pct")
+    # Occupancy
+    occupancy_pct: float = Field(default=0.0, description="sm__warps_active.avg.pct_of_peak_sustained_active")
+    # Issue utilization
+    issue_active_pct: float = Field(default=0.0, description="smsp__issue_active.avg.pct_of_peak_sustained_active")
+    # Warp stall reasons (per issue active)
+    stall_barrier: float = Field(default=0.0, description="smsp__average_warps_issue_stalled_barrier_per_issue_active")
+    stall_membar: float = Field(default=0.0, description="smsp__average_warps_issue_stalled_membar_per_issue_active")
+    stall_long_scoreboard: float = Field(default=0.0, description="smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active")
+    stall_short_scoreboard: float = Field(default=0.0, description="smsp__average_warps_issue_stalled_short_scoreboard_per_issue_active")
+    stall_wait: float = Field(default=0.0, description="smsp__average_warps_issue_stalled_wait_per_issue_active")
+    stall_math_pipe_throttle: float = Field(default=0.0, description="smsp__average_warps_issue_stalled_math_pipe_throttle_per_issue_active")
+    # Pipe utilization (pct of peak sustained active)
+    pipe_tensor_pct: float = Field(default=0.0, description="smsp__inst_executed_pipe_tensor_op_hmma.avg.pct_of_peak_sustained_active")
+    pipe_lsu_pct: float = Field(default=0.0, description="smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_active")
+    # Memory traffic (bytes)
+    dram_bytes_read: float = Field(default=0.0, description="dram__bytes_read.sum")
+    dram_bytes_write: float = Field(default=0.0, description="dram__bytes_write.sum")
+    l2_bytes_hit: float = Field(default=0.0, description="lts__t_bytes_lookup_hit.sum")
+    l2_bytes_miss: float = Field(default=0.0, description="lts__t_bytes_lookup_miss.sum")
+    # Instructions / cycles
+    inst_executed: float = Field(default=0.0, description="smsp__inst_executed.sum")
+    cycles_elapsed: float = Field(default=0.0, description="sm__cycles_elapsed.avg")
+
+
 class PlannerResult(StructuredResult):
     """Returned by kernel-planner after profiling + strategy writing."""
 
@@ -183,6 +225,13 @@ class PlannerResult(StructuredResult):
     is_new_best: bool = Field(
         description="Whether the benchmarked kernel is faster than the previous best.",
     )
+    ncu_metrics: NCUMetrics | None = Field(
+        default=None,
+        description=(
+            "NCU profiling metrics from run_ncu_profile. Fill in the values returned by "
+            "the profiler. null if NCU profiling was not run or failed."
+        ),
+    )
 
 
 class OptimizerResult(StructuredResult):
@@ -199,4 +248,11 @@ class OptimizerResult(StructuredResult):
     )
     message: str = Field(
         description="Brief human-readable summary of the optimization result.",
+    )
+    reflection: str = Field(
+        default="",
+        description=(
+            "Brief reflection: what worked, what didn't, and what the next round "
+            "should try differently. Empty string if no insight."
+        ),
     )
