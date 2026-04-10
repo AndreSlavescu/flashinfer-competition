@@ -14,7 +14,7 @@ import re
 import shlex
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from pathlib import Path
 from typing import Literal
 
@@ -1208,6 +1208,8 @@ async def run_sass_analysis(
 
 AgentRole = Literal["designer", "coder", "planner", "optimizer"]
 
+# -- Unscoped tool pools (used only by backward-compatible statics below) ---
+
 _BASE_REPO_TOOLS = [
     apply_patch_tool,
     web_search_tool,
@@ -1231,6 +1233,37 @@ _PLANNER_ANALYSIS_TOOLS = [
     run_full_benchmark,
 ]
 
+# -- FunctionTools that carry a read-scope guardrail ------------------------
+
+_FILE_ACCESS_TOOLS = (read_file, glob_files, grep_search, list_directory)
+
+
+def _scoped_file_tools(
+    guardrail: object,
+) -> list[object]:
+    """Return copies of the file-access FunctionTools with *guardrail* attached."""
+    from agents.tool import FunctionTool
+
+    scoped: list[object] = []
+    for tool in _FILE_ACCESS_TOOLS:
+        assert isinstance(tool, FunctionTool)
+        existing = tool.tool_input_guardrails or []
+        scoped.append(
+            dataclass_replace(tool, tool_input_guardrails=[guardrail] + list(existing))
+        )
+    return scoped
+
+
+def _scoped_diff(guardrail: object) -> object:
+    """Return a copy of :data:`diff_files` with *guardrail* attached."""
+    from agents.tool import FunctionTool
+
+    assert isinstance(diff_files, FunctionTool)
+    existing = diff_files.tool_input_guardrails or []
+    return dataclass_replace(
+        diff_files, tool_input_guardrails=[guardrail] + list(existing)
+    )
+
 
 def build_tools_for_role(
     role: AgentRole,
@@ -1239,11 +1272,32 @@ def build_tools_for_role(
     codex_worker_model: str = "gpt-5-codex",
     codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
 ) -> list[object]:
-    """Build the tool surface for a specific agent role."""
-    tools = list(_BASE_REPO_TOOLS)
+    """Build the tool surface for a specific agent role.
+
+    Every file-access tool is stamped with a per-role read-scope guardrail,
+    and each role gets its own :class:`ApplyPatchTool` backed by a
+    :class:`ScopedWorkspaceEditor` that enforces write scoping.
+    """
+    from kernel_agents.scoping import ScopedWorkspaceEditor, make_scope_guardrail
+
+    scope_guardrail = make_scope_guardrail(role)
+
+    # Per-role ApplyPatchTool with write-scope enforcement.
+    scoped_editor = ScopedWorkspaceEditor(WorkspaceEditor(), role)
+    role_patch_tool = ApplyPatchTool(editor=scoped_editor)
+
+    # Assemble the tool list.
+    tools: list[object] = [
+        role_patch_tool,
+        web_search_tool,
+        web_fetch,
+        codex_kernel_assist,
+    ]
+    tools.extend(_scoped_file_tools(scope_guardrail))
 
     if role in {"coder", "optimizer", "planner"}:
-        tools.extend(_VALIDATION_TOOLS)
+        tools.append(_scoped_diff(scope_guardrail))
+        tools.extend([run_synthetic_check, run_correctness_check])
 
     if role == "planner":
         tools.extend(_PLANNER_ANALYSIS_TOOLS)

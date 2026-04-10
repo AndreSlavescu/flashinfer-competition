@@ -117,6 +117,7 @@ class SharedContext:
     codex_worker_mode: CodexWorkerMode = "off"
     codex_thread_id_coder_engineer: str | None = None
     codex_thread_id_optimizer_engineer: str | None = None
+    current_agent_role: str = ""
 
 
 # ---------------------------------------------------------------------------
