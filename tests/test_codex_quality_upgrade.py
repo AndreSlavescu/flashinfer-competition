@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from agents import SQLiteSession
 from agents.run_config import CallModelData, ModelInputData
 from agents.tool_context import ToolContext
 
@@ -119,9 +120,185 @@ def test_public_codex_run_config_enables_compaction() -> None:
     assert run_config.model_settings.parallel_tool_calls is False
     assert run_config.model_settings.truncation == "auto"
     assert run_config.model_settings.store is False
+    assert run_config.model_settings.response_include == ["reasoning.encrypted_content"]
     assert run_config.model_settings.extra_args == {
         "context_management": [{"type": "compaction", "compact_threshold": 200000}]
     }
+
+
+def test_rate_limit_error_detection_matches_tpm_and_status_signals() -> None:
+    tpm_error = Exception(
+        "Rate limit reached for gpt-5.4 in organization org-xxx on tokens per min "
+        "(TPM): Limit 500000, Used 436369, Requested 74001. Please try again in "
+        "1.244s. Visit https://platform.openai.com/account/rate-limits to learn more."
+    )
+    too_many = Exception("HTTP 429 Too Many Requests")
+
+    class _StatusError(Exception):
+        status_code = 429
+
+    assert main._is_rate_limit_error(tpm_error) is True
+    assert main._is_rate_limit_error(too_many) is True
+    assert main._is_rate_limit_error(_StatusError("boom")) is True
+    assert main._is_rate_limit_error(Exception("unrelated failure")) is False
+
+    assert main._rate_limit_retry_after_seconds(tpm_error) == pytest.approx(1.244)
+    assert main._rate_limit_retry_after_seconds(Exception("no hint")) is None
+
+
+@pytest.mark.asyncio
+async def test_run_agent_retries_rate_limits_with_saved_session_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _shared_context(Path.cwd(), quality_profile="public_codex")
+    stage_result = object()
+    calls: list[dict[str, Any]] = []
+    sleep_calls: list[float] = []
+    rate_limit_error = Exception(
+        "Rate limit reached for gpt-5.4 in organization org-xxx on tokens per min "
+        "(TPM): Limit 500000, Used 436369, Requested 74001. Please try again in "
+        "1.244s. Visit https://platform.openai.com/account/rate-limits to learn more."
+    )
+
+    async def _fake_run_agent_once(
+        *,
+        starting_agent: object,
+        input: str | list[dict[str, Any]],
+        context: SharedContext,
+        max_turns: int,
+        verbose: bool,
+        session: SQLiteSession | None = None,
+    ) -> tuple[object, float]:
+        calls.append(
+            {
+                "starting_agent": starting_agent,
+                "input": input,
+                "context": context,
+                "max_turns": max_turns,
+                "verbose": verbose,
+                "session": session,
+            }
+        )
+        if len(calls) == 1:
+            raise rate_limit_error
+        return stage_result, 0.25
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(main, "_run_agent_once", _fake_run_agent_once)
+    monkeypatch.setattr(main.asyncio, "sleep", _fake_sleep)
+
+    result, elapsed_s = await main._run_agent(
+        stage_label="kernel-designer",
+        starting_agent=object(),
+        input="design the kernel",
+        context=ctx,
+        max_turns=80,
+        verbose=True,
+    )
+
+    assert result is stage_result
+    assert elapsed_s >= 0.0
+    assert len(calls) == 2
+    assert calls[0]["input"] == "design the kernel"
+    assert calls[1]["input"] == []
+    assert isinstance(calls[0]["session"], SQLiteSession)
+    assert calls[0]["session"] is calls[1]["session"]
+    assert calls[0]["context"] is ctx
+    assert calls[1]["context"] is ctx
+    assert sleep_calls == [
+        pytest.approx(1.244 + main.RATE_LIMIT_RETRY_SAFETY_BUFFER_S),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_does_not_retry_non_rate_limit_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _shared_context(Path.cwd(), quality_profile="public_codex")
+    calls: list[dict[str, Any]] = []
+
+    async def _fake_run_agent_once(
+        *,
+        starting_agent: object,
+        input: str | list[dict[str, Any]],
+        context: SharedContext,
+        max_turns: int,
+        verbose: bool,
+        session: SQLiteSession | None = None,
+    ) -> tuple[object, float]:
+        calls.append({"input": input, "session": session})
+        raise RuntimeError("boom")
+
+    async def _unexpected_sleep(_: float) -> None:
+        raise AssertionError("sleep should not be called for non-rate-limit failures")
+
+    monkeypatch.setattr(main, "_run_agent_once", _fake_run_agent_once)
+    monkeypatch.setattr(main.asyncio, "sleep", _unexpected_sleep)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await main._run_agent(
+            stage_label="kernel-coder",
+            starting_agent=object(),
+            input="implement the kernel",
+            context=ctx,
+            max_turns=100,
+            verbose=False,
+        )
+
+    assert len(calls) == 1
+    assert calls[0]["input"] == "implement the kernel"
+    assert isinstance(calls[0]["session"], SQLiteSession)
+
+
+@pytest.mark.asyncio
+async def test_run_agent_stops_after_stage_rate_limit_retry_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _shared_context(Path.cwd(), quality_profile="public_codex")
+    calls: list[dict[str, Any]] = []
+    sleep_calls: list[float] = []
+    rate_limit_error = Exception("HTTP 429 Too Many Requests. Please try again in 0.250s.")
+
+    async def _fake_run_agent_once(
+        *,
+        starting_agent: object,
+        input: str | list[dict[str, Any]],
+        context: SharedContext,
+        max_turns: int,
+        verbose: bool,
+        session: SQLiteSession | None = None,
+    ) -> tuple[object, float]:
+        calls.append({"input": input, "session": session})
+        raise rate_limit_error
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(main, "_run_agent_once", _fake_run_agent_once)
+    monkeypatch.setattr(main.asyncio, "sleep", _fake_sleep)
+
+    with pytest.raises(Exception, match="Too Many Requests"):
+        await main._run_agent(
+            stage_label="kernel-planner-round-1",
+            starting_agent=object(),
+            input="benchmark the kernel",
+            context=ctx,
+            max_turns=40,
+            verbose=True,
+        )
+
+    assert len(calls) == main.STAGE_RATE_LIMIT_MAX_RETRIES + 1
+    assert calls[0]["input"] == "benchmark the kernel"
+    assert all(call["input"] == [] for call in calls[1:])
+    first_session = calls[0]["session"]
+    assert isinstance(first_session, SQLiteSession)
+    assert all(call["session"] is first_session for call in calls)
+    assert len(sleep_calls) == main.STAGE_RATE_LIMIT_MAX_RETRIES
+    assert sleep_calls == [
+        pytest.approx(0.250 + main.RATE_LIMIT_RETRY_SAFETY_BUFFER_S)
+    ] * main.STAGE_RATE_LIMIT_MAX_RETRIES
 
 
 def test_public_codex_is_the_default_run_config() -> None:

@@ -35,6 +35,7 @@ import argparse
 import asyncio
 import json
 import logging
+import re
 import shutil
 import sys
 import time
@@ -42,7 +43,14 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, TypeVar
 
-from agents import ModelRetrySettings, ModelSettings, RunConfig, Runner, retry_policies
+from agents import (
+    ModelRetrySettings,
+    ModelSettings,
+    RunConfig,
+    Runner,
+    SQLiteSession,
+    retry_policies,
+)
 from agents.exceptions import MaxTurnsExceeded
 from agents.run_config import CallModelData, ModelInputData
 
@@ -73,6 +81,23 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
 PUBLIC_CODEX_COMPACTION_THRESHOLD = 200_000
+STAGE_RATE_LIMIT_MAX_RETRIES = 100
+STAGE_RATE_LIMIT_MAX_CUMULATIVE_WAIT_S = 600.0
+RATE_LIMIT_RETRY_SAFETY_BUFFER_S = 0.5
+RATE_LIMIT_RETRY_BACKOFF_INITIAL_S = 2.0
+RATE_LIMIT_RETRY_BACKOFF_MAX_S = 30.0
+_RATE_LIMIT_RETRY_AFTER_RE = re.compile(
+    r"please try again in\s+([0-9]+(?:\.[0-9]+)?)s",
+    re.IGNORECASE,
+)
+_RATE_LIMIT_MESSAGE_PATTERNS = (
+    "rate limit reached",
+    "too many requests",
+    "tokens per min",
+    "requests per min",
+    "(tpm)",
+    "(rpm)",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -208,6 +233,72 @@ def _is_compaction_item(item: Any) -> bool:
     return isinstance(item, dict) and item.get("type") == "compaction"
 
 
+def _iter_exception_chain(error: BaseException) -> list[BaseException]:
+    """Return the exception plus chained causes/contexts without cycles."""
+    seen: set[int] = set()
+    pending: list[BaseException] = [error]
+    chain: list[BaseException] = []
+
+    while pending:
+        current = pending.pop(0)
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+        chain.append(current)
+
+        cause = getattr(current, "__cause__", None)
+        if isinstance(cause, BaseException):
+            pending.append(cause)
+
+        context = getattr(current, "__context__", None)
+        if isinstance(context, BaseException):
+            pending.append(context)
+
+    return chain
+
+
+def _is_rate_limit_error(error: BaseException) -> bool:
+    """Best-effort detection for OpenAI/OpenAI SDK rate-limit failures."""
+    for candidate in _iter_exception_chain(error):
+        status_code = getattr(candidate, "status_code", None)
+        if status_code == 429:
+            return True
+
+        message = str(candidate).lower()
+        if any(pattern in message for pattern in _RATE_LIMIT_MESSAGE_PATTERNS):
+            return True
+
+    return False
+
+
+def _rate_limit_retry_after_seconds(error: BaseException) -> float | None:
+    """Extract retry-after seconds from a rate-limit exception string."""
+    for candidate in _iter_exception_chain(error):
+        message = str(candidate)
+        match = _RATE_LIMIT_RETRY_AFTER_RE.search(message)
+        if not match:
+            continue
+        try:
+            return max(float(match.group(1)), 0.0)
+        except ValueError:
+            continue
+    return None
+
+
+def _stage_rate_limit_wait_seconds(error: BaseException, retry_index: int) -> float:
+    """Resolve the outer retry delay after SDK-managed retries are exhausted."""
+    hinted_delay = _rate_limit_retry_after_seconds(error)
+    if hinted_delay is not None:
+        return hinted_delay + RATE_LIMIT_RETRY_SAFETY_BUFFER_S
+
+    fallback_delay = min(
+        RATE_LIMIT_RETRY_BACKOFF_INITIAL_S * (2 ** retry_index),
+        RATE_LIMIT_RETRY_BACKOFF_MAX_S,
+    )
+    return fallback_delay + RATE_LIMIT_RETRY_SAFETY_BUFFER_S
+
+
 def public_codex_input_filter(filter_payload: CallModelData[SharedContext]) -> ModelInputData:
     """Drop transcript items that predate the latest compaction item."""
     model_data = filter_payload.model_data
@@ -256,6 +347,7 @@ def make_run_config(quality_profile: QualityProfile = "public_codex") -> RunConf
                 parallel_tool_calls=False,
                 truncation="auto",
                 store=False,
+                response_include=["reasoning.encrypted_content"],
                 extra_args={
                     "context_management": [
                         {
@@ -273,13 +365,14 @@ def make_run_config(quality_profile: QualityProfile = "public_codex") -> RunConf
     )
 
 
-async def _run_agent(
+async def _run_agent_once(
     *,
     starting_agent: object,
-    input: str,
+    input: str | list[dict[str, Any]],
     context: SharedContext,
     max_turns: int,
     verbose: bool,
+    session: SQLiteSession | None = None,
 ) -> tuple[object, float]:
     """Run an agent normally or via the streamed progress path."""
     started_at = time.perf_counter()
@@ -291,6 +384,7 @@ async def _run_agent(
             context=context,
             max_turns=max_turns,
             run_config=run_config,
+            session=session,
         )
         return result, time.perf_counter() - started_at
 
@@ -300,8 +394,61 @@ async def _run_agent(
         context=context,
         max_turns=max_turns,
         run_config=run_config,
+        session=session,
     )
     return await consume_streamed_run(result), time.perf_counter() - started_at
+
+
+async def _run_agent(
+    *,
+    stage_label: str,
+    starting_agent: object,
+    input: str,
+    context: SharedContext,
+    max_turns: int,
+    verbose: bool,
+    max_rate_limit_retries: int = STAGE_RATE_LIMIT_MAX_RETRIES,
+) -> tuple[object, float]:
+    """Run an agent with stage-local rate-limit recovery using session memory."""
+    started_at = time.perf_counter()
+    session = SQLiteSession(f"{stage_label}-{time.time_ns()}")
+    current_input: str | list[dict[str, Any]] = input
+    rate_limit_retries = 0
+    cumulative_wait_s = 0.0
+
+    while True:
+        try:
+            result, _ = await _run_agent_once(
+                starting_agent=starting_agent,
+                input=current_input,
+                context=context,
+                max_turns=max_turns,
+                verbose=verbose,
+                session=session,
+            )
+            return result, time.perf_counter() - started_at
+        except Exception as exc:
+            if not _is_rate_limit_error(exc):
+                raise
+
+            wait_s = _stage_rate_limit_wait_seconds(exc, rate_limit_retries)
+            if (
+                rate_limit_retries >= max_rate_limit_retries
+                or cumulative_wait_s + wait_s > STAGE_RATE_LIMIT_MAX_CUMULATIVE_WAIT_S
+            ):
+                raise
+
+            next_attempt = rate_limit_retries + 2
+            max_attempts = max_rate_limit_retries + 1
+            print(
+                f"WARNING: {stage_label} hit a rate limit after SDK retries. "
+                f"Waiting {wait_s:.2f}s before retry {next_attempt}/{max_attempts} "
+                f"with saved session context (cumulative wait {cumulative_wait_s + wait_s:.2f}s)."
+            )
+            await asyncio.sleep(wait_s)
+            current_input = []
+            rate_limit_retries += 1
+            cumulative_wait_s += wait_s
 
 
 # ---------------------------------------------------------------------------
@@ -320,10 +467,10 @@ async def run_loop(
     resume: bool = False,
     verbose: bool = False,
     coder_max_turns: int = 300,
-    coder_reasoning_effort: str = "xhigh",
+    coder_reasoning_effort: str = "high",
     coder_verbosity: str = "low",
     designer_max_turns: int = 80,
-    designer_reasoning_effort: str = "xhigh",
+    designer_reasoning_effort: str = "high",
     designer_verbosity: str = "low",
     planner_reasoning_effort: str = "high",
     optimizer_reasoning_effort: str = "high",
@@ -400,6 +547,7 @@ async def run_loop(
         ctx.current_agent_role = "designer"
         try:
             designer_result, designer_elapsed_s = await _run_agent(
+                stage_label="kernel-designer",
                 starting_agent=designer,
                 input=(
                     "Design the kernel architecture. Read the CuTeDSL references and "
@@ -418,7 +566,13 @@ async def run_loop(
             print("FATAL: kernel-designer hit max turns without producing a plan.")
             sys.exit(1)
         except Exception as exc:
-            print(f"FATAL: kernel-designer returned an invalid structured result: {exc}")
+            if _is_rate_limit_error(exc):
+                print(
+                    "FATAL: kernel-designer exhausted stage-local rate-limit retries "
+                    f"while resuming saved context: {exc}"
+                )
+            else:
+                print(f"FATAL: kernel-designer returned an invalid structured result: {exc}")
             sys.exit(1)
 
         if designer_out.status != "success":
@@ -438,6 +592,7 @@ async def run_loop(
         ctx.current_agent_role = "coder"
         try:
             result, elapsed_s = await _run_agent(
+                stage_label="kernel-coder",
                 starting_agent=coder,
                 input=(
                     "Implement kernel_0.py based on the design plan at "
@@ -455,7 +610,13 @@ async def run_loop(
             print("FATAL: kernel-coder hit max turns without producing a result.")
             sys.exit(1)
         except Exception as exc:
-            print(f"FATAL: kernel-coder returned an invalid structured result: {exc}")
+            if _is_rate_limit_error(exc):
+                print(
+                    "FATAL: kernel-coder exhausted stage-local rate-limit retries "
+                    f"while resuming saved context: {exc}"
+                )
+            else:
+                print(f"FATAL: kernel-coder returned an invalid structured result: {exc}")
             sys.exit(1)
 
         if not coder_out.correctness_verified:
@@ -501,6 +662,7 @@ async def run_loop(
         ctx.current_agent_role = "planner"
         try:
             planner_result, planner_elapsed_s = await _run_agent(
+                stage_label=f"kernel-planner-round-{i}",
                 starting_agent=planner,
                 input=planner_input,
                 context=ctx,
@@ -519,7 +681,16 @@ async def run_loop(
             save_state(ctx, state_path)
             continue
         except Exception as exc:
-            print(f"FATAL: kernel-planner returned an invalid structured result in round {i}: {exc}")
+            if _is_rate_limit_error(exc):
+                print(
+                    "FATAL: kernel-planner exhausted stage-local rate-limit retries "
+                    f"in round {i} while resuming saved context: {exc}"
+                )
+            else:
+                print(
+                    f"FATAL: kernel-planner returned an invalid structured result in round {i}: "
+                    f"{exc}"
+                )
             sys.exit(1)
 
         print(f"  Latency: {pr.latency_ms:.3f}ms")
@@ -549,6 +720,7 @@ async def run_loop(
         ctx.current_agent_role = "optimizer"
         try:
             optimizer_result, optimizer_elapsed_s = await _run_agent(
+                stage_label=f"kernel-optimizer-round-{i}",
                 starting_agent=optimizer,
                 input=optimizer_input,
                 context=ctx,
@@ -568,7 +740,16 @@ async def run_loop(
                 message="Hit max_turns limit",
             )
         except Exception as exc:
-            print(f"FATAL: kernel-optimizer returned an invalid structured result in round {i}: {exc}")
+            if _is_rate_limit_error(exc):
+                print(
+                    "FATAL: kernel-optimizer exhausted stage-local rate-limit retries "
+                    f"in round {i} while resuming saved context: {exc}"
+                )
+            else:
+                print(
+                    f"FATAL: kernel-optimizer returned an invalid structured result in round {i}: "
+                    f"{exc}"
+                )
             sys.exit(1)
 
         status_icon = "OK" if opt.correctness_verified else "FAIL"
@@ -668,8 +849,8 @@ def main():
     parser.add_argument(
         "--coder-reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
-        default="xhigh",
-        help="Reasoning effort for the round-0 kernel-coder agent (default: xhigh)",
+        default="high",
+        help="Reasoning effort for the round-0 kernel-coder agent (default: high)",
     )
     parser.add_argument(
         "--coder-verbosity",
@@ -684,8 +865,8 @@ def main():
     parser.add_argument(
         "--designer-reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
-        default="xhigh",
-        help="Reasoning effort for the round-0 kernel-designer agent (default: xhigh)",
+        default="high",
+        help="Reasoning effort for the round-0 kernel-designer agent (default: high)",
     )
     parser.add_argument(
         "--designer-verbosity",
