@@ -595,11 +595,11 @@ async def run_loop(
                 stage_label="kernel-coder",
                 starting_agent=coder,
                 input=(
-                    "Implement kernel_0.py based on the design plan at "
-                    f"{designer_out.plan_file}. Read the plan first, "
-                    "then implement, debug, and validate until ALL 23 workloads pass "
-                    "correctness. Do not submit a PyTorch fallback; if the CuTeDSL compute "
-                    "path is not working, return validation_failed."
+                    "Implement solution/dsa_attention/kernel_0.py per the design plan "
+                    "embedded in your instructions. Iterate on run_synthetic_check and "
+                    "run_correctness_check until ALL 23 workloads pass correctness. Do "
+                    "not submit a scalar or warp-per-head fallback — return "
+                    "validation_failed if the CuTeDSL compute path is not working."
                 ),
                 context=ctx,
                 max_turns=coder_max_turns,
