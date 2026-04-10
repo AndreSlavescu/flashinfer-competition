@@ -340,6 +340,7 @@ def _build_workflow_report(
     lines = [f"Command: {_command_display(command)}"]
     if timed_out:
         lines.append(f"Status: timed out after {timeout_s}s")
+        lines.append("WARNING: A timeout at this length is MOST LIKELY A DEADLOCK in the kernel (e.g. producer/consumer pipeline stall, unmet mbarrier arrival count, missing async fence/commit, warp specialization hang). Investigate the synchronization logic before retrying.")
     else:
         lines.append(f"Exit code: {returncode}")
     if summary:
@@ -878,7 +879,7 @@ async def run_synthetic_check(
     if rebuild_fixture:
         command.append("--rebuild-fixture")
 
-    timeout_s = 1800
+    timeout_s = 120
     result = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
@@ -929,7 +930,7 @@ async def run_correctness_check(
     if lang:
         command.extend(["--lang", lang])
 
-    timeout_s = 5400
+    timeout_s = 120
     result = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
@@ -979,7 +980,7 @@ async def run_full_benchmark(
     if lang:
         command.extend(["--lang", lang])
 
-    timeout_s = 5400
+    timeout_s = 300
     result = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
