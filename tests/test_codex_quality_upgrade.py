@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from agents import SQLiteSession
+from agents import RunContextWrapper, SQLiteSession
 from agents.run_config import CallModelData, ModelInputData
 from agents.tool_context import ToolContext
 
@@ -38,6 +38,15 @@ from kernel_agents.tools import (
     tool_names,
     web_fetch,
 )
+
+
+def _resolve_instructions(agent: Any, ctx: SharedContext) -> str:
+    """Return agent.instructions as a string, invoking callables with a RunContextWrapper."""
+    instructions = agent.instructions
+    if callable(instructions):
+        return instructions(RunContextWrapper(context=ctx), agent)
+    assert isinstance(instructions, str)
+    return instructions
 
 
 def _shared_context(
@@ -355,8 +364,8 @@ def test_coder_and_optimizer_include_write_capable_codex_only_when_enabled() -> 
     assert "run_ncu_profile" not in tool_names(optimizer.tools)
     assert "run_sass_analysis" not in tool_names(optimizer.tools)
     assert "run_full_benchmark" not in tool_names(optimizer.tools)
-    assert "codex_coder_engineer" not in coder.instructions
-    assert "codex_optimizer_engineer" not in optimizer.instructions
+    assert "codex_coder_engineer" not in _resolve_instructions(coder, base_ctx)
+    assert "codex_optimizer_engineer" not in _resolve_instructions(optimizer, base_ctx)
 
     codex_ctx = _shared_context(Path.cwd(), codex_worker_mode="coder_optimizer")
     coder_with_worker = make_kernel_coder(context=codex_ctx)
@@ -364,8 +373,10 @@ def test_coder_and_optimizer_include_write_capable_codex_only_when_enabled() -> 
 
     assert "codex_coder_engineer" in tool_names(coder_with_worker.tools)
     assert "codex_optimizer_engineer" in tool_names(optimizer_with_worker.tools)
-    assert "codex_coder_engineer" in coder_with_worker.instructions
-    assert "codex_optimizer_engineer" in optimizer_with_worker.instructions
+    assert "codex_coder_engineer" in _resolve_instructions(coder_with_worker, codex_ctx)
+    assert "codex_optimizer_engineer" in _resolve_instructions(
+        optimizer_with_worker, codex_ctx
+    )
 
 
 def test_designer_and_planner_never_receive_write_capable_codex_workers() -> None:
@@ -384,8 +395,8 @@ def test_designer_and_planner_never_receive_write_capable_codex_workers() -> Non
     assert "run_full_benchmark" in planner_names
     assert "run_ncu_profile" in planner_names
     assert "run_sass_analysis" in planner_names
-    assert "codex_coder_engineer" not in designer.instructions
-    assert "codex_optimizer_engineer" not in planner.instructions
+    assert "codex_coder_engineer" not in _resolve_instructions(designer, ctx)
+    assert "codex_optimizer_engineer" not in _resolve_instructions(planner, ctx)
 
 
 def test_only_planner_currently_receives_run_full_benchmark() -> None:
@@ -406,8 +417,9 @@ def test_agent_instructions_list_actual_registered_tools() -> None:
 
     for agent in agents:
         names = tool_names(agent.tools)
+        instructions = _resolve_instructions(agent, ctx)
         for name in names:
-            assert name in agent.instructions
+            assert name in instructions
 
 
 def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:

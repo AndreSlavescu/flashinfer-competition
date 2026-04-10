@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from agents import Agent, ModelSettings
+from pathlib import Path
+
+from agents import Agent, ModelSettings, RunContextWrapper
 from openai.types.shared import Reasoning
 
 from kernel_agents.context import (
@@ -18,86 +20,44 @@ from kernel_agents.prompting import (
 )
 from kernel_agents.tools import build_tools_for_role, tool_names
 
+PLAN_FILENAME = "kernel_0_plan.md"
+
 CODER_BODY = """\
-You are kernel-coder, an expert at implementing GPU kernels in CuTeDSL (CUTLASS Python DSL) \
-for Blackwell B200 (sm100a).
+You are kernel-coder. You implement a CuTeDSL Deepseek Sparse Attention kernel for \
+Blackwell B200 (sm100a) into solution/dsa_attention/kernel_0.py, EXACTLY per the design \
+plan embedded below in these instructions.
 
-## Task
+## Kernel interface
+    def kernel(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale, output, lse)
+- q_nope [T,16,512] bf16, q_pe [T,16,64] bf16, ckv_cache [P,64,512] bf16,
+  kpe_cache [P,64,64] bf16, sparse_indices [T,2048] int32 (-1 = padding), sm_scale float
+- output [T,16,512] bf16, lse [T,16] fp32 (base-2) — pre-allocated, in-place writes
+- Logical reference only: references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 
-Implement a Deepseek Sparse Attention kernel from the design plan at \
-solution/dsa_attention/kernel_0_plan.md. Write it to solution/dsa_attention/kernel_0.py.
-
-BASELINE KERNEL (FOR LOGICAL REFERENCE ONLY): \
-references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
-
-## Kernel Interface
-
-The kernel MUST export:
-
-    def kernel(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale, output, lse):
-
-Input tensors:
-  q_nope:         [num_tokens, 16, 512]  bfloat16
-  q_pe:           [num_tokens, 16, 64]   bfloat16
-  ckv_cache:      [num_pages, 64, 512]   bfloat16
-  kpe_cache:      [num_pages, 64, 64]    bfloat16
-  sparse_indices: [num_tokens, 2048]     int32 (-1 = invalid/padding)
-  sm_scale:       float
-
-Output tensors (pre-allocated, write in-place):
-  output:         [num_tokens, 16, 512]  bfloat16
-  lse:            [num_tokens, 16]       float32 (log2 base)
+## Output contract (STRICT)
+1. Single file: solution/dsa_attention/kernel_0.py. Inline every helper.
+2. Implement every section of the plan VERBATIM — work partition, warp specialization, \
+memory flow, async pipelines, SMEM plan, TMEM plan, synchronization. A scalar, \
+warp-per-head, or single-kernel fallback that only passes correctness is a failure: \
+return status="validation_failed" instead.
+3. All attention math in CuTeDSL. Allowed PyTorch surface: validation, allocation, \
+descriptor/layout construction, compile-cache lookup, stream acquisition, kernel launch, \
+output copy. Nothing else.
+4. FORBIDDEN: torch.matmul/bmm/einsum/softmax/logsumexp/masked_fill, advanced-index or \
+index_select sparse KV gathers, any torch op computing logits/probs/outputs/LSE.
+5. Return `CoderResult`. No markdown fences, no prose outside the structured response.
 
 ## Rules
+- Follow the plan VERBATIM. Do not simplify decomposition to make correctness pass.
+- Use `cutlass.Constexpr` for static shapes; annotate types for the JIT.
+- Use the JIT compile cache pattern below.
+- Compile only on Modal B200 via `run_synthetic_check` / `run_correctness_check` — \
+never locally. Trust the parsed summaries, not raw shell logs.
+- `grep_search` before `read_file` under `references/`.
+- On failure: apply the SMALLEST fix. Do not rewrite working code.
+- Gate: all 23/23 correctness workloads must pass before returning status="success".
 
-1. Kernel must use CuTeDSL for all attention computation.
-2. Must compile and pass 23/23 cases in the full correctness check.
-3. Must be a single kernel_0.py file. Copy over any helpers you use.
-4. Use type annotations to help the JIT compiler.
-5. Use static arguments via cutlass.Constexpr where possible.
-6. Use the JIT compile cache pattern (see below).
-7. Remove all debugging code before finalizing (after passing modal correctness).
-8. PyTorch allowed ONLY for: validation, allocation, descriptor/layout construction, \
-compile cache lookup, stream acquisition, kernel launch, output copy.
-9. FORBIDDEN in final kernel_0.py: torch.matmul, torch.bmm, torch.einsum, torch.softmax, \
-torch.logsumexp, masked_fill, advanced-index/index_select sparse KV gathers, or any \
-PyTorch tensor ops that compute logits, probabilities, outputs, or LSE.
-10. If CuTeDSL compute path is not working, return status="validation_failed". \
-A PyTorch fallback counts as failure.
-
-## Workflow
-
-1. **Read the design plan** at solution/dsa_attention/kernel_0_plan.md. \
-Implementation must faithfully follow this design.
-2. **Study references** to find CuTeDSL abstractions needed (pipelining, mma atoms, tma, tiling, layouts).
-3. **Implement**: Build the kernel following the design plan. All attention math must execute \
-in CuTeDSL: sparse KV gather, QK computation, masking, softmax/LSE, PV accumulation, \
-split reduction, final output write.
-4. **Debug printing** (until correctness passes, remove after): print layouts, MMA atoms, \
-copy atoms, tiled objects, tensor fragments, pipelines, barriers via cute.printf().
-5. **Validate iteratively**: Run `run_synthetic_check` after changes, then `run_correctness_check` \
-for the full 23-workload suite.
-
-## Error Recovery Decision Flow
-
-When a validation or compilation fails, evaluate these cases IN ORDER and stop at the first match:
-
-1. **Build/compile failure**: Read the compiler error. Fix the syntax, type, or API usage error. \
-Re-run `run_synthetic_check`.
-2. **CUDA crash (illegal memory access, misaligned address)**: Layout or indexing bug. \
-Print the offending tensor's layout, shape, and strides. Verify alignment and bounds. \
-Apply the SMALLEST fix.
-3. **Numerical mismatch**: Compare your output against the reference on the failing workload. \
-Identify which stage (QK, softmax, PV, output) diverges. Check dtype casts, reduction order, \
-masking logic, and LSE base (log2 vs ln).
-4. **Timeout/hang**: Likely a synchronization deadlock. Check barrier placement, instruction \
-issue scopes, and pipeline stage counts. Verify every warp group that calls \
-setmaxregister_decrease/increase.
-
-In ALL cases: apply the SMALLEST change necessary. Do not rewrite working code.
-
-## JIT Compile Cache Pattern
-
+## JIT compile cache pattern
 ```
 compile_cache = {}
 
@@ -110,39 +70,48 @@ def _get_compiled_kernel(..., stream):
     return compiled
 ```
 
-## Validation
+## References (follow the plan's own API map for exact call sites)
+- references/cutlass/python/CuTeDSL/cutlass/cute         — core, tma, tcgen05, warp helpers
+- references/cutlass/python/CuTeDSL/cutlass/pipeline     — PipelineTma*/PipelineAsync*/PipelineUmma*
+- references/cutlass/python/CuTeDSL/cutlass/utils        — blackwell_helpers, smem/tmem allocators
+- references/cutlass/examples/python/CuTeDSL/blackwell   — warp-specialized B200 kernels (MLA)
+- references/quack                                        — optimized CuTeDSL kernels
 
-All compilation happens on Modal B200 -- NEVER compile CUDA locally.
-- Use `run_synthetic_check` for fast iteration.
-- Use `run_correctness_check` for the full 23-workload canonical validation.
-- Use the parsed validation tools as the canonical source of correctness state \
-instead of manually reasoning from raw shell logs.
-
-## References
-
-1. Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
-2. Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
-3. Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
-4. CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
-5. CUTLASS terminologies: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/terminology.html
-6. Blackwell constraints: https://docs.nvidia.com/cutlass/latest/media/docs/cpp/blackwell_functionality.html
-7. CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
-8. Highly optimized CuTeDSL kernels: references/quack
-9. CUTLASS Python docs: references/cutlass/python/docs
-
-## Tool Policy
-
-- Use `run_synthetic_check` and `run_correctness_check` as the canonical correctness source.
-- Use `grep_search` before `read_file` when locating symbols or APIs under `references/`.
+## Tool policy
+- `run_synthetic_check` / `run_correctness_check` are the canonical correctness source.
 - If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
-- If `last_shell_overflow.txt` is written, inspect it before running another overflowing tool.
-- Do not create spill files. Refine tool calls instead of dumping to temp files.
-
-## Output Format
-
-Return structured output matching the `CoderResult` schema.
-Do not include markdown fences, code blocks, or extra prose outside the structured response.
+- If `last_shell_overflow.txt` is written, inspect it before the next overflowing call.
+- Do not create spill files. Refine tool calls instead.
 """
+
+
+def _resolve_plan_path(ctx: SharedContext) -> Path:
+    """Return the absolute path to kernel_0_plan.md for the current context."""
+    root = Path(ctx.project_root)
+    solution_dir = Path(ctx.solution_dir)
+    if not solution_dir.is_absolute():
+        solution_dir = root / solution_dir
+    return solution_dir / PLAN_FILENAME
+
+
+def _compose_coder_body_with_plan(ctx: SharedContext) -> str:
+    """Append the verbatim plan file to `CODER_BODY` as a dedicated section.
+
+    Raises FileNotFoundError if the plan is missing — by the time the coder
+    runs, round 0a must have produced it.
+    """
+    plan_path = _resolve_plan_path(ctx)
+    if not plan_path.exists():
+        raise FileNotFoundError(
+            f"kernel-coder instructions require {plan_path}, but it does not exist. "
+            "Run kernel-designer (round 0a) before invoking the coder."
+        )
+    plan_text = plan_path.read_text()
+    return (
+        f"{CODER_BODY.rstrip()}\n\n"
+        f"## Design plan (VERBATIM — implement this)\n\n"
+        f"{plan_text.strip()}\n"
+    )
 
 
 def make_kernel_coder(
@@ -154,7 +123,13 @@ def make_kernel_coder(
     codex_worker_model: str = "gpt-5-codex",
     codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
 ) -> Agent[SharedContext]:
-    """Create the kernel-coder agent with the given model."""
+    """Create the kernel-coder agent with the given model.
+
+    Instructions are resolved dynamically at run time so the latest
+    kernel_0_plan.md content is always inlined into the system prompt. The
+    agent can be constructed before round 0a runs; the callable only fires
+    once Runner.run is invoked for the coder.
+    """
     tools = build_tools_for_role(
         "coder",
         codex_worker_mode=context.codex_worker_mode,
@@ -162,16 +137,25 @@ def make_kernel_coder(
         codex_worker_reasoning_effort=codex_worker_reasoning_effort,
     )
     names = set(tool_names(tools))
-    return Agent[SharedContext](
-        name="kernel-coder",
-        instructions=build_agent_instructions(
-            body=CODER_BODY,
+    codex_worker_block = (
+        CODER_CODEX_WORKER_BLOCK if "codex_coder_engineer" in names else ""
+    )
+
+    def dynamic_instructions(
+        run_ctx: RunContextWrapper[SharedContext],
+        agent: Agent[SharedContext],
+    ) -> str:
+        body = _compose_coder_body_with_plan(run_ctx.context)
+        return build_agent_instructions(
+            body=body,
             tools=tools,
             extra_instructions=extra_instructions,
-            codex_worker_block=(
-                CODER_CODEX_WORKER_BLOCK if "codex_coder_engineer" in names else ""
-            ),
-        ),
+            codex_worker_block=codex_worker_block,
+        )
+
+    return Agent[SharedContext](
+        name="kernel-coder",
+        instructions=dynamic_instructions,
         tools=tools,
         model=model,
         model_settings=ModelSettings(
