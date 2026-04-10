@@ -44,7 +44,6 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
         read_allow=(
             "references/",
             "solution/dsa_attention/",
-            "KERNEL_CODER_CONTEXT.md",
         ),
         write_allow=(
             "solution/dsa_attention/kernel_0_plan.md",
@@ -54,7 +53,6 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
         read_allow=(
             "references/",
             "solution/dsa_attention/",
-            "KERNEL_CODER_CONTEXT.md",
             "last_shell_overflow.txt",
         ),
         write_allow=(

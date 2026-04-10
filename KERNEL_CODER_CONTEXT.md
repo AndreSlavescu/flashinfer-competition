@@ -158,7 +158,7 @@ The coder agent is created with:
 For the command in question, the defaults are:
 
 - model: `gpt-5.4`
-- reasoning effort: `xhigh`
+- reasoning effort: `high`
 - verbosity: `low`
 
 `main.py` also creates a `RunConfig`, but in this path it only adds retry settings. It does **not** add a model input filter, session, conversation id, or previous response id.

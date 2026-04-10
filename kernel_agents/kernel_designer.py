@@ -89,7 +89,7 @@ Do not include markdown fences, code blocks, or extra prose outside the structur
 def make_kernel_designer(
     context: SharedContext,
     model: str = "gpt-5.4",
-    reasoning_effort: ReasoningEffort = "xhigh",
+    reasoning_effort: ReasoningEffort = "high",
     verbosity: Verbosity = "low",
     extra_instructions: str = "",
 ) -> Agent[SharedContext]:
