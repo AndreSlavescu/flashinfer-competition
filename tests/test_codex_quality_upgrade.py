@@ -23,7 +23,9 @@ from kernel_agents.kernel_coder import make_kernel_coder
 from kernel_agents.kernel_designer import make_kernel_designer
 from kernel_agents.kernel_optimizer import make_kernel_optimizer
 from kernel_agents.kernel_planner import make_kernel_planner
+from kernel_agents.scoping import AGENT_SCOPES
 from kernel_agents.tools import (
+    PROJECT_ROOT,
     SHELL_OVERFLOW_FILE_NAME,
     build_tools_for_role,
     diff_files,
@@ -43,6 +45,7 @@ def _shared_context(
     quality_profile: str = "legacy",
     codex_worker_mode: str = "off",
     tool_limits: ToolLimitSettings | None = None,
+    current_agent_role: str = "planner",
 ) -> SharedContext:
     resolved_limits = tool_limits or tool_limits_for_profile(quality_profile)  # type: ignore[arg-type]
     return SharedContext(
@@ -52,6 +55,7 @@ def _shared_context(
         quality_profile=quality_profile,  # type: ignore[arg-type]
         tool_limits=resolved_limits,
         codex_worker_mode=codex_worker_mode,  # type: ignore[arg-type]
+        current_agent_role=current_agent_role,
     )
 
 
@@ -229,6 +233,43 @@ def test_agent_instructions_list_actual_registered_tools() -> None:
             assert name in agent.instructions
 
 
+def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:
+    expected_primary = {
+        "designer": "references",
+        "coder": "solution/dsa_attention",
+        "planner": "solution/dsa_attention",
+        "optimizer": "solution/dsa_attention",
+    }
+
+    for role, primary in expected_primary.items():
+        assist_tool = next(
+            tool
+            for tool in build_tools_for_role(role)  # type: ignore[arg-type]
+            if getattr(tool, "name", None) == "codex_kernel_assist"
+        )
+        assist_nonlocals = _codex_nonlocals(assist_tool)
+        resolved_thread_options = assist_nonlocals["resolved_thread_options"]
+
+        assert Path(resolved_thread_options.working_directory) == (PROJECT_ROOT / primary).resolve()
+
+        expected_additional = sorted(
+            str((PROJECT_ROOT / prefix.rstrip("/")).resolve())
+            for prefix in AGENT_SCOPES[role].read_allow
+            if prefix.endswith("/") and prefix.rstrip("/") != primary
+        )
+        actual_additional = sorted(resolved_thread_options.additional_directories or [])
+        assert actual_additional == expected_additional
+
+        file_only_entries = [
+            str((PROJECT_ROOT / prefix).resolve())
+            for prefix in AGENT_SCOPES[role].read_allow
+            if not prefix.endswith("/")
+        ]
+        assert resolved_thread_options.working_directory not in file_only_entries
+        for entry in file_only_entries:
+            assert entry not in actual_additional
+
+
 def test_codex_worker_tools_use_distinct_thread_keys_and_requested_options() -> None:
     coder_tools = build_tools_for_role(
         "coder",
@@ -276,6 +317,112 @@ def test_codex_worker_tools_use_distinct_thread_keys_and_requested_options() -> 
 
 
 @pytest.mark.asyncio
+async def test_glob_files_filters_parent_traversal_matches(tmp_path: Path) -> None:
+    references_dir = tmp_path / "references"
+    references_dir.mkdir()
+    (tmp_path / "main.py").write_text("def outside():\n    pass\n", encoding="utf-8")
+
+    designer_glob = next(
+        tool for tool in build_tools_for_role("designer") if getattr(tool, "name", None) == "glob_files"
+    )
+    ctx = _shared_context(tmp_path, current_agent_role="designer")
+
+    result = await _invoke_tool(
+        designer_glob,
+        tmp_path,
+        context=ctx,
+        pattern="../*.py",
+        directory="references",
+    )
+
+    assert result == "No files found."
+
+
+@pytest.mark.asyncio
+async def test_glob_files_filters_recursive_parent_traversal_matches(tmp_path: Path) -> None:
+    (tmp_path / "references" / "cutlass").mkdir(parents=True)
+    (tmp_path / "main.py").write_text("def outside():\n    pass\n", encoding="utf-8")
+
+    designer_glob = next(
+        tool for tool in build_tools_for_role("designer") if getattr(tool, "name", None) == "glob_files"
+    )
+    ctx = _shared_context(tmp_path, current_agent_role="designer")
+
+    result = await _invoke_tool(
+        designer_glob,
+        tmp_path,
+        context=ctx,
+        pattern="**/../../main.py",
+        directory="references",
+    )
+
+    assert result == "No files found."
+
+
+@pytest.mark.asyncio
+async def test_glob_files_filters_repo_external_matches(tmp_path: Path) -> None:
+    passwd = Path("/etc/passwd")
+    if not passwd.exists():
+        pytest.skip("/etc/passwd not available in this environment")
+
+    (tmp_path / "references").mkdir()
+    designer_glob = next(
+        tool for tool in build_tools_for_role("designer") if getattr(tool, "name", None) == "glob_files"
+    )
+    ctx = _shared_context(tmp_path, current_agent_role="designer")
+
+    result = await _invoke_tool(
+        designer_glob,
+        tmp_path,
+        context=ctx,
+        pattern="../../../../../etc/passwd",
+        directory="references",
+    )
+
+    assert result == "No files found."
+
+
+@pytest.mark.asyncio
+async def test_glob_files_returns_normalized_allowed_paths(tmp_path: Path) -> None:
+    target = tmp_path / "references" / "cutlass" / "example.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("pass\n", encoding="utf-8")
+
+    designer_glob = next(
+        tool for tool in build_tools_for_role("designer") if getattr(tool, "name", None) == "glob_files"
+    )
+    ctx = _shared_context(tmp_path, current_agent_role="designer")
+
+    result = await _invoke_tool(
+        designer_glob,
+        tmp_path,
+        context=ctx,
+        pattern="**/*.py",
+        directory="references",
+    )
+
+    assert "references/cutlass/example.py" in result
+    assert ".." not in result
+
+
+@pytest.mark.asyncio
+async def test_glob_files_requires_valid_current_agent_role(tmp_path: Path) -> None:
+    target = tmp_path / "references" / "example.py"
+    target.parent.mkdir(parents=True)
+    target.write_text("pass\n", encoding="utf-8")
+
+    result = await _invoke_tool(
+        glob_files,
+        tmp_path,
+        context=_shared_context(tmp_path, current_agent_role=""),
+        pattern="*.py",
+        directory="references",
+    )
+
+    assert result == "ERROR: Scoped tool call is missing a valid current_agent_role."
+
+
+@pytest.mark.asyncio
 async def test_public_codex_read_file_uses_1200_line_reference_window(tmp_path: Path) -> None:
     target = tmp_path / "references" / "big_ref.py"
     target.parent.mkdir(parents=True)
@@ -308,7 +455,7 @@ async def test_context_aware_limits_propagate_to_grep_glob_list_web_diff_and_she
         reference_read_window_lines=5,
         grep_max_columns=80,
     )
-    ctx = _shared_context(tmp_path, tool_limits=custom_limits)
+    ctx = _shared_context(tmp_path, tool_limits=custom_limits, current_agent_role="designer")
 
     grep_target = tmp_path / "matches.txt"
     grep_target.write_text("match_1\nmatch_2\nmatch_3\nmatch_4\n", encoding="utf-8")
@@ -318,13 +465,19 @@ async def test_context_aware_limits_propagate_to_grep_glob_list_web_diff_and_she
     )
     assert "match_3" not in grep_result
 
-    glob_dir = tmp_path / "globbed"
-    glob_dir.mkdir()
+    glob_dir = tmp_path / "references" / "globbed"
+    glob_dir.mkdir(parents=True)
     for index in range(1, 6):
         (glob_dir / f"file_{index}.py").write_text("pass\n", encoding="utf-8")
-    glob_result = await _invoke_tool(glob_files, tmp_path, context=ctx, pattern="*.py", directory="globbed")
+    glob_result = await _invoke_tool(
+        glob_files,
+        tmp_path,
+        context=ctx,
+        pattern="*.py",
+        directory="references/globbed",
+    )
     assert glob_result.startswith(
-        "retrieved trimmed glob results for globbed; showing up to the first 3 matches"
+        "retrieved trimmed glob results for references/globbed; showing up to the first 3 matches"
     )
     assert "file_3.py" in glob_result
     assert "file_4.py" not in glob_result
