@@ -100,6 +100,23 @@ def _tool_limits_from_context(ctx: RunContextWrapper[SharedContext] | None) -> T
     return LEGACY_TOOL_LIMITS
 
 
+def _current_scoped_role_from_context(
+    ctx: RunContextWrapper[SharedContext] | None,
+) -> str:
+    """Resolve the active scoped role or fail closed for role-dependent tools."""
+    if ctx is None:
+        raise RuntimeError("Scoped tool call is missing run context.")
+
+    context = getattr(ctx, "context", None)
+    role = getattr(context, "current_agent_role", "")
+
+    from kernel_agents.scoping import AGENT_SCOPES
+
+    if role not in AGENT_SCOPES:
+        raise RuntimeError("Scoped tool call is missing a valid current_agent_role.")
+    return str(role)
+
+
 def _resolve_workspace_path(
     project_root: Path,
     path: str,
@@ -472,19 +489,49 @@ apply_patch_tool = ApplyPatchTool(editor=WorkspaceEditor())
 # ---------------------------------------------------------------------------
 
 web_search_tool = WebSearchTool()
-codex_kernel_assist = codex_tool(
-    name="codex_kernel_assist",
-    sandbox_mode="read-only",
-    working_directory=str(PROJECT_ROOT),
-    persist_session=True,
-    default_thread_options=ThreadOptions(
-        model="gpt-5.4",
-        model_reasoning_effort="low",
-        network_access_enabled=False,
-        web_search_mode="disabled",
-        approval_policy="never",
-    ),
-)
+
+_CODEX_ASSIST_PRIMARY_DIRS: dict[str, str] = {
+    "designer": "references",
+    "coder": "solution/dsa_attention",
+    "planner": "solution/dsa_attention",
+    "optimizer": "solution/dsa_attention",
+}
+
+
+def _build_codex_kernel_assist(role: str) -> object:
+    """Create a read-only Codex helper constrained to the role's directory scope."""
+    from kernel_agents.scoping import AGENT_SCOPES
+
+    directory_roots = [
+        prefix.rstrip("/")
+        for prefix in AGENT_SCOPES[role].read_allow
+        if prefix.endswith("/")
+    ]
+    primary_dir = _CODEX_ASSIST_PRIMARY_DIRS[role]
+    additional_directories = [
+        str((PROJECT_ROOT / rel_path).resolve())
+        for rel_path in directory_roots
+        if rel_path != primary_dir
+    ]
+    return codex_tool(
+        name="codex_kernel_assist",
+        sandbox_mode="read-only",
+        working_directory=str((PROJECT_ROOT / primary_dir).resolve()),
+        persist_session=True,
+        default_thread_options=ThreadOptions(
+            model="gpt-5.4",
+            model_reasoning_effort="low",
+            network_access_enabled=False,
+            web_search_mode="disabled",
+            approval_policy="never",
+            additional_directories=additional_directories or None,
+        ),
+    )
+
+
+# Backward-compatible static for ad hoc imports. Role-specific tool wiring should
+# use build_tools_for_role(...) so Codex assist matches the active agent scope.
+codex_kernel_assist = _build_codex_kernel_assist("planner")
 
 
 def _build_codex_worker_tool(
@@ -622,17 +669,29 @@ async def glob_files(
         return f"ERROR: Not a directory: {display_dir}"
 
     try:
-        matches = [
-            _display_path(path, project_root)
-            for path in search_dir.glob(pattern)
-            if path.is_file()
-        ]
+        role = _current_scoped_role_from_context(ctx)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    from kernel_agents.scoping import AGENT_SCOPES, check_path_allowed
+
+    read_allow = AGENT_SCOPES[role].read_allow
+
+    try:
+        matches: list[str] = []
+        for path in search_dir.glob(pattern):
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            allowed, rel_path = check_path_allowed(resolved, project_root, read_allow)
+            if allowed:
+                matches.append(rel_path)
     except Exception as exc:
         return f"ERROR: {exc}"
 
     if not matches:
         return "No files found."
-    capped = sorted(matches)
+    capped = sorted(set(matches))
     if len(capped) > limits.glob_match_limit:
         shown = "\n".join(capped[:limits.glob_match_limit])
         return _prepend_notice(
@@ -1291,7 +1350,7 @@ def build_tools_for_role(
         role_patch_tool,
         web_search_tool,
         web_fetch,
-        codex_kernel_assist,
+        _build_codex_kernel_assist(role),
     ]
     tools.extend(_scoped_file_tools(scope_guardrail))
 
@@ -1304,6 +1363,9 @@ def build_tools_for_role(
 
     if codex_worker_mode == "coder_optimizer":
         if role == "coder":
+            # The Codex SDK/CLI does not yet provide a clean read-root/write-root
+            # split for write-capable sessions, so worker scoping remains a known
+            # limitation outside this hardening pass.
             tools.append(
                 _build_codex_worker_tool(
                     name="codex_coder_engineer",
@@ -1313,6 +1375,9 @@ def build_tools_for_role(
                 )
             )
         elif role == "optimizer":
+            # The Codex SDK/CLI does not yet provide a clean read-root/write-root
+            # split for write-capable sessions, so worker scoping remains a known
+            # limitation outside this hardening pass.
             tools.append(
                 _build_codex_worker_tool(
                     name="codex_optimizer_engineer",
