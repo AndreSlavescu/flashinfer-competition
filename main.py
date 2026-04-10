@@ -48,6 +48,7 @@ from agents import (
     ModelSettings,
     RunConfig,
     Runner,
+    RunContextWrapper,
     SQLiteSession,
     retry_policies,
 )
@@ -452,6 +453,100 @@ async def _run_agent(
 
 
 # ---------------------------------------------------------------------------
+# Prompt dumping
+# ---------------------------------------------------------------------------
+
+def dump_all_prompts(
+    *,
+    output_dir: Path,
+    model: str,
+    coder_model: str,
+    designer_model: str,
+    quality_profile: QualityProfile,
+    codex_worker_mode: CodexWorkerMode,
+    codex_worker_model: str,
+    codex_worker_reasoning_effort: CodexWorkerReasoningEffort,
+    coder_reasoning_effort: str,
+    coder_verbosity: str,
+    designer_reasoning_effort: str,
+    designer_verbosity: str,
+    planner_reasoning_effort: str,
+    optimizer_reasoning_effort: str,
+) -> None:
+    """Resolve and write each agent's composed system prompt to `output_dir`.
+
+    Builds a SharedContext identical to what `run_loop` would construct, wires
+    up all four agents with the same knobs, and writes each resolved prompt
+    (dynamic callables invoked) to `output_dir/<agent_name>.md`.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    ctx = SharedContext(
+        project_root=str(PROJECT_ROOT),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+        model_name=model,
+        quality_profile=quality_profile,
+        tool_limits=tool_limits_for_profile(quality_profile),
+        codex_worker_mode=codex_worker_mode,
+    )
+
+    agents = {
+        "kernel_designer": make_kernel_designer(
+            context=ctx,
+            model=designer_model,
+            reasoning_effort=designer_reasoning_effort,  # type: ignore[arg-type]
+            verbosity=designer_verbosity,  # type: ignore[arg-type]
+        ),
+        "kernel_coder": make_kernel_coder(
+            context=ctx,
+            model=coder_model,
+            reasoning_effort=coder_reasoning_effort,  # type: ignore[arg-type]
+            verbosity=coder_verbosity,  # type: ignore[arg-type]
+            codex_worker_model=codex_worker_model,
+            codex_worker_reasoning_effort=codex_worker_reasoning_effort,
+        ),
+        "kernel_planner": make_kernel_planner(
+            context=ctx,
+            model=model,
+            reasoning_effort=planner_reasoning_effort,  # type: ignore[arg-type]
+        ),
+        "kernel_optimizer": make_kernel_optimizer(
+            context=ctx,
+            model=model,
+            reasoning_effort=optimizer_reasoning_effort,  # type: ignore[arg-type]
+            codex_worker_model=codex_worker_model,
+            codex_worker_reasoning_effort=codex_worker_reasoning_effort,
+        ),
+    }
+
+    run_ctx = RunContextWrapper(context=ctx)
+    print(f"Dumping prompts to {output_dir.relative_to(PROJECT_ROOT)}/")
+    for name, agent in agents.items():
+        instructions = agent.instructions
+        try:
+            if callable(instructions):
+                text = instructions(run_ctx, agent)
+            elif isinstance(instructions, str):
+                text = instructions
+            else:
+                text = f"<agent.instructions is {type(instructions).__name__}>"
+        except FileNotFoundError as exc:
+            text = (
+                f"<could not resolve dynamic instructions: {exc}>\n"
+                "Run kernel-designer first (or drop --skip-designer) to produce "
+                "the inputs this agent reads at run time."
+            )
+            print(f"  WARNING: {name}: {exc}")
+        out_path = output_dir / f"{name}.md"
+        out_path.write_text(text)
+        print(
+            f"  {out_path.relative_to(PROJECT_ROOT)}  "
+            f"({len(text):,} chars, {len(text.splitlines())} lines)"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
@@ -465,6 +560,7 @@ async def run_loop(
     codex_worker_model: str = "gpt-5-codex",
     codex_worker_reasoning_effort: CodexWorkerReasoningEffort = "high",
     resume: bool = False,
+    skip_designer: bool = False,
     verbose: bool = False,
     coder_max_turns: int = 300,
     coder_reasoning_effort: str = "high",
@@ -538,50 +634,65 @@ async def run_loop(
         start_round = load_state(ctx, state_path) + 1
         print(f"Resuming from round {start_round}")
     else:
-        # ── Round 0a: Design kernel architecture ─────────────────────────
-        print("=" * 60)
-        print("ROUND 0a: Design kernel_0_plan.md")
-        print("=" * 60)
-
         ctx.current_round = 0
-        ctx.current_agent_role = "designer"
-        try:
-            designer_result, designer_elapsed_s = await _run_agent(
-                stage_label="kernel-designer",
-                starting_agent=designer,
-                input=(
-                    "Design the kernel architecture. Read the CuTeDSL references and "
-                    "Blackwell kernel examples, then write the design plan to "
-                    "solution/dsa_attention/kernel_0_plan.md. The plan must describe "
-                    "a CuTeDSL kernel that uses optimized B200 features (TMA, tcgen05, "
-                    "warp specialization, async pipelining). Do not describe a PyTorch "
-                    "fallback or a simple bootstrap path."
-                ),
-                context=ctx,
-                max_turns=designer_max_turns,
-                verbose=verbose,
-            )
-            designer_out = require_structured_output(designer_result, DesignerResult)
-        except MaxTurnsExceeded:
-            print("FATAL: kernel-designer hit max turns without producing a plan.")
-            sys.exit(1)
-        except Exception as exc:
-            if _is_rate_limit_error(exc):
+
+        if skip_designer:
+            plan_path = solution_dir / "kernel_0_plan.md"
+            if not plan_path.exists():
                 print(
-                    "FATAL: kernel-designer exhausted stage-local rate-limit retries "
-                    f"while resuming saved context: {exc}"
+                    "FATAL: --skip-designer was set but "
+                    f"{plan_path.relative_to(PROJECT_ROOT)} does not exist. "
+                    "Run kernel-designer first, or drop --skip-designer."
                 )
-            else:
-                print(f"FATAL: kernel-designer returned an invalid structured result: {exc}")
-            sys.exit(1)
+                sys.exit(1)
+            print("=" * 60)
+            print(f"ROUND 0a: SKIPPED — reusing existing {plan_path.name}")
+            print("=" * 60)
+            print(f"  Design plan: {plan_path.relative_to(PROJECT_ROOT)}")
+        else:
+            # ── Round 0a: Design kernel architecture ─────────────────────
+            print("=" * 60)
+            print("ROUND 0a: Design kernel_0_plan.md")
+            print("=" * 60)
 
-        if designer_out.status != "success":
-            print(f"FATAL: kernel-designer failed: {designer_out.message}")
-            sys.exit(1)
+            ctx.current_agent_role = "designer"
+            try:
+                designer_result, designer_elapsed_s = await _run_agent(
+                    stage_label="kernel-designer",
+                    starting_agent=designer,
+                    input=(
+                        "Design the kernel architecture. Read the CuTeDSL references and "
+                        "Blackwell kernel examples, then write the design plan to "
+                        "solution/dsa_attention/kernel_0_plan.md. The plan must describe "
+                        "a CuTeDSL kernel that uses optimized B200 features (TMA, tcgen05, "
+                        "warp specialization, async pipelining). Do not describe a PyTorch "
+                        "fallback or a simple bootstrap path."
+                    ),
+                    context=ctx,
+                    max_turns=designer_max_turns,
+                    verbose=verbose,
+                )
+                designer_out = require_structured_output(designer_result, DesignerResult)
+            except MaxTurnsExceeded:
+                print("FATAL: kernel-designer hit max turns without producing a plan.")
+                sys.exit(1)
+            except Exception as exc:
+                if _is_rate_limit_error(exc):
+                    print(
+                        "FATAL: kernel-designer exhausted stage-local rate-limit retries "
+                        f"while resuming saved context: {exc}"
+                    )
+                else:
+                    print(f"FATAL: kernel-designer returned an invalid structured result: {exc}")
+                sys.exit(1)
 
-        print(f"  {format_run_telemetry('kernel-designer', designer_elapsed_s, designer_result)}")
-        print(f"  Design plan: {designer_out.plan_file}")
-        print(f"  {designer_out.message}")
+            if designer_out.status != "success":
+                print(f"FATAL: kernel-designer failed: {designer_out.message}")
+                sys.exit(1)
+
+            print(f"  {format_run_telemetry('kernel-designer', designer_elapsed_s, designer_result)}")
+            print(f"  Design plan: {designer_out.plan_file}")
+            print(f"  {designer_out.message}")
 
         # ── Round 0b: Implement kernel from design plan ────────────────────
         print()
@@ -595,11 +706,34 @@ async def run_loop(
                 stage_label="kernel-coder",
                 starting_agent=coder,
                 input=(
-                    "Implement solution/dsa_attention/kernel_0.py per the design plan "
-                    "embedded in your instructions. Iterate on run_synthetic_check and "
-                    "run_correctness_check until ALL 23 workloads pass correctness. Do "
-                    "not submit a scalar or warp-per-head fallback — return "
-                    "validation_failed if the CuTeDSL compute path is not working."
+                    "TASK\n"
+                    "Implement solution/dsa_attention/kernel_0.py EXACTLY per the "
+                    "design plan embedded in your system instructions. The plan is "
+                    "the specification — every numbered section (work partition, "
+                    "warp specialization, memory flow, async pipelines, SMEM plan, "
+                    "TMEM plan, synchronization, API map) must have a visible "
+                    "implementation in your kernel.\n\n"
+                    "APPROACH (STRICT)\n"
+                    "1. Re-read the plan top to bottom. Enumerate every pipeline, "
+                    "warp role, tile, SMEM/TMEM chunk, and fence the plan names.\n"
+                    "2. Implement each section verbatim. If the plan names N warps, "
+                    "wire N warps. If it names pipelines P0..Pk, wire all of them. "
+                    "If it allocates TMEM columns A-B/C-D, allocate all of them.\n"
+                    "3. Iterate: run_synthetic_check for fast feedback, "
+                    "run_correctness_check for the 23/23 gate. Trust the parsed "
+                    "summaries.\n"
+                    "4. On failure, fix the SMALLEST thing inside the failing "
+                    "stage. Never delete, collapse, or substitute a plan-mandated "
+                    "component to make a test pass — a missing component is not a "
+                    "'fix', it is unfinished work.\n\n"
+                    "ACCEPTANCE\n"
+                    "- status=\"success\" requires BOTH: 23/23 correctness AND "
+                    "every section of the plan reflected in kernel_0.py.\n"
+                    "- If a plan section is genuinely impossible in CuTeDSL "
+                    "(missing API, hardware limit), return "
+                    "status=\"validation_failed\" and name the specific section + "
+                    "API in `reflection`. Do not silently substitute a simpler "
+                    "design."
                 ),
                 context=ctx,
                 max_turns=coder_max_turns,
@@ -839,6 +973,23 @@ def main():
         help="Resume from last checkpoint (loop_state.json)",
     )
     parser.add_argument(
+        "--skip-designer", action="store_true",
+        help=(
+            "Skip round 0a (kernel-designer) and run the coder directly against "
+            "the existing solution/dsa_attention/kernel_0_plan.md. Ignored when "
+            "--resume successfully loads saved state."
+        ),
+    )
+    parser.add_argument(
+        "--dump-prompts", action="store_true",
+        help=(
+            "Resolve and write each agent's composed system prompt to prompts/ "
+            "(using the same knobs as run_loop would), then exit without running "
+            "any agent. The coder prompt inlines solution/dsa_attention/kernel_0_plan.md "
+            "if it exists; otherwise a placeholder is written in its place."
+        ),
+    )
+    parser.add_argument(
         "--verbose", action="store_true",
         help="Show structured agent progress",
     )
@@ -893,6 +1044,25 @@ def main():
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
 
+    if args.dump_prompts:
+        dump_all_prompts(
+            output_dir=PROJECT_ROOT / "prompts",
+            model=args.model,
+            coder_model=args.coder_model,
+            designer_model=args.designer_model,
+            quality_profile=args.quality_profile,
+            codex_worker_mode=args.codex_worker_mode,
+            codex_worker_model=args.codex_worker_model,
+            codex_worker_reasoning_effort=args.codex_worker_reasoning_effort,
+            coder_reasoning_effort=args.coder_reasoning_effort,
+            coder_verbosity=args.coder_verbosity,
+            designer_reasoning_effort=args.designer_reasoning_effort,
+            designer_verbosity=args.designer_verbosity,
+            planner_reasoning_effort=args.planner_reasoning_effort,
+            optimizer_reasoning_effort=args.optimizer_reasoning_effort,
+        )
+        return
+
     asyncio.run(run_loop(
         num_rounds=args.num_rounds,
         model=args.model,
@@ -903,6 +1073,7 @@ def main():
         codex_worker_model=args.codex_worker_model,
         codex_worker_reasoning_effort=args.codex_worker_reasoning_effort,
         resume=args.resume,
+        skip_designer=args.skip_designer,
         verbose=args.verbose,
         coder_max_turns=args.coder_max_turns,
         coder_reasoning_effort=args.coder_reasoning_effort,

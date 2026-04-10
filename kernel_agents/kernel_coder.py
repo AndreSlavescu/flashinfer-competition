@@ -36,10 +36,12 @@ plan embedded below in these instructions.
 
 ## Output contract (STRICT)
 1. Single file: solution/dsa_attention/kernel_0.py. Inline every helper.
-2. Implement every section of the plan VERBATIM — work partition, warp specialization, \
-memory flow, async pipelines, SMEM plan, TMEM plan, synchronization. A scalar, \
-warp-per-head, or single-kernel fallback that only passes correctness is a failure: \
-return status="validation_failed" instead.
+2. Every numbered section of the plan must be reflected in kernel_0.py — work \
+partition, warp specialization, memory flow, async pipelines, SMEM plan, TMEM plan, \
+synchronization, API map. Omitting or collapsing a section (replacing warp \
+specialization with a single loop, replacing a split-attention + reduction design \
+with one kernel, replacing tcgen05 UMMA with torch ops, etc.) is a failure — return \
+status="validation_failed" with the missing section named in `reflection`.
 3. All attention math in CuTeDSL. Allowed PyTorch surface: validation, allocation, \
 descriptor/layout construction, compile-cache lookup, stream acquisition, kernel launch, \
 output copy. Nothing else.
@@ -54,8 +56,12 @@ index_select sparse KV gathers, any torch op computing logits/probs/outputs/LSE.
 - Compile only on Modal B200 via `run_synthetic_check` / `run_correctness_check` — \
 never locally. Trust the parsed summaries, not raw shell logs.
 - `grep_search` before `read_file` under `references/`.
-- On failure: apply the SMALLEST fix. Do not rewrite working code.
-- Gate: all 23/23 correctness workloads must pass before returning status="success".
+- If the kernel already reflects the plan structure, apply the smallest fix on \
+failure. If a plan-mandated component is missing, adding it is not a 'rewrite' — it \
+is required work.
+- Two-gate acceptance for status="success":
+  - Gate 1 (adherence): every numbered section of the plan is reflected in the file.
+  - Gate 2 (correctness): all 23/23 correctness workloads pass.
 
 ## JIT compile cache pattern
 ```
