@@ -35,20 +35,23 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
-from bootstrap_runtime import require_dependencies
+if not os.environ.get("MODAL_TASK_ID"):
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
 
-require_dependencies(
-    {"modal": "modal"},
-    entrypoint="scripts/bench.py",
-)
+    from bootstrap_runtime import require_dependencies
+
+    require_dependencies(
+        {"modal": "modal"},
+        entrypoint="scripts/bench.py",
+    )
 
 import modal
 

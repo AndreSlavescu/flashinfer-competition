@@ -20,9 +20,20 @@ B200_HARDWARE_SPEC_BLOCK = """
 
 ## Key Measured Latencies
 
-- L1 hit: ~36 cycles (18 ns) | L2 hit: ~300 cycles (153 ns) | HBM cold: ~707 cycles (360 ns)
-- TMA load: ~200-400 cycles | tcgen05 MMA: ~32 cycles
-- L1 bypass penalty: 7-8x for working sets < 32 KB, zero beyond L2
+| Working Set | Cycles | ns | Level |
+|---|---|---|---|
+| 4 KB | 36.0 | 18.3 | **L1 hit** |
+| 8 KB | 36.8 | 18.7 | L1 hit |
+| 16 KB | 40.2 | 20.4 | L1 spilling |
+| 32 KB | 46.8 | 23.9 | L1/L2 boundary |
+| 64 KB | 60.3 | 30.7 | L1→L2 transition |
+| 128 KB | 87.3 | 44.5 | L1→L2 transition |
+| 256 KB | 257 | 131 | L2 partial hit |
+| 512 KB | 299 | 152 | **L2 steady-state** |
+| 1 MB-32 MB | ~300 | ~153 | L2 plateau |
+| 64 MB | 327 | 167 | L2 capacity pressure |
+| 128 MB | 535 | 273 | L2→HBM transition |
+| 256 MB | 707 | 360 | **HBM deep cold** |
 """
 
 # NOTE: Roofline reference points intentionally omitted — NCU profiling tools

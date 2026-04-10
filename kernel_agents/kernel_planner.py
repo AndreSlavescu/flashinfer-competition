@@ -66,8 +66,8 @@ Your proposed optimization must aim to beat the current best.
 
 ## References
 
-Architecture:
-1. B200 measured hardware properties and latencies: references/blackwell_architecture.md
+Architecture: see the B200 hardware specifications block above for measured
+properties and latencies. Do not attempt to read a separate architecture file.
 
 CuTeDSL:
 1. Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
