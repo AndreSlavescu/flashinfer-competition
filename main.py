@@ -397,6 +397,7 @@ async def run_loop(
         print("=" * 60)
 
         ctx.current_round = 0
+        ctx.current_agent_role = "designer"
         try:
             designer_result, designer_elapsed_s = await _run_agent(
                 starting_agent=designer,
@@ -434,6 +435,7 @@ async def run_loop(
         print("ROUND 0b: Implement kernel_0.py from design plan")
         print("=" * 60)
 
+        ctx.current_agent_role = "coder"
         try:
             result, elapsed_s = await _run_agent(
                 starting_agent=coder,
@@ -496,6 +498,7 @@ async def run_loop(
             f"strategy_{i}.md to notes/dsa_attention/."
         )
 
+        ctx.current_agent_role = "planner"
         try:
             planner_result, planner_elapsed_s = await _run_agent(
                 starting_agent=planner,
@@ -543,6 +546,7 @@ async def run_loop(
             f"Do not refactor unrelated code or change the kernel interface."
         )
 
+        ctx.current_agent_role = "optimizer"
         try:
             optimizer_result, optimizer_elapsed_s = await _run_agent(
                 starting_agent=optimizer,
