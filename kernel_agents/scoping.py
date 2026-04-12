@@ -42,7 +42,13 @@ class AgentFileScope:
 AGENT_SCOPES: dict[str, AgentFileScope] = {
     "designer": AgentFileScope(
         read_allow=(
-            "references/",
+            "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py",
+            "references/cutlass/python/CuTeDSL/cutlass/cute/",
+            "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
+            "references/cutlass/python/CuTeDSL/cutlass/utils/",
+            "references/cutlass/examples/python/CuTeDSL/blackwell/",
+            "references/cutlass/examples/python/CuTeDSL/notebooks/",
+            "references/quack/",
             "solution/dsa_attention/",
         ),
         write_allow=(
@@ -51,7 +57,13 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
     ),
     "coder": AgentFileScope(
         read_allow=(
-            "references/",
+            "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py",
+            "references/cutlass/python/CuTeDSL/cutlass/cute/",
+            "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
+            "references/cutlass/python/CuTeDSL/cutlass/utils/",
+            "references/cutlass/examples/python/CuTeDSL/blackwell/",
+            "references/cutlass/examples/python/CuTeDSL/notebooks/",
+            "references/quack/",
             "solution/dsa_attention/",
             "last_shell_overflow.txt",
         ),
@@ -61,7 +73,13 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
     ),
     "planner": AgentFileScope(
         read_allow=(
-            "references/",
+            "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py",
+            "references/cutlass/python/CuTeDSL/cutlass/cute/",
+            "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
+            "references/cutlass/python/CuTeDSL/cutlass/utils/",
+            "references/cutlass/examples/python/CuTeDSL/blackwell/",
+            "references/cutlass/examples/python/CuTeDSL/notebooks/",
+            "references/quack/",
             "solution/dsa_attention/",
             "notes/dsa_attention/",
             "last_shell_overflow.txt",

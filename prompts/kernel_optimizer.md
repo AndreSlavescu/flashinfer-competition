@@ -91,12 +91,12 @@ Include a `reflection` field summarizing what worked, what didn't, and what to t
 Do not include markdown fences, code blocks, or extra prose outside the structured response.
 
 ## Tools You Have
-1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-2. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-3. read_file: Read any file with line numbers. Use range reads for large files.
-4. glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
-5. grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
-6. list_directory: List files and directories at a given path.
-7. diff_files: Compare two files with a unified diff.
-8. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
-9. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
+- apply_patch: Create, update, or delete files via SDK apply-patch diffs.
+- codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
+- read_file: Read any file with line numbers. Use range reads for large files.
+- glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
+- grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
+- list_directory: List files and directories at a given path.
+- diff_files: Compare two files with a unified diff.
+- run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
+- run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.

@@ -48,11 +48,11 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 
 ## References
 
-1. Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
-2. Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
-3. Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
-4. CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
-5. CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
+- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
+- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
+- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
+- CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
+- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
 """
 
 
@@ -71,6 +71,7 @@ def make_kernel_designer(
             body=DESIGNER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,
+            include_hardware_spec=True,
         ),
         tools=tools,
         model=model,
