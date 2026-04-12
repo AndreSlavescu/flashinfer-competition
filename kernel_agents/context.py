@@ -182,6 +182,7 @@ class StageSpec(BaseModel):
     title: str = Field(description="Short human-readable title.")
     description: str = Field(description="What this stage implements.")
     owner_warps: list[str] = Field(
+        min_length=1,
         description="Warp names primarily responsible for the stage.",
     )
     prerequisites: list[str] = Field(
@@ -189,16 +190,18 @@ class StageSpec(BaseModel):
         description="Stage IDs that must be completed before this stage runs.",
     )
     outputs: list[str] = Field(
+        min_length=1,
         description="Observable outputs or debug surfaces produced by the stage.",
     )
     debug_exports: list[str] = Field(
-        default_factory=list,
+        min_length=1,
         description=(
             "Validation-only observables that must be exported to GMEM for "
             "the cumulative frontier validator."
         ),
     )
     checks: list[str] = Field(
+        min_length=1,
         description="Human-readable cumulative-frontier validation checks for the stage.",
     )
     validation_entry_point: str = Field(
@@ -218,6 +221,34 @@ class StageSpec(BaseModel):
         default_factory=list,
         description="Optional advisory code areas the coder should inspect first.",
     )
+
+    @model_validator(mode="after")
+    def _validate_non_empty_required_strings(self) -> "StageSpec":
+        scalar_fields = {
+            "stage_id": self.stage_id,
+            "title": self.title,
+            "description": self.description,
+            "validation_entry_point": self.validation_entry_point,
+            "plan_excerpt": self.plan_excerpt,
+        }
+        for field_name, value in scalar_fields.items():
+            if not value.strip():
+                raise ValueError(f"{field_name} must not be blank.")
+
+        required_list_fields = {
+            "owner_warps": self.owner_warps,
+            "outputs": self.outputs,
+            "debug_exports": self.debug_exports,
+            "checks": self.checks,
+        }
+        for field_name, values in required_list_fields.items():
+            if any(not value.strip() for value in values):
+                raise ValueError(f"{field_name} must not contain blank entries.")
+
+        if any(not value.strip() for value in self.target_areas):
+            raise ValueError("target_areas must not contain blank entries.")
+
+        return self
 
 class KeyValueNote(BaseModel):
     """Compact strict-schema entry for plan-derived graph notes."""

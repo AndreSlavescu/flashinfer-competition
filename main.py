@@ -94,6 +94,7 @@ STAGE_RATE_LIMIT_MAX_CUMULATIVE_WAIT_S = 600.0
 RATE_LIMIT_RETRY_SAFETY_BUFFER_S = 0.5
 RATE_LIMIT_RETRY_BACKOFF_INITIAL_S = 2.0
 RATE_LIMIT_RETRY_BACKOFF_MAX_S = 30.0
+INVALID_IMPL_GRAPH_MAX_REPAIRS = 5
 _RATE_LIMIT_RETRY_AFTER_RE = re.compile(
     r"please try again in\s+([0-9]+(?:\.[0-9]+)?)s",
     re.IGNORECASE,
@@ -227,6 +228,14 @@ def round0_artifacts_dir(solution_dir: Path) -> Path:
 def round0_impl_graph_path(solution_dir: Path) -> Path:
     """Return the canonical path for the staged round-0 implementation graph."""
     return round0_artifacts_dir(solution_dir) / "kernel_0_impl_graph.json"
+
+
+def round0_invalid_impl_graph_path(solution_dir: Path, attempt: int) -> Path:
+    """Return the artifact path for an invalid staged round-0 implementation graph."""
+    return (
+        round0_artifacts_dir(solution_dir)
+        / f"kernel_0_impl_graph.invalid.attempt_{attempt:02d}.json"
+    )
 
 
 def round0_plan_path(solution_dir: Path) -> Path:
@@ -430,6 +439,14 @@ def _derive_round0_progress(ctx: SharedContext, graph: ImplementationGraph) -> R
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2))
+
+
+def _display_path(path: Path) -> str:
+    """Return a repo-relative path when possible, otherwise an absolute path."""
+    try:
+        return str(path.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def load_impl_graph(path: Path) -> ImplementationGraph:
@@ -702,6 +719,105 @@ async def _run_agent(
             current_input = []
             rate_limit_retries += 1
             cumulative_wait_s += wait_s
+
+
+def _build_invalid_impl_graph_feedback(error: ValueError, invalid_path: Path) -> str:
+    """Build the repair message for a semantically invalid staged impl graph."""
+    return (
+        "Your previous `DesignerResult.impl_graph` is invalid for the staged round-0 runner.\n\n"
+        f"Validation error: {error}\n\n"
+        "Revise the existing plan and implementation graph in place and return a full corrected "
+        "`DesignerResult`. Do not restart from scratch. Preserve the current plan and stable "
+        "stage IDs where possible.\n\n"
+        "Hard requirements for every stage:\n"
+        "- `owner_warps`, `outputs`, `checks`, and `debug_exports` must all be non-empty.\n"
+        "- `debug_exports` must contain at least one validation surface used by frontier validation.\n"
+        "- `validation_entry_point` must remain concrete.\n\n"
+        f"The invalid graph was dumped to {_display_path(invalid_path)} for debugging."
+    )
+
+
+async def _run_staged_designer_with_graph_validation(
+    *,
+    starting_agent: object,
+    initial_input: str,
+    context: SharedContext,
+    max_turns: int,
+    verbose: bool,
+    solution_dir: Path,
+    stage_label: str = "kernel-designer-staged",
+    max_rate_limit_retries: int = STAGE_RATE_LIMIT_MAX_RETRIES,
+    max_graph_repairs: int = INVALID_IMPL_GRAPH_MAX_REPAIRS,
+) -> tuple[object, DesignerResult, float]:
+    """Run the staged designer, retrying rate limits and repairing invalid graphs."""
+    started_at = time.perf_counter()
+    session = SQLiteSession(f"{stage_label}-{time.time_ns()}")
+    current_input: str | list[dict[str, Any]] = initial_input
+    rate_limit_retries = 0
+    cumulative_wait_s = 0.0
+    graph_repair_attempts = 0
+
+    while True:
+        try:
+            result, _ = await _run_agent_once(
+                starting_agent=starting_agent,
+                input=current_input,
+                context=context,
+                max_turns=max_turns,
+                verbose=verbose,
+                session=session,
+            )
+        except Exception as exc:
+            if not _is_rate_limit_error(exc):
+                raise
+
+            wait_s = _stage_rate_limit_wait_seconds(exc, rate_limit_retries)
+            if (
+                rate_limit_retries >= max_rate_limit_retries
+                or cumulative_wait_s + wait_s > STAGE_RATE_LIMIT_MAX_CUMULATIVE_WAIT_S
+            ):
+                raise
+
+            next_attempt = rate_limit_retries + 2
+            max_attempts = max_rate_limit_retries + 1
+            print(
+                f"WARNING: {stage_label} hit a rate limit after SDK retries. "
+                f"Waiting {wait_s:.2f}s before retry {next_attempt}/{max_attempts} "
+                f"with saved session context (cumulative wait {cumulative_wait_s + wait_s:.2f}s)."
+            )
+            await asyncio.sleep(wait_s)
+            current_input = []
+            rate_limit_retries += 1
+            cumulative_wait_s += wait_s
+            continue
+
+        designer_out = require_structured_output(result, DesignerResult)
+        if designer_out.status != "success":
+            return result, designer_out, time.perf_counter() - started_at
+
+        try:
+            validate_impl_graph(designer_out.impl_graph)
+        except ValueError as exc:
+            graph_repair_attempts += 1
+            invalid_path = round0_invalid_impl_graph_path(solution_dir, graph_repair_attempts)
+            _write_json(invalid_path, designer_out.impl_graph.model_dump(mode="json"))
+
+            if graph_repair_attempts > max_graph_repairs:
+                raise ValueError(
+                    "staged kernel-designer returned an invalid implementation graph after "
+                    f"{graph_repair_attempts} attempts: {exc}. "
+                    f"Last invalid artifact: {_display_path(invalid_path)}"
+                ) from exc
+
+            print(
+                "WARNING: staged kernel-designer returned an invalid implementation graph "
+                f"({exc}). Saved invalid graph to {_display_path(invalid_path)}. "
+                f"Asking for repair {graph_repair_attempts}/{max_graph_repairs}."
+            )
+            current_input = _build_invalid_impl_graph_feedback(exc, invalid_path)
+            continue
+
+        return result, designer_out, time.perf_counter() - started_at
 
 
 # ---------------------------------------------------------------------------
@@ -1096,19 +1212,21 @@ async def _run_round0_staged(
         print("=" * 60)
         ctx.current_agent_role = "designer"
         try:
-            designer_result, designer_elapsed_s = await _run_agent(
-                stage_label="kernel-designer-staged",
-                starting_agent=designer,
-                input=(
+            designer_result, designer_out, designer_elapsed_s = (
+                await _run_staged_designer_with_graph_validation(
+                    stage_label="kernel-designer-staged",
+                    starting_agent=designer,
+                    initial_input=(
                     "Design the staged round-0 kernel architecture. Read the CuTeDSL references and "
                     "Blackwell kernel examples, then write solution/dsa_attention/kernel_0_plan.md "
                     "and return a compact staged implementation graph for kernel_0.py."
-                ),
-                context=ctx,
-                max_turns=designer_max_turns,
-                verbose=designer_verbose,
+                    ),
+                    context=ctx,
+                    max_turns=designer_max_turns,
+                    verbose=designer_verbose,
+                    solution_dir=solution_dir,
+                )
             )
-            designer_out = require_structured_output(designer_result, DesignerResult)
         except MaxTurnsExceeded:
             print("FATAL: staged kernel-designer hit max turns without producing a plan.")
             sys.exit(1)
