@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 # ---------------------------------------------------------------------------
 # Shared type aliases used by multiple agents (designer, coder)
@@ -191,12 +191,20 @@ class StageSpec(BaseModel):
     outputs: list[str] = Field(
         description="Observable outputs or debug surfaces produced by the stage.",
     )
+    debug_exports: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Validation-only observables that must be exported to GMEM for "
+            "the cumulative frontier validator."
+        ),
+    )
     checks: list[str] = Field(
-        description="Human-readable validation checks for the stage.",
+        description="Human-readable cumulative-frontier validation checks for the stage.",
     )
     validation_entry_point: str = Field(
         description=(
-            "Python entry point used by run_stage_validation, e.g. "
+            "Python entry point used by run_stage_validation for the cumulative "
+            "prefix frontier through this stage, e.g. "
             "'kernel_0.py::validate_stage__foo'."
         ),
     )
@@ -210,7 +218,6 @@ class StageSpec(BaseModel):
         default_factory=list,
         description="Optional advisory code areas the coder should inspect first.",
     )
-
 
 class KeyValueNote(BaseModel):
     """Compact strict-schema entry for plan-derived graph notes."""
@@ -324,17 +331,11 @@ class Round0StageResult(StructuredResult):
     generated: list[str] = Field(
         description="Paths to kernel artifacts touched or produced by this stage.",
     )
-    stage_validation_reports: list[StageValidationReport] = Field(
-        description="Validation reports for the current stage and cumulative regressions.",
+    frontier_validation_report: str = Field(
+        description="Parsed report for the cumulative validation frontier through this stage.",
     )
-    current_stage_verified: bool = Field(
-        description="Whether the current stage's dedicated validation passed.",
-    )
-    cumulative_regressions_verified: bool = Field(
-        description="Whether all previously completed stage validations still pass.",
-    )
-    synthetic_check_report: str = Field(
-        description="Optional full-kernel synthetic report for the current milestone.",
+    frontier_verified: bool = Field(
+        description="Whether the cumulative validation frontier through this stage passed.",
     )
     final_correctness_verified: bool = Field(
         description="Whether the final round-0 correctness gate passed for this stage attempt.",

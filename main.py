@@ -255,6 +255,10 @@ def validate_impl_graph(graph: ImplementationGraph) -> None:
             raise ValueError(
                 f"Stage '{stage.stage_id}' references unknown prerequisites: {missing}"
             )
+        if not stage.debug_exports:
+            raise ValueError(
+                f"Stage '{stage.stage_id}' must declare at least one debug export for frontier validation."
+            )
         late = [
             dep for dep in stage.prerequisites if stage_index[dep] >= stage_index[stage.stage_id]
         ]
@@ -296,6 +300,31 @@ def relevant_async_pipelines(graph: ImplementationGraph, stage_id: str) -> list[
         if stage_id in pipeline.participating_stages:
             pipelines.append(pipeline.model_dump(mode="json"))
     return pipelines
+
+
+def _approved_frontier_summaries(
+    *,
+    graph: ImplementationGraph,
+    completed_stage_ids: list[str],
+    latest_stage_results: dict[str, Round0StageResult],
+) -> list[dict[str, Any]]:
+    """Return compact summaries for previously approved validation frontiers."""
+    summaries: list[dict[str, Any]] = []
+    for completed_stage_id in completed_stage_ids:
+        completed_stage = get_stage_spec(graph, completed_stage_id)
+        last_result = latest_stage_results[completed_stage_id]
+        summaries.append(
+            {
+                "stage_id": completed_stage.stage_id,
+                "title": completed_stage.title,
+                "outputs": completed_stage.outputs,
+                "debug_exports": completed_stage.debug_exports,
+                "checks": completed_stage.checks,
+                "frontier_verified": last_result.frontier_verified,
+                "frontier_validation_report": last_result.frontier_validation_report,
+            }
+        )
+    return summaries
 
 
 @dataclass
@@ -912,25 +941,16 @@ def _build_stage_coder_payload(
     is_final_stage: bool,
 ) -> dict[str, Any]:
     stage = get_stage_spec(graph, stage_id)
-    completed_specs = []
-    for completed_stage_id in completed_stage_ids:
-        completed_stage = get_stage_spec(graph, completed_stage_id)
-        completed_specs.append(
-            {
-                "stage_id": completed_stage.stage_id,
-                "validation_entry_point": completed_stage.validation_entry_point,
-                "checks": completed_stage.checks,
-                "outputs": completed_stage.outputs,
-                "last_result": latest_stage_results[completed_stage_id].model_dump(mode="json"),
-            }
-        )
-
     return {
         "current_stage": stage.model_dump(mode="json"),
         "relevant_async_pipelines": relevant_async_pipelines(graph, stage_id),
         "resource_ledger": graph.resource_ledger.model_dump(mode="json"),
         "kernel_contract": graph.kernel_contract.model_dump(mode="json"),
-        "completed_stage_validations": completed_specs,
+        "approved_frontier_summaries": _approved_frontier_summaries(
+            graph=graph,
+            completed_stage_ids=completed_stage_ids,
+            latest_stage_results=latest_stage_results,
+        ),
         "is_final_stage": is_final_stage,
     }
 
@@ -964,21 +984,14 @@ def _build_stage_review_payload(
     latest_stage_results: dict[str, Round0StageResult],
 ) -> dict[str, Any]:
     stage = get_stage_spec(graph, stage_result.stage_id)
-    completed_specs = []
-    for completed_stage_id in completed_stage_ids:
-        completed_stage = get_stage_spec(graph, completed_stage_id)
-        completed_specs.append(
-            {
-                "stage_id": completed_stage.stage_id,
-                "checks": completed_stage.checks,
-                "outputs": completed_stage.outputs,
-                "last_result": latest_stage_results[completed_stage_id].model_dump(mode="json"),
-            }
-        )
     return {
         "current_stage": stage.model_dump(mode="json"),
         "stage_result": stage_result.model_dump(mode="json"),
-        "completed_stage_validations": completed_specs,
+        "approved_frontier_summaries": _approved_frontier_summaries(
+            graph=graph,
+            completed_stage_ids=completed_stage_ids,
+            latest_stage_results=latest_stage_results,
+        ),
         "current_graph": graph.model_dump(mode="json"),
     }
 
@@ -1333,9 +1346,9 @@ async def _run_round0_staged(
                     f"returned status={stage_out.status}."
                 )
                 sys.exit(1)
-            if not stage_out.current_stage_verified or not stage_out.cumulative_regressions_verified:
+            if not stage_out.frontier_verified:
                 print(
-                    f"FATAL: reviewer approved stage {current_stage_id} without passing staged validations."
+                    f"FATAL: reviewer approved stage {current_stage_id} without passing the frontier validation."
                 )
                 sys.exit(1)
             if is_final_stage and not stage_out.final_correctness_verified:

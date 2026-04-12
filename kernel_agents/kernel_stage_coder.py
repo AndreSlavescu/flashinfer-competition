@@ -34,21 +34,23 @@ STAGE_CODER_OUTPUT_CONTRACT = """\
 
 STAGE_CODER_RULES = """\
 ## Rules
-1. The stage spec, including `plan_excerpt`, is authoritative for the current step. The machine graph and resource ledger are the global guardrails.
+1. The stage spec, including `plan_excerpt`, `debug_exports`, and `validation_entry_point`, is authoritative for the current step. The machine graph and resource ledger are the global guardrails.
 2. Ownership is advisory, not absolute. Prefer minimal edits, but you may adjust earlier code if needed to keep the staged kernel coherent.
 3. Preserve the frozen resource ledger unless the designer later revises the design.
 4. Do not simplify or erase already approved kernel structure just to make a stage validation pass.
-5. Treat caller-provided validation results as the regression contract for previously completed stages.
+5. Treat caller-provided approved frontier summaries as the regression contract for previously completed stages.
+6. Implement the current stage together with any prerequisite-stage pipelining, handoff, barrier, or buffer logic that becomes active in the current validation frontier. Do not defer active prefix integration to a later stitch-up pass.
+7. You are responsible for implementing and maintaining the cumulative prefix-frontier validation harness named by `validation_entry_point`.
 """
 
 STAGE_CODER_VALIDATION_WORKFLOW = """\
 ## Validation Workflow
-1. Implement the current stage in kernel_0.py and any inline helpers it needs.
-2. Run `run_stage_validation` for the current stage.
-3. Re-run `run_stage_validation` for every previously completed stage supplied in the caller input.
-4. If all stage validations pass, run `run_synthetic_check` as the milestone check.
-5. If the caller marks this as the final stage, also run `run_correctness_check`.
-6. Return `Round0StageResult` with the reports from every validation run.
+1. Implement the current stage in kernel_0.py and any inline helpers it needs, including prerequisite-stage pipeline integration that becomes active in the current frontier.
+2. Implement or extend the cumulative prefix-frontier validation harness named by `validation_entry_point`, along with the eager prefix reference model it compares against.
+3. In validation mode, export only the stage's declared `debug_exports` from TMEM/SMEM/RMEM to GMEM for comparison.
+4. Run only the current stage's `validation_entry_point` with `run_stage_validation`; it must validate the full declared prefix through this stage, including all prerequisite-stage behavior that is now active.
+5. If the caller marks this as the final stage, run `run_correctness_check` after the frontier validator passes.
+6. Return `Round0StageResult` with the current frontier validation report and final correctness report when applicable.
 """
 
 STAGE_CODER_BODY = build_round0_coder_body(

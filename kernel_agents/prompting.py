@@ -45,7 +45,9 @@ CODER_CODEX_WORKER_BLOCK = """
 
 - `codex_coder_engineer` is a write-capable Codex worker for bounded coding subtasks.
 - Use it when a focused Codex edit or repo investigation pass would speed up progress, but keep the scope concrete.
-- Keep validation ownership in this parent agent: run `run_synthetic_check` and `run_correctness_check` yourself, inspect their parsed summaries yourself, and return the final structured result yourself.
+- Keep validation ownership in this parent agent: run the repo validation tools (`run_stage_validation`,
+  `run_synthetic_check`, `run_correctness_check`) yourself as appropriate, inspect their parsed
+  summaries yourself, and return the final structured result yourself.
 """
 
 OPTIMIZER_CODEX_WORKER_BLOCK = """
@@ -106,7 +108,8 @@ ROUND0_CODER_REFERENCES_BLOCK = """\
 
 ROUND0_CODER_TOOL_POLICY_BLOCK = """\
 ## Tool policy
-- `run_synthetic_check` / `run_correctness_check` are the canonical correctness source.
+- The repo's parsed validation tools (`run_stage_validation`, `run_synthetic_check`,
+  `run_correctness_check`) are the canonical correctness source.
 - If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
 - If `last_shell_overflow.txt` is written, inspect it before the next overflowing call.
 - Do not create spill files. Refine tool calls instead.
@@ -149,7 +152,7 @@ TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "run_ncu_profile": "Run NCU profiling on Modal B200 and return hardware utilization metrics.",
     "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return opcode and pipeline analysis.",
     "run_full_benchmark": "Run the full Modal benchmark and return parsed performance results.",
-    "run_stage_validation": "Run a stage-scoped synthetic validation entry point and return a concise parsed summary.",
+    "run_stage_validation": "Run a cumulative frontier synthetic validation entry point and return a concise parsed summary.",
     "run_synthetic_check": "Run the fast synthetic correctness sweep and return a concise parsed summary.",
     "run_correctness_check": "Run the full Modal correctness check and return a concise parsed summary.",
 }
