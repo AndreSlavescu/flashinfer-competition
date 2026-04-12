@@ -29,7 +29,9 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 
 ## Rules
 
-1. Use optimized B200 (sm100a) features: TMA ld/st, tcgen05 MMA, warp specialization, async pipelining.
+1. Use optimized B200 (sm100a) features like TMA ld/st, tcgen05 MMA, warp specialization, async pipelining etc.
+   Use the B200 hardware specifications block in these instructions when choosing work partition,
+   async pipeline depths, and resource budgets. Do not look for a separate architecture file.
 2. kernel_0_plan.md describes ONLY the final CuTeDSL design. No bootstrap path, no future optimized path, no PyTorch fallback.
 3. You MUST write solution/dsa_attention/kernel_0_plan.md.
 4. Minimize duplication between the markdown plan and the implementation graph. The markdown owns the design narrative; the graph owns the machine contract.
@@ -41,7 +43,7 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 and record its file path. You must be able to point to the exact code region(s) that realize each design element.
 3. Write the design plan covering:
    - **Work partition**: distributing Qs and topk KVs across CTAs
-   - **Warp specialization**: which warps handle each stage (sparse KV loading, QK MMA, softmax, PV MMA, combine partials)
+   - **Warp specialization**: which warps handle each stage (sparse KV loading, QK MMA, softmax, PV MMA, combine partials etc.)
    - **Memory flow**: how each tensor (Q, K, V, P, O etc.) moves between TMEM, RMEM, SMEM, GMEM
    - **Async pipelining**:
      - Overlap opportunities (e.g., gather KV -> QK MMA)
@@ -52,24 +54,17 @@ and record its file path. You must be able to point to the exact code region(s) 
    - **Shared memory plan**: buffer layouts for tensors, total SMEM requirement (pipeline stages)
    - **Tensor memory plan**: column assignments, layouts for tcgen05 mma and ld/st
    - **Synchronization**: barriers and fences at async pipeline, SMEM, TMEM boundaries
+   - **Validation strategy**: how each cumulative stage frontier is observed, which internal values require validation-only GMEM exports, and how the eager prefix reference grows stage by stage
    - **CuTeDSL API map**: for each design element, the specific CuTeDSL API/class and its file path under references/
-4. Derive a compact staged implementation graph from the final design plan. The graph must include:
-   - `kernel_contract`: a strict object with `summary` and `items[{key,value}]` covering the kernel interface, workspace contract, split-kv and reduction-kernel contract
-   - `resource_ledger`: a strict object with `summary` and `items[{key,value}]` covering warp map, register budgets, TMEM columns/offsets, SMEM buffers, named barriers, and pipeline stage counts
-   - `async_pipelines`: architectural pipelines modeled after the plan's async-pipeline section
-   - `stages`: ordered stage specs with `stage_id`, `title`, `description`, `owner_warps`, `prerequisites`, `outputs`, `checks`, `validation_entry_point`, `plan_excerpt`, and optional advisory `target_areas`
-5. Keep the staged graph minimal:
-   - no ownership-enforcement fields like owned_symbols, glue_points, or pipeline_membership
-   - stages should be derived from the design itself (for example warp0::load_q, warp1::qk_mma, warp2_3::softmax)
-   - `plan_excerpt` should copy the exact markdown snippet from kernel_0_plan.md that this stage is implementing
-   - each stage must expose a concrete validation entry point in kernel_0.py for `run_stage_validation`
+4. Derive a compact staged implementation graph from the final design plan. Keep it machine-oriented,
+   minimal, and aligned with the `DesignerResult` schema rather than restating the full markdown narrative.
+5. For each stage, copy the exact `plan_excerpt` markdown snippet from kernel_0_plan.md, provide a
+   concrete cumulative `validation_entry_point` in kernel_0.py for `run_stage_validation`, and define
+   the minimal `debug_exports` that must be materialized to GMEM in validation mode.
 6. Read through all references to find CuTeDSL abstractions and APIs that simplify B200 and PTX features you plan to use \
 (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.)
 
 ## References
-
-Architecture: see the B200 hardware specifications block above for measured
-properties and latencies. Do not attempt to read a separate architecture file.
 
 CuTeDSL:
 1. Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute

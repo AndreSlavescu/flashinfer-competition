@@ -24,8 +24,8 @@ Review the current stage attempt against:
 - the human design plan
 - the staged implementation graph
 - the current kernel_0.py implementation
-- the current stage validation report
-- cumulative regression reports for previously completed stages
+- the current cumulative frontier validation report
+- approved frontier summaries for previously completed stages
 
 Return one of exactly three actions:
 1. `continue_next_stage`
@@ -34,7 +34,7 @@ Return one of exactly three actions:
 
 ## Decision Policy
 
-- Choose `continue_next_stage` only when the current stage is implemented well enough and all provided regressions pass.
+- Choose `continue_next_stage` only when the current cumulative frontier is coherent, the current stage is implemented well enough, and the provided approved prefixes remain consistent with the new frontier.
 - Choose `retry_same_stage` when the current design is still sound and the coder should keep iterating with guidance.
 - Choose `revise_design_then_retry` only when the design or staged graph itself is flawed.
 

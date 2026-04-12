@@ -62,6 +62,7 @@ def _sample_impl_graph() -> ImplementationGraph:
                 owner_warps=["warp0"],
                 prerequisites=[],
                 outputs=["q_tile_debug"],
+                debug_exports=["q_tile_debug"],
                 checks=["q tile matches eager reference"],
                 validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
                 plan_excerpt="## Load Q\nload q details",
@@ -74,6 +75,7 @@ def _sample_impl_graph() -> ImplementationGraph:
                 owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
                 outputs=["score_tile_debug"],
+                debug_exports=["score_tile_debug"],
                 checks=["qk tile matches eager reference"],
                 validation_entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
                 plan_excerpt="## QK Mainloop\nqk details",
@@ -96,10 +98,8 @@ def _sample_impl_graph() -> ImplementationGraph:
             {
                 "stage_id",
                 "generated",
-                "stage_validation_reports",
-                "current_stage_verified",
-                "cumulative_regressions_verified",
-                "synthetic_check_report",
+                "frontier_validation_report",
+                "frontier_verified",
                 "final_correctness_verified",
                 "correctness_check_report",
                 "status",
@@ -193,6 +193,7 @@ def test_validate_impl_graph_rejects_duplicate_stage_ids() -> None:
         owner_warps=["warp2"],
         prerequisites=[],
         outputs=["x"],
+        debug_exports=["x"],
         checks=["y"],
         validation_entry_point="kernel_0.py::validate_stage__dup",
         plan_excerpt="## Duplicate\ndup",
@@ -262,10 +263,8 @@ def test_save_and_load_state_round0_fields_round_trip(tmp_path: Path) -> None:
         Round0StageResult(
             stage_id="warp0::load_q",
             generated=["solution/dsa_attention/kernel_0.py"],
-            stage_validation_reports=[],
-            current_stage_verified=True,
-            cumulative_regressions_verified=True,
-            synthetic_check_report="ok",
+            frontier_validation_report="frontier ok",
+            frontier_verified=True,
             final_correctness_verified=False,
             correctness_check_report="",
             status="success",
@@ -337,10 +336,8 @@ def _stage_result(
     return Round0StageResult(
         stage_id=stage_id,
         generated=["solution/dsa_attention/kernel_0.py"],
-        stage_validation_reports=[],
-        current_stage_verified=True,
-        cumulative_regressions_verified=True,
-        synthetic_check_report="ok",
+        frontier_validation_report="frontier ok",
+        frontier_verified=True,
         final_correctness_verified=final_correctness_verified,
         correctness_check_report="correct",
         status="success",
@@ -382,8 +379,10 @@ def test_build_stage_coder_input_includes_plan_excerpt_directly() -> None:
     )
 
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
+    assert payload["current_stage"]["debug_exports"] == ["score_tile_debug"]
     assert "relevant_plan_excerpts" not in payload
-    assert "plan_excerpt" not in payload["completed_stage_validations"][0]
+    assert "plan_excerpt" not in payload["approved_frontier_summaries"][0]
+    assert payload["approved_frontier_summaries"][0]["frontier_validation_report"] == "frontier ok"
 
 
 def test_build_stage_review_input_includes_plan_excerpt_and_completed_validations() -> None:
@@ -398,7 +397,9 @@ def test_build_stage_review_input_includes_plan_excerpt_and_completed_validation
 
     assert payload["current_stage"]["stage_id"] == "warp1::qk_mma"
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
-    assert payload["completed_stage_validations"][0]["stage_id"] == "warp0::load_q"
+    assert payload["current_stage"]["debug_exports"] == ["score_tile_debug"]
+    assert payload["approved_frontier_summaries"][0]["stage_id"] == "warp0::load_q"
+    assert payload["approved_frontier_summaries"][0]["debug_exports"] == ["q_tile_debug"]
 
 
 def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> None:
@@ -433,6 +434,11 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
     assert "Return `CoderResult`" in coder_prompt
     assert "Return `Round0StageResult`" in stage_prompt
     assert "run_stage_validation" in stage_prompt
+    assert "debug_exports" in stage_prompt
+    assert "Re-run `run_stage_validation` for every previously completed stage" not in stage_prompt
+    assert "cumulative prefix-frontier validation harness" in stage_prompt
+    assert "prerequisite-stage pipelining" in stage_prompt
+    assert "validation harness named by `validation_entry_point`" in stage_prompt
 
 
 class _FakeAgent:
@@ -676,3 +682,91 @@ def test_derive_round0_progress_marks_complete_after_final_approval(tmp_path: Pa
 
     assert progress.complete is True
     assert progress.next_stage_id is None
+
+
+def test_load_impl_graph_requires_explicit_debug_exports(tmp_path: Path) -> None:
+    graph_path = tmp_path / "impl_graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "kernel_contract": {
+                    "summary": "kernel entry contract",
+                    "items": [{"key": "entry_point", "value": "kernel_0.py::kernel"}],
+                },
+                "resource_ledger": {
+                    "summary": "resource summary",
+                    "items": [{"key": "tmem_cols", "value": "0-127"}],
+                },
+                "async_pipelines": [],
+                "stages": [
+                    {
+                        "stage_id": "warp0::load_q",
+                        "title": "Load Q",
+                        "description": "Load query tiles.",
+                        "owner_warps": ["warp0"],
+                        "prerequisites": [],
+                        "outputs": ["q_tile_debug"],
+                        "checks": ["q tile matches eager reference"],
+                        "validation_entry_point": "kernel_0.py::validate_stage__warp0_load_q",
+                        "plan_excerpt": "## Load Q\nload q details",
+                        "target_areas": ["load_q"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Exception, match="debug export"):
+        main.load_impl_graph(graph_path)
+
+
+def test_load_state_maps_legacy_round0_stage_result_fields(tmp_path: Path) -> None:
+    state_path = tmp_path / "loop_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "current_round": 0,
+                "best_latency_ms": 9.5,
+                "best_round": 0,
+                "model_name": "gpt-5.4",
+                "quality_profile": "public_codex",
+                "codex_worker_mode": "off",
+                "history": [],
+                "round0_stage_history": [
+                    {
+                        "stage_id": "warp0::load_q",
+                        "generated": ["solution/dsa_attention/kernel_0.py"],
+                        "stage_validation_reports": [
+                            {
+                                "stage_id": "warp0::load_q",
+                                "report": "Summary: 1/1 synthetic cases passed",
+                            }
+                        ],
+                        "current_stage_verified": True,
+                        "cumulative_regressions_verified": True,
+                        "synthetic_check_report": "Summary: 1/1 synthetic cases passed",
+                        "final_correctness_verified": False,
+                        "correctness_check_report": "",
+                        "status": "success",
+                        "message": "legacy ok",
+                        "reflection": "",
+                    }
+                ],
+                "round0_review_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    main.load_state(restored, state_path)
+
+    assert restored.round0_stage_history[0].frontier_verified is True
+    assert "warp0::load_q: Summary: 1/1 synthetic cases passed" in (
+        restored.round0_stage_history[0].frontier_validation_report
+    )

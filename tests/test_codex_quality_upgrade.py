@@ -70,6 +70,12 @@ def _shared_context(
     )
 
 
+def _write_kernel_plan_fixture(project_root: Path) -> None:
+    plan_path = project_root / "solution" / "dsa_attention" / "kernel_0_plan.md"
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text("## Kernel Plan\nfixture plan\n", encoding="utf-8")
+
+
 async def _invoke_tool(
     tool: Any,
     project_root: Path,
@@ -352,8 +358,9 @@ def test_public_codex_input_filter_keeps_latest_compaction_tail() -> None:
     ]
 
 
-def test_coder_and_optimizer_include_write_capable_codex_only_when_enabled() -> None:
-    base_ctx = _shared_context(Path.cwd(), codex_worker_mode="off")
+def test_coder_and_optimizer_include_write_capable_codex_only_when_enabled(tmp_path: Path) -> None:
+    _write_kernel_plan_fixture(tmp_path)
+    base_ctx = _shared_context(tmp_path, codex_worker_mode="off")
     coder = make_kernel_coder(context=base_ctx)
     optimizer = make_kernel_optimizer(context=base_ctx)
 
@@ -368,7 +375,7 @@ def test_coder_and_optimizer_include_write_capable_codex_only_when_enabled() -> 
     assert "codex_coder_engineer" not in _resolve_instructions(coder, base_ctx)
     assert "codex_optimizer_engineer" not in _resolve_instructions(optimizer, base_ctx)
 
-    codex_ctx = _shared_context(Path.cwd(), codex_worker_mode="coder_optimizer")
+    codex_ctx = _shared_context(tmp_path, codex_worker_mode="coder_optimizer")
     coder_with_worker = make_kernel_coder(context=codex_ctx)
     optimizer_with_worker = make_kernel_optimizer(context=codex_ctx)
 
@@ -400,6 +407,19 @@ def test_designer_and_planner_never_receive_write_capable_codex_workers() -> Non
     assert "codex_optimizer_engineer" not in _resolve_instructions(planner, ctx)
 
 
+def test_designer_prompt_uses_schema_driven_graph_rules_and_b200_guidance() -> None:
+    ctx = _shared_context(Path.cwd())
+    instructions = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
+
+    assert "Use the B200 hardware specifications block in these instructions" in instructions
+    assert "Do not look for a separate architecture file." in instructions
+    assert "aligned with the `DesignerResult` schema" in instructions
+    assert "Validation strategy" in instructions
+    assert "minimal `debug_exports`" in instructions
+    assert "The graph must include:" not in instructions
+    assert "Architecture: see the B200 hardware specifications block above" not in instructions
+
+
 def test_only_planner_currently_receives_run_full_benchmark() -> None:
     assert "run_full_benchmark" not in tool_names(build_tools_for_role("designer"))
     assert "run_full_benchmark" not in tool_names(build_tools_for_role("coder"))
@@ -407,8 +427,9 @@ def test_only_planner_currently_receives_run_full_benchmark() -> None:
     assert "run_full_benchmark" not in tool_names(build_tools_for_role("optimizer"))
 
 
-def test_agent_instructions_list_actual_registered_tools() -> None:
-    ctx = _shared_context(Path.cwd(), codex_worker_mode="coder_optimizer")
+def test_agent_instructions_list_actual_registered_tools(tmp_path: Path) -> None:
+    _write_kernel_plan_fixture(tmp_path)
+    ctx = _shared_context(tmp_path, codex_worker_mode="coder_optimizer")
     agents = [
         make_kernel_designer(context=ctx),
         make_kernel_coder(context=ctx),
