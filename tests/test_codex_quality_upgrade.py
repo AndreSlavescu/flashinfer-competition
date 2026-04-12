@@ -34,6 +34,7 @@ from kernel_agents.tools import (
     grep_search,
     list_directory,
     read_file,
+    run_stage_validation,
     run_synthetic_check,
     tool_names,
     web_fetch,
@@ -734,3 +735,30 @@ async def test_context_aware_limits_propagate_to_grep_glob_list_web_diff_and_she
     assert "Summary: 1/1 synthetic cases passed" in shell_result
     assert overflow_path.exists()
     assert "Source tool: run_synthetic_check" in overflow_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_run_stage_validation_reports_stage_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _shared_context(tmp_path, quality_profile="legacy", tool_limits=LEGACY_TOOL_LIMITS)
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    fake_process = _FakeProcess(stdout=("log\n" * 100) + "SYNTHETIC RESULTS: 1/1 cases passed\n")
+
+    async def _create_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeProcess:
+        return fake_process
+
+    monkeypatch.setattr("kernel_agents.tools.asyncio.create_subprocess_exec", _create_subprocess_exec)
+    shell_result = await _invoke_tool(
+        run_stage_validation,
+        tmp_path,
+        context=ctx,
+        stage_id="warp1::qk_mma",
+        entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
+    )
+
+    assert "Stage: warp1::qk_mma" in shell_result
+    assert "Entry point: kernel_0.py::validate_stage__warp1_qk_mma" in shell_result
+    assert "Summary: 1/1 synthetic cases passed" in shell_result
