@@ -534,7 +534,7 @@ def test_designer_prompt_matches_current_schema_driven_guidance() -> None:
     assert "aligned with the `DesignerResult` schema" in instructions
     assert "find ALL CuTeDSL abstractions and APIs" in instructions
     assert "comprehensive staged implementation graph" in instructions
-    assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in instructions
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in instructions
     assert "Validation strategy" not in instructions
     assert "debug_exports" not in instructions
     assert "target_areas" not in instructions
@@ -583,7 +583,7 @@ def test_web_tools_are_removed_from_agent_tool_surfaces_and_prompt_lists(tmp_pat
         assert "web_fetch:" not in instructions
 
 
-def test_hardware_block_only_appears_for_planner(tmp_path: Path) -> None:
+def test_hardware_block_appears_for_designer_and_planner_only(tmp_path: Path) -> None:
     _write_kernel_plan_fixture(tmp_path)
     ctx = _shared_context(tmp_path)
     designer_prompt = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
@@ -591,10 +591,20 @@ def test_hardware_block_only_appears_for_planner(tmp_path: Path) -> None:
     planner_prompt = _resolve_instructions(make_kernel_planner(context=ctx), ctx)
     optimizer_prompt = _resolve_instructions(make_kernel_optimizer(context=ctx), ctx)
 
-    assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in designer_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in designer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in planner_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in coder_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in optimizer_prompt
+
+
+def test_narrowed_scopes_still_include_required_reference_paths() -> None:
+    expected_roles = ("designer", "coder", "planner")
+
+    for role in expected_roles:
+        read_allow = AGENT_SCOPES[role].read_allow
+        assert "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py" in read_allow
+        assert "references/quack/" in read_allow
+        assert "solution/dsa_attention/" in read_allow
 
 
 def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:
@@ -748,7 +758,16 @@ async def test_glob_files_filters_repo_external_matches(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_files_returns_normalized_allowed_paths(tmp_path: Path) -> None:
-    target = tmp_path / "references" / "cutlass" / "example.py"
+    target = (
+        tmp_path
+        / "references"
+        / "cutlass"
+        / "python"
+        / "CuTeDSL"
+        / "cutlass"
+        / "cute"
+        / "example.py"
+    )
     target.parent.mkdir(parents=True)
     target.write_text("pass\n", encoding="utf-8")
 
@@ -762,10 +781,10 @@ async def test_glob_files_returns_normalized_allowed_paths(tmp_path: Path) -> No
         tmp_path,
         context=ctx,
         pattern="**/*.py",
-        directory="references",
+        directory="references/cutlass/python/CuTeDSL/cutlass/cute",
     )
 
-    assert "references/cutlass/example.py" in result
+    assert "references/cutlass/python/CuTeDSL/cutlass/cute/example.py" in result
     assert ".." not in result
 
 
@@ -829,7 +848,16 @@ async def test_context_aware_limits_propagate_to_grep_glob_list_web_diff_and_she
     )
     assert "match_3" not in grep_result
 
-    glob_dir = tmp_path / "references" / "globbed"
+    glob_dir = (
+        tmp_path
+        / "references"
+        / "cutlass"
+        / "python"
+        / "CuTeDSL"
+        / "cutlass"
+        / "cute"
+        / "globbed"
+    )
     glob_dir.mkdir(parents=True)
     for index in range(1, 6):
         (glob_dir / f"file_{index}.py").write_text("pass\n", encoding="utf-8")
@@ -838,10 +866,10 @@ async def test_context_aware_limits_propagate_to_grep_glob_list_web_diff_and_she
         tmp_path,
         context=ctx,
         pattern="*.py",
-        directory="references/globbed",
+        directory="references/cutlass/python/CuTeDSL/cutlass/cute/globbed",
     )
     assert glob_result.startswith(
-        "retrieved trimmed glob results for references/globbed; showing up to the first 3 matches"
+        "retrieved trimmed glob results for references/cutlass/python/CuTeDSL/cutlass/cute/globbed; showing up to the first 3 matches"
     )
     assert "file_3.py" in glob_result
     assert "file_4.py" not in glob_result

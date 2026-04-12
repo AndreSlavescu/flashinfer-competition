@@ -82,12 +82,14 @@ def _get_compiled_kernel(..., stream):
 """
 
 ROUND0_CODER_REFERENCES_BLOCK = """\
-## References (follow the plan's own API map for exact call sites)
-- references/cutlass/python/CuTeDSL/cutlass/cute         — core, tma, tcgen05, warp helpers
-- references/cutlass/python/CuTeDSL/cutlass/pipeline     — PipelineTma*/PipelineAsync*/PipelineUmma*
-- references/cutlass/python/CuTeDSL/cutlass/utils        — blackwell_helpers, smem/tmem allocators
-- references/cutlass/examples/python/CuTeDSL/blackwell   — warp-specialized B200 kernels (MLA)
-- references/quack                                        — optimized CuTeDSL kernels
+## References
+
+- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
+- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
+- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
+- CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
+- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
+- Highly optimized CuTeDSL kernels: references/quack
 """
 
 ROUND0_CODER_TOOL_POLICY_BLOCK = """\
@@ -156,7 +158,7 @@ def build_tools_section(tools: Sequence[object]) -> str:
     lines = ["## Tools You Have"]
     for index, name in enumerate(names, start=1):
         description = TOOL_PROMPT_DESCRIPTIONS.get(name, "Available tool.")
-        lines.append(f"{index}. {name}: {description}")
+        lines.append(f"- {name}: {description}")
     return "\n".join(lines)
 
 

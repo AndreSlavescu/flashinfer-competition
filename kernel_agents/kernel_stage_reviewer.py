@@ -30,6 +30,14 @@ You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention ke
 {..## Current Stage Specifications..}
 {..## File Diffs..}
 {..## Round0StageResult..}
+
+
+## References
+
+- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
+- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
+- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
+- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
 """
 
 STAGE_REVIEWER_OUTPUT_REMINDER = """\

@@ -45,12 +45,14 @@ def _get_compiled_kernel(..., stream):
     return compiled
 ```
 
-## References (follow the plan's own API map for exact call sites)
-- references/cutlass/python/CuTeDSL/cutlass/cute         — core, tma, tcgen05, warp helpers
-- references/cutlass/python/CuTeDSL/cutlass/pipeline     — PipelineTma*/PipelineAsync*/PipelineUmma*
-- references/cutlass/python/CuTeDSL/cutlass/utils        — blackwell_helpers, smem/tmem allocators
-- references/cutlass/examples/python/CuTeDSL/blackwell   — warp-specialized B200 kernels (MLA)
-- references/quack                                        — optimized CuTeDSL kernels
+## References
+
+- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
+- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
+- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
+- CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
+- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
+- Highly optimized CuTeDSL kernels: references/quack
 
 ## Tool policy
 - The repo's parsed validation tools (`run_stage_validation`, `run_synthetic_check`,
@@ -437,13 +439,13 @@ After P3 commits, W3 consumes `sP` and `sV_pv` and issues four PV MMA slices of 
 After the last sparse tile, W6 finalizes `lse = row_max_base2 + log2(row_sum_base2)` for live rows, handles the `row_sum_base2 == 0` all-invalid case, converts the four TMEM output slices to bf16, stages each live `16 x 128` tile in `sO_store`, and TMA-stores them to GMEM. Validation mode additionally exports the selected cumulative frontier tensors: launch metadata, gathered tile 0, raw logits tile 0, softmax state tile 0, final fp32 accumulator, and final fp32 base-2 LSE before checking final bf16 `out`.
 
 ## Tools You Have
-1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-2. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-3. read_file: Read any file with line numbers. Use range reads for large files.
-4. glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
-5. grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
-6. list_directory: List files and directories at a given path.
-7. diff_files: Compare two files with a unified diff.
-8. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
-9. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
-10. run_stage_validation: Run a cumulative frontier synthetic validation entry point and return a concise parsed summary.
+- apply_patch: Create, update, or delete files via SDK apply-patch diffs.
+- codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
+- read_file: Read any file with line numbers. Use range reads for large files.
+- glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
+- grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
+- list_directory: List files and directories at a given path.
+- diff_files: Compare two files with a unified diff.
+- run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
+- run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
+- run_stage_validation: Run a cumulative frontier synthetic validation entry point and return a concise parsed summary.
