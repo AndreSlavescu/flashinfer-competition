@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from agents import Agent, ModelSettings
+from agents import Agent, ModelSettings, RunContextWrapper
 from openai.types.shared import Reasoning
 
 from kernel_agents.context import (
@@ -11,61 +11,53 @@ from kernel_agents.context import (
     StageReviewResult,
     Verbosity,
 )
-from kernel_agents.prompting import (
-    STAGED_PAYLOAD_GROUNDING_BLOCK,
-    STAGED_TOOL_PERSISTENCE_BLOCK,
-    build_agent_instructions,
-)
+from kernel_agents.prompting import build_agent_instructions, render_prompt_template
 from kernel_agents.tools import build_tools_for_role
 
-REVIEWER_BODY = "\n\n".join(
-    (
-        """\
-You are kernel-stage-reviewer. You are the kernel-designer acting as the judge for staged \
-round-0 bootstrap attempts.
+NEW_STAGE_REVIEWER_BODY = """\
+You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention kernel correctness judge.
 
-## Task
+## Workflow
+1. Read through kernel_0_plan.md and kernel_0_impl_graph.json to understand the kernel design
+2. Analyze the last stage that kernel-stage-coder implemented in kernel_0.py, along with the returned Round0StageResult
+3. Report at most ONE critical correctness issue in the last stage, including any deviations from the plan and issues with the stage validation harness. Be precise.
+4. Report at most ONE critical correctness issue with the design kernel_0_plan.md and kernel_0_impl_graph.json
 
-Review the current stage attempt and return one of exactly three actions:
-1. `continue_next_stage`
-2. `retry_same_stage`
-3. `revise_design_then_retry`
+## Rules
+- It's a LOT more likely that the implementation is wrong, and not the plan. Be absolutely sure when blaming the design.
+- When there are multiple issues, report the most critical one
 
-## Review evidence order
-1. `current_stage`, especially `plan_excerpt`, `outputs`, `relevant_helpers`, and `validation_entry_point`
-2. `current_graph`, including the staged DAG, async pipelines, kernel contract, and resource ledger
-3. the current `solution/dsa_attention/kernel_0.py` implementation
-4. `stage_result`
-5. `approved_frontier_summaries`
-""".strip(),
-        STAGED_PAYLOAD_GROUNDING_BLOCK.strip(),
-        STAGED_TOOL_PERSISTENCE_BLOCK.strip(),
-        """\
-## Action gates
-- Choose `continue_next_stage` only when `stage_result.status == "success"` and `stage_result.frontier_verified` is true.
-- If the reviewed stage is the final stage, `continue_next_stage` additionally requires `stage_result.final_correctness_verified` to be true.
-- Use `retry_same_stage` by default when the design is still sound and the main problem is implementation, integration, or validation quality.
-- Choose `revise_design_then_retry` only when the design plan or staged graph itself is wrong enough that the coder should not keep iterating on the current graph.
+{..## Current Stage Specifications..}
+{..## File Diffs..}
+{..## Round0StageResult..}
+"""
 
-## Single-decision discipline
-- Anchor the chosen action to one primary reason.
-- Prefer the narrowest justified action: `retry_same_stage` over `revise_design_then_retry` unless a true design flaw is present.
-- Do not mix implementation feedback with design-revision output fields unless the action is `revise_design_then_retry`.
+STAGE_REVIEWER_OUTPUT_REMINDER = """\
+## Output
+Return structured output matching `StageReviewResult`.
+Set `action="retry_same_stage"` for implementation issues, `action="revise_design_then_retry"` for true design flaws, and `action="continue_next_stage"` only when there is no blocking issue and the stage passed its required checks.
+Populate the remaining schema fields consistently with the chosen action.
+"""
 
-## Revision contract
-- If you choose `revise_design_then_retry`, update solution/dsa_attention/kernel_0_plan.md so the human plan stays in sync.
-- When revising the design, return a full replacement implementation graph in `replacement_impl_graph`.
-- `restart_from_stage_id` must name the earliest stage in the replacement graph that must be redone.
-- All stages before `restart_from_stage_id` should be preserved with stable stage IDs.
-- Prefer preserving stable stage IDs for unaffected stages.
-- For `continue_next_stage` and `retry_same_stage`, both `replacement_impl_graph` and `restart_from_stage_id` must be null.
-- For `revise_design_then_retry`, both `replacement_impl_graph` and `restart_from_stage_id` are required.
 
-## Output Format
-Return structured output matching `StageReviewResult`. No markdown fences or extra prose.
-""".strip(),
+def _compose_stage_reviewer_body(ctx: SharedContext) -> str:
+    """Render the stage-reviewer body from the active transient prompt sections."""
+    prompt_sections = ctx.round0_stage_reviewer_prompt_sections
+    body = render_prompt_template(
+        NEW_STAGE_REVIEWER_BODY.strip(),
+        {
+            "{..## Current Stage Specifications..}": prompt_sections.get("current_stage", ""),
+            "{..## File Diffs..}": prompt_sections.get("file_diffs", ""),
+            "{..## Round0StageResult..}": prompt_sections.get("stage_result", ""),
+        },
     )
-) + "\n"
+
+    parts = [body]
+    attempt_metadata = prompt_sections.get("attempt_metadata", "").strip()
+    if attempt_metadata:
+        parts.append(attempt_metadata)
+    parts.append(STAGE_REVIEWER_OUTPUT_REMINDER.strip())
+    return "\n\n".join(parts) + "\n"
 
 
 def make_round0_stage_reviewer(
@@ -78,14 +70,23 @@ def make_round0_stage_reviewer(
     """Create the staged round-0 design reviewer."""
 
     tools = build_tools_for_role("designer", codex_worker_mode=context.codex_worker_mode)
-    return Agent[SharedContext](
-        name="kernel-stage-reviewer",
-        instructions=build_agent_instructions(
-            body=REVIEWER_BODY,
+
+    def dynamic_instructions(
+        run_ctx: RunContextWrapper[SharedContext],
+        agent: Agent[SharedContext],
+    ) -> str:
+        del agent
+        body = _compose_stage_reviewer_body(run_ctx.context)
+        return build_agent_instructions(
+            body=body,
             tools=tools,
             extra_instructions=extra_instructions,
             include_hardware_spec=True,
-        ),
+        )
+
+    return Agent[SharedContext](
+        name="kernel-stage-reviewer",
+        instructions=dynamic_instructions,
         tools=tools,
         model=model,
         model_settings=ModelSettings(

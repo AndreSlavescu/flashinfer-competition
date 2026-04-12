@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from collections.abc import Sequence
 
 from kernel_agents.tools import tool_names
@@ -17,21 +18,6 @@ B200_HARDWARE_SPEC_BLOCK = """
 - Register File per SM: 256 KB (65536 x 32-bit), max 256 per thread
 - Warps per SM: up to 64, max 1024 threads per block
 - SM clock: ~1.965 GHz boost (~1.844 GHz sustained under thermal load)
-
-| Working Set | Cycles | ns | Level |
-|---|---|---|---|
-| 4 KB | 36.0 | 18.3 | **L1 hit** |
-| 8 KB | 36.8 | 18.7 | L1 hit |
-| 16 KB | 40.2 | 20.4 | L1 spilling |
-| 32 KB | 46.8 | 23.9 | L1/L2 boundary |
-| 64 KB | 60.3 | 30.7 | L1→L2 transition |
-| 128 KB | 87.3 | 44.5 | L1→L2 transition |
-| 256 KB | 257 | 131 | L2 partial hit |
-| 512 KB | 299 | 152 | **L2 steady-state** |
-| 1 MB-32 MB | ~300 | ~153 | L2 plateau |
-| 64 MB | 327 | 167 | L2 capacity pressure |
-| 128 MB | 535 | 273 | L2→HBM transition |
-| 256 MB | 707 | 360 | **HBM deep cold** |
 """
 
 # NOTE: Roofline reference points intentionally omitted — NCU profiling tools
@@ -113,31 +99,6 @@ ROUND0_CODER_TOOL_POLICY_BLOCK = """\
 - Do not create spill files. Refine tool calls instead.
 """
 
-STAGED_PAYLOAD_GROUNDING_BLOCK = """\
-## Payload grounding and dependency checks
-- Treat the caller payload as the authoritative execution context for this attempt.
-- Identify which payload fields govern the current decision before acting; do not rely on generic assumptions when the payload is more specific.
-- Resolve prerequisite dependencies from the payload before making edits or decisions.
-- Preserve approved prefix behavior unless the current evidence shows a genuine design flaw.
-"""
-
-STAGED_TOOL_PERSISTENCE_BLOCK = """\
-## Verification and tool persistence
-- Use tools whenever they materially improve correctness, completeness, or grounding.
-- Do not stop early just to save tool calls.
-- Keep iterating until the active stage or review decision is actually complete, or you have concrete evidence for a blocking failure.
-- Before returning, verify that every important claim in the structured output is supported by the current tool evidence.
-"""
-
-STAGED_DIFF_FIRST_CODE_DISCIPLINE_BLOCK = """\
-## Diff-first scoped edit discipline
-- Start by reading the existing `solution/dsa_attention/kernel_0.py` and identifying the smallest code regions that must change.
-- Preserve approved prefixes, stable interfaces, and unaffected kernel structure.
-- Implement only the active frontier plus prerequisite integration that becomes active at this frontier.
-- Do not broaden the task beyond the current stage unless a narrow coherence fix is required.
-"""
-
-
 def build_round0_coder_body(
     *,
     intro_block: str,
@@ -158,6 +119,15 @@ def build_round0_coder_body(
     ]
     parts.extend(section.strip() for section in extra_sections if section.strip())
     return "\n\n".join(parts) + "\n"
+
+
+def render_prompt_template(body: str, sections: Mapping[str, str]) -> str:
+    """Replace known placeholders in *body*, leaving missing sections intact."""
+    rendered = body
+    for placeholder, replacement in sections.items():
+        if replacement:
+            rendered = rendered.replace(placeholder, replacement.strip())
+    return rendered
 
 TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "apply_patch": "Create, update, or delete files via SDK apply-patch diffs.",

@@ -15,11 +15,8 @@ from kernel_agents.context import (
     CoderResult,
     DesignerResult,
     ImplementationGraph,
-    KernelContractSpec,
-    KeyValueNote,
     OptimizerResult,
     PlannerResult,
-    ResourceLedgerSpec,
     RoundRecord,
     SharedContext,
     Round0StageResult,
@@ -33,14 +30,6 @@ from kernel_agents.kernel_stage_reviewer import make_round0_stage_reviewer
 
 def _sample_impl_graph() -> ImplementationGraph:
     return ImplementationGraph(
-        kernel_contract=KernelContractSpec(
-            summary="kernel entry contract",
-            items=[KeyValueNote(key="entry_point", value="kernel_0.py::kernel")],
-        ),
-        resource_ledger=ResourceLedgerSpec(
-            summary="resource summary",
-            items=[KeyValueNote(key="tmem_cols", value="0-127")],
-        ),
         async_pipelines=[
             AsyncPipelineSpec(
                 pipeline_id="P0",
@@ -386,62 +375,124 @@ def _review(
     )
 
 
-def _payload_from_builder(rendered: str) -> dict[str, Any]:
-    marker = "Caller payload:\n"
-    _, payload = rendered.split(marker, 1)
-    return json.loads(payload)
-
-
-def test_build_stage_coder_input_includes_plan_excerpt_directly() -> None:
-    payload = _payload_from_builder(
-        main._build_stage_coder_input(
-            graph=_sample_impl_graph(),
-            stage_id="warp1::qk_mma",
-            completed_stage_ids=["warp0::load_q"],
-            latest_stage_results={"warp0::load_q": _stage_result("warp0::load_q")},
-            is_final_stage=False,
-        )
+def test_build_stage_coder_payload_keeps_only_required_fields() -> None:
+    payload = main._build_stage_coder_payload(
+        graph=_sample_impl_graph(),
+        stage_id="warp1::qk_mma",
+        is_final_stage=False,
     )
 
+    assert set(payload) == {
+        "current_stage",
+        "prerequisite_stages",
+        "relevant_async_pipelines",
+        "is_final_stage",
+    }
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
     assert payload["current_stage"]["outputs"] == ["score_tile_debug matches the eager fp32 QK tile"]
     assert payload["current_stage"]["relevant_helpers"] == ["tcgen05.mma", "pipeline example"]
+    assert [stage["stage_id"] for stage in payload["prerequisite_stages"]] == ["warp0::load_q"]
+    assert payload["prerequisite_stages"][0]["plan_excerpt"] == "## Load Q\nload q details"
+    assert payload["relevant_async_pipelines"][0]["pipeline_id"] == "P0"
+    assert payload["is_final_stage"] is False
     assert "debug_exports" not in payload["current_stage"]
     assert "checks" not in payload["current_stage"]
     assert "target_areas" not in payload["current_stage"]
-    assert "relevant_plan_excerpts" not in payload
-    assert "plan_excerpt" not in payload["approved_frontier_summaries"][0]
-    assert set(payload["approved_frontier_summaries"][0]) == {
-        "stage_id",
-        "title",
-        "outputs",
-        "frontier_verified",
-        "frontier_validation_report",
-    }
-    assert payload["approved_frontier_summaries"][0]["frontier_validation_report"] == "frontier ok"
+    assert "approved_frontier_summaries" not in payload
 
 
-def test_build_stage_review_input_includes_plan_excerpt_and_completed_validations() -> None:
-    payload = _payload_from_builder(
-        main._build_stage_review_input(
-            graph=_sample_impl_graph(),
-            stage_result=_stage_result("warp1::qk_mma"),
-            completed_stage_ids=["warp0::load_q"],
-            latest_stage_results={"warp0::load_q": _stage_result("warp0::load_q")},
-        )
+def test_build_stage_review_payload_includes_diff_context_without_prior_snapshot(
+    tmp_path: Path,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    notes_dir = tmp_path / "notes" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    notes_dir.mkdir(parents=True)
+    (solution_dir / "kernel_0.py").write_text("def kernel():\n    return 'current'\n", encoding="utf-8")
+
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    stage_result = _stage_result("warp1::qk_mma")
+    ctx.round0_stage_history = [stage_result]
+
+    payload = main._build_stage_review_payload(
+        ctx=ctx,
+        solution_dir=solution_dir,
+        graph=_sample_impl_graph(),
+        stage_result=stage_result,
+        stage_attempt=1,
+        is_final_stage=False,
     )
 
+    assert set(payload) == {
+        "current_stage",
+        "stage_result",
+        "file_diffs",
+        "is_final_stage",
+    }
     assert payload["current_stage"]["stage_id"] == "warp1::qk_mma"
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
     assert payload["current_stage"]["outputs"] == ["score_tile_debug matches the eager fp32 QK tile"]
     assert payload["current_stage"]["relevant_helpers"] == ["tcgen05.mma", "pipeline example"]
-    assert payload["approved_frontier_summaries"][0]["stage_id"] == "warp0::load_q"
-    assert payload["approved_frontier_summaries"][0]["outputs"] == [
-        "q_tile_debug matches the eager reference for the active tile"
-    ]
+    assert payload["is_final_stage"] is False
+    assert payload["file_diffs"]["diff_status"] == "no_prior_snapshot"
+    assert payload["file_diffs"]["previous_kernel_snapshot"] is None
+    assert "NO PRIOR SNAPSHOT" in payload["file_diffs"]["unified_diff"]
+    assert (
+        solution_dir / "round0" / "warp1_qk_mma.attempt_01.kernel_0.py"
+    ).exists()
 
 
-def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> None:
+def test_build_stage_review_payload_uses_previous_snapshot_for_unified_diff(
+    tmp_path: Path,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    notes_dir = tmp_path / "notes" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    notes_dir.mkdir(parents=True)
+    (solution_dir / "kernel_0.py").write_text("def kernel():\n    return 'current'\n", encoding="utf-8")
+
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    previous_result = _stage_result("warp0::load_q")
+    current_result = _stage_result("warp1::qk_mma")
+    ctx.round0_stage_history = [previous_result, current_result]
+
+    previous_snapshot = main.round0_stage_kernel_snapshot_path(
+        solution_dir,
+        "warp0::load_q",
+        1,
+    )
+    previous_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    previous_snapshot.write_text("def kernel():\n    return 'previous'\n", encoding="utf-8")
+
+    payload = main._build_stage_review_payload(
+        ctx=ctx,
+        solution_dir=solution_dir,
+        graph=_sample_impl_graph(),
+        stage_result=current_result,
+        stage_attempt=1,
+        is_final_stage=True,
+    )
+
+    assert payload["file_diffs"]["diff_status"] == "available"
+    assert payload["is_final_stage"] is True
+    assert payload["file_diffs"]["previous_kernel_snapshot"] == (
+        "solution/dsa_attention/round0/warp0_load_q.attempt_01.kernel_0.py"
+    )
+    assert "--- solution/dsa_attention/round0/warp0_load_q.attempt_01.kernel_0.py" in payload["file_diffs"]["unified_diff"]
+    assert "+++ solution/dsa_attention/round0/warp1_qk_mma.attempt_01.kernel_0.py" in payload["file_diffs"]["unified_diff"]
+    assert "-    return 'previous'" in payload["file_diffs"]["unified_diff"]
+    assert "+    return 'current'" in payload["file_diffs"]["unified_diff"]
+
+
+def test_stage_coder_prompt_uses_new_body_and_dynamic_sections(tmp_path: Path) -> None:
     solution_dir = tmp_path / "solution" / "dsa_attention"
     notes_dir = tmp_path / "notes" / "dsa_attention"
     solution_dir.mkdir(parents=True)
@@ -453,65 +504,51 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
         solution_dir="solution/dsa_attention",
         notes_dir="notes/dsa_attention",
     )
-    coder = make_kernel_coder(context=ctx)
     stage_coder = make_round0_stage_coder(context=ctx)
 
-    coder_prompt = main._resolve_agent_instructions_text(coder, ctx)
+    static_prompt = main._resolve_agent_instructions_text(stage_coder, ctx)
+    assert "{..## Current Stage Specifications..}" in static_prompt
+    assert "{..## Pre-requisite Stage Specifications..}" in static_prompt
+    assert "## References" in static_prompt
+    assert "## Tools You Have" in static_prompt
+    assert "## Caller payload contract" not in static_prompt
+    assert "## JIT compile cache pattern" not in static_prompt
+    assert "Do not stop early just to save tool calls." not in static_prompt
+
+    payload = main._build_stage_coder_payload(
+        graph=_sample_impl_graph(),
+        stage_id="warp1::qk_mma",
+        is_final_stage=False,
+    )
+    main._apply_stage_coder_prompt_sections(ctx, payload)
     stage_prompt = main._resolve_agent_instructions_text(stage_coder, ctx)
 
-    shared_phrases = [
-        "FORBIDDEN: torch.matmul/bmm/einsum/softmax/logsumexp/masked_fill",
-        "Use `cutlass.Constexpr` for static shapes; annotate types for the JIT.",
-        "## JIT compile cache pattern",
-        "references/cutlass/examples/python/CuTeDSL/blackwell",
-    ]
-
-    for phrase in shared_phrases:
-        assert phrase in coder_prompt
-        assert phrase in stage_prompt
-
-    assert "Return `CoderResult`" in coder_prompt
-    assert "Return `Round0StageResult`" in stage_prompt
-    assert "## Caller payload contract" in stage_prompt
-    assert "Treat the caller payload as the authoritative execution context for this attempt." in stage_prompt
-    assert "Do not stop early just to save tool calls." in stage_prompt
-    assert (
-        "Start by reading the existing `solution/dsa_attention/kernel_0.py` and identifying the "
-        "smallest code regions that must change."
-    ) in stage_prompt
-    assert "run_stage_validation" in stage_prompt
-    assert "outputs" in stage_prompt
-    assert "relevant_helpers" in stage_prompt
-    assert "debug_exports" not in stage_prompt
-    assert "`checks`" not in stage_prompt
-    assert "target_areas" not in stage_prompt
-    assert "temporary `cute.printf()` instrumentation aggressively" in stage_prompt
-    assert "layouts, MMA atoms, copy atoms, tiled objects, tensors, fragments, pipelines, barriers" in stage_prompt
-    assert "remove the temporary `cute.printf()` instrumentation before running `run_correctness_check`" in stage_prompt
-    assert "Re-run `run_stage_validation` for every previously completed stage" not in stage_prompt
-    assert "cumulative prefix-frontier validation harness" in stage_prompt
-    assert "prerequisite-stage pipelining" in stage_prompt
-    assert "validation harness named by `validation_entry_point`" in stage_prompt
-    assert "Derive the minimal validation-only GMEM exports from the stage `outputs`" in stage_prompt
-    assert "frozen kernel-wide budget" in stage_prompt
-    assert "rather than a separate per-stage ledger" in stage_prompt
-    assert (
-        'Emit `status="compile_error"` when a compile/import/runtime failure blocks a '
-        "trustworthy frontier validation result."
-    ) in stage_prompt
-    assert "final-stage correctness still runs with temporary `cute.printf()` debug instrumentation enabled" in stage_prompt
-    assert (
-        'For non-final stages, emit `status="success"` only when `frontier_verified` is true.'
-    ) in stage_prompt
+    assert "{..## Current Stage Specifications..}" not in stage_prompt
+    assert "{..## Pre-requisite Stage Specifications..}" not in stage_prompt
+    assert "## Current Stage Specifications" in stage_prompt
+    assert "## Pre-requisite Stage Specifications" in stage_prompt
+    assert "## Relevant Async Pipelines" in stage_prompt
+    assert "## Attempt Metadata" in stage_prompt
+    assert "## References" in stage_prompt
+    assert "Return structured output matching `Round0StageResult`." in stage_prompt
+    assert "Read through the current stage specifications and the existing stages written in kernel_0.py" in stage_prompt
+    assert "Run tests only on Modal B200 via `run_stage_validation` / `run_synthetic_check` / `run_correctness_check`" in stage_prompt
+    assert "references/cutlass/examples/python/CuTeDSL/blackwell" in stage_prompt
+    assert '"is_final_stage": false' in stage_prompt
+    assert "approved_frontier_summaries" not in stage_prompt
+    assert "## Caller payload contract" not in stage_prompt
+    assert "## Diff-first scoped edit discipline" not in stage_prompt
+    assert "## `Round0StageResult` status rubric" not in stage_prompt
 
 
-def test_stage_reviewer_prompt_has_action_gates_and_revision_contract(
+def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
     tmp_path: Path,
 ) -> None:
     solution_dir = tmp_path / "solution" / "dsa_attention"
     notes_dir = tmp_path / "notes" / "dsa_attention"
     solution_dir.mkdir(parents=True)
     notes_dir.mkdir(parents=True)
+    (solution_dir / "kernel_0.py").write_text("def kernel():\n    return 'current'\n", encoding="utf-8")
 
     ctx = SharedContext(
         project_root=str(tmp_path),
@@ -519,31 +556,45 @@ def test_stage_reviewer_prompt_has_action_gates_and_revision_contract(
         notes_dir="notes/dsa_attention",
     )
     reviewer = make_round0_stage_reviewer(context=ctx)
+    static_prompt = main._resolve_agent_instructions_text(reviewer, ctx)
+
+    assert "{..## Current Stage Specifications..}" in static_prompt
+    assert "{..## File Diffs..}" in static_prompt
+    assert "{..## Round0StageResult..}" in static_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in static_prompt
+    assert "## Tools You Have" in static_prompt
+    assert "## Action gates" not in static_prompt
+    assert "## Revision contract" not in static_prompt
+
+    stage_result = _stage_result("warp1::qk_mma")
+    ctx.round0_stage_history = [stage_result]
+    payload = main._build_stage_review_payload(
+        ctx=ctx,
+        solution_dir=solution_dir,
+        graph=_sample_impl_graph(),
+        stage_result=stage_result,
+        stage_attempt=1,
+        is_final_stage=False,
+    )
+    main._apply_stage_reviewer_prompt_sections(ctx, payload)
     reviewer_prompt = main._resolve_agent_instructions_text(reviewer, ctx)
 
-    assert "## Review evidence order" in reviewer_prompt
-    assert "`current_graph`, including the staged DAG, async pipelines, kernel contract, and resource ledger" in reviewer_prompt
-    assert "Treat the caller payload as the authoritative execution context for this attempt." in reviewer_prompt
-    assert "Do not stop early just to save tool calls." in reviewer_prompt
-    assert "`outputs`, `relevant_helpers`, and `validation_entry_point`" in reviewer_prompt
+    assert "{..## Current Stage Specifications..}" not in reviewer_prompt
+    assert "{..## File Diffs..}" not in reviewer_prompt
+    assert "{..## Round0StageResult..}" not in reviewer_prompt
+    assert "## Current Stage Specifications" in reviewer_prompt
+    assert "## File Diffs" in reviewer_prompt
+    assert "## Round0StageResult" in reviewer_prompt
+    assert "## Attempt Metadata" in reviewer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
-    assert (
-        'Choose `continue_next_stage` only when `stage_result.status == "success"` '
-        "and `stage_result.frontier_verified` is true."
-    ) in reviewer_prompt
-    assert (
-        "Use `retry_same_stage` by default when the design is still sound and the main problem is "
-        "implementation, integration, or validation quality."
-    ) in reviewer_prompt
-    assert "Anchor the chosen action to one primary reason." in reviewer_prompt
-    assert (
-        "For `continue_next_stage` and `retry_same_stage`, both `replacement_impl_graph` and "
-        "`restart_from_stage_id` must be null."
-    ) in reviewer_prompt
-    assert (
-        "For `revise_design_then_retry`, both `replacement_impl_graph` and "
-        "`restart_from_stage_id` are required."
-    ) in reviewer_prompt
+    assert 'action="retry_same_stage"' in reviewer_prompt
+    assert 'action="revise_design_then_retry"' in reviewer_prompt
+    assert 'action="continue_next_stage"' in reviewer_prompt
+    assert "Be precise." in reviewer_prompt
+    assert "Keep `message` terse and precise." not in reviewer_prompt
+    assert "## Action gates" not in reviewer_prompt
+    assert "## Single-decision discipline" not in reviewer_prompt
+    assert "## Revision contract" not in reviewer_prompt
 
 
 class _FakeAgent:
@@ -794,14 +845,6 @@ def test_load_impl_graph_rejects_legacy_stage_schema(tmp_path: Path) -> None:
     graph_path.write_text(
         json.dumps(
             {
-                "kernel_contract": {
-                    "summary": "kernel entry contract",
-                    "items": [{"key": "entry_point", "value": "kernel_0.py::kernel"}],
-                },
-                "resource_ledger": {
-                    "summary": "resource summary",
-                    "items": [{"key": "tmem_cols", "value": "0-127"}],
-                },
                 "async_pipelines": [],
                 "stages": [
                     {
@@ -824,4 +867,3 @@ def test_load_impl_graph_rejects_legacy_stage_schema(tmp_path: Path) -> None:
 
     with pytest.raises(Exception):
         main.load_impl_graph(graph_path)
-

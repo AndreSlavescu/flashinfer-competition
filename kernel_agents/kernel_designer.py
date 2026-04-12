@@ -43,13 +43,8 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
    - **Shared memory plan**: buffer layouts for tensors, total SMEM requirement (pipeline stages)
    - **Tensor memory plan**: column assignments, layouts for tcgen05 mma and ld/st
    - **Synchronization**: barriers and fences at async pipeline, SMEM, TMEM boundaries
-   - **Validation strategy**: how each cumulative stage frontier is observed, how the stage `outputs` define the validation contract, and how the eager prefix reference grows stage by stage
-3. Derive the staged implementation graph from kernel_0_plan.md. For every stage:
-   - Keep `outputs` concrete enough that the coder can build the stage validation harness directly from them.
-   - Populate non-empty `relevant_helpers` with CuTeDSL APIs, abstractions, snippets, or example paths that are especially useful for that stage.
-   - Keep the graph aligned to the current `StageSpec` schema only; do not invent legacy or extra stage fields.
-4. For each stage of the plan, find the CuTeDSL abstractions and APIs that can help with the implementation (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.) and surface the most relevant ones in `relevant_helpers`.
-
+3. For each stage of the plan, find ALL CuTeDSL abstractions and APIs that can help with the implementation (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.)
+4. Derive the comprehensive staged implementation graph from kernel_0_plan.md
 
 ## References
 
@@ -76,7 +71,6 @@ def make_kernel_designer(
             body=DESIGNER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,
-            include_hardware_spec=True,
         ),
         tools=tools,
         model=model,

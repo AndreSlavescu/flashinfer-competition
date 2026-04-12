@@ -16,11 +16,8 @@ import main
 from kernel_agents.context import (
     DesignerResult,
     ImplementationGraph,
-    KernelContractSpec,
-    KeyValueNote,
     LEGACY_TOOL_LIMITS,
     PUBLIC_CODEX_TOOL_LIMITS,
-    ResourceLedgerSpec,
     SharedContext,
     StageSpec,
     ToolLimitSettings,
@@ -334,14 +331,6 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
     calls: list[dict[str, Any]] = []
 
     valid_graph = ImplementationGraph(
-        kernel_contract=KernelContractSpec(
-            summary="kernel entry contract",
-            items=[KeyValueNote(key="entry_point", value="kernel_0.py::kernel")],
-        ),
-        resource_ledger=ResourceLedgerSpec(
-            summary="resource summary",
-            items=[KeyValueNote(key="tmem_cols", value="0-127")],
-        ),
         async_pipelines=[],
         stages=[
             StageSpec(
@@ -538,15 +527,15 @@ def test_designer_and_planner_never_receive_write_capable_codex_workers() -> Non
     assert "codex_optimizer_engineer" not in _resolve_instructions(planner, ctx)
 
 
-def test_designer_prompt_uses_schema_driven_graph_rules_and_b200_guidance() -> None:
+def test_designer_prompt_matches_current_schema_driven_guidance() -> None:
     ctx = _shared_context(Path.cwd())
     instructions = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
 
-    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in instructions
     assert "aligned with the `DesignerResult` schema" in instructions
-    assert "Validation strategy" in instructions
-    assert "`outputs` define the validation contract" in instructions
-    assert "`relevant_helpers`" in instructions
+    assert "find ALL CuTeDSL abstractions and APIs" in instructions
+    assert "comprehensive staged implementation graph" in instructions
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in instructions
+    assert "Validation strategy" not in instructions
     assert "debug_exports" not in instructions
     assert "target_areas" not in instructions
 
@@ -594,7 +583,7 @@ def test_web_tools_are_removed_from_agent_tool_surfaces_and_prompt_lists(tmp_pat
         assert "web_fetch:" not in instructions
 
 
-def test_hardware_block_only_appears_for_designer_and_planner(tmp_path: Path) -> None:
+def test_hardware_block_only_appears_for_planner(tmp_path: Path) -> None:
     _write_kernel_plan_fixture(tmp_path)
     ctx = _shared_context(tmp_path)
     designer_prompt = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
@@ -602,7 +591,7 @@ def test_hardware_block_only_appears_for_designer_and_planner(tmp_path: Path) ->
     planner_prompt = _resolve_instructions(make_kernel_planner(context=ctx), ctx)
     optimizer_prompt = _resolve_instructions(make_kernel_optimizer(context=ctx), ctx)
 
-    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in designer_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in designer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in planner_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in coder_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in optimizer_prompt

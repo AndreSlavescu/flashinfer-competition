@@ -130,6 +130,8 @@ class SharedContext:
     round0_impl_graph_file: str = ""
     round0_stage_history: list[Round0StageResult] = field(default_factory=list)
     round0_review_history: list[StageReviewResult] = field(default_factory=list)
+    round0_stage_coder_prompt_sections: dict[str, str] = field(default_factory=dict)
+    round0_stage_reviewer_prompt_sections: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -241,54 +243,11 @@ class StageSpec(BaseModel):
 
         return self
 
-class KeyValueNote(BaseModel):
-    """Compact strict-schema entry for plan-derived graph notes."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    key: str = Field(description="Stable item key.")
-    value: str = Field(description="Human-readable item value.")
-
-
-class KernelContractSpec(BaseModel):
-    """Strict-schema kernel contract summary for staged round-0 execution."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    summary: str = Field(description="One-line summary of the kernel contract.")
-    items: list[KeyValueNote] = Field(
-        description="Key contract points such as entry points, workspaces, and launch interfaces.",
-    )
-
-
-class ResourceLedgerSpec(BaseModel):
-    """Strict-schema resource ledger for staged round-0 execution."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    summary: str = Field(description="One-line summary of the frozen resource plan.")
-    items: list[KeyValueNote] = Field(
-        description=(
-            "Key resource notes covering warps, registers, TMEM, SMEM, barriers, "
-            "pipeline depths, and other global kernel constraints."
-        ),
-    )
-
-
 class ImplementationGraph(BaseModel):
     """Machine contract for staged round-0 implementation."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kernel_contract: KernelContractSpec = Field(
-        description="Kernel interface and workspace contract for the implementation.",
-    )
-    resource_ledger: ResourceLedgerSpec = Field(
-        description=(
-            "Frozen resource plan covering warps, registers, TMEM, SMEM, barriers, "
-            "and other stage-spanning kernel resources."
-        ),
-    )
     async_pipelines: list[AsyncPipelineSpec] = Field(
         description="Architectural async pipeline definitions derived from the plan.",
     )
