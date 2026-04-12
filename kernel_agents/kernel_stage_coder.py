@@ -15,6 +15,9 @@ from kernel_agents.context import (
 )
 from kernel_agents.prompting import (
     CODER_CODEX_WORKER_BLOCK,
+    STAGED_DIFF_FIRST_CODE_DISCIPLINE_BLOCK,
+    STAGED_PAYLOAD_GROUNDING_BLOCK,
+    STAGED_TOOL_PERSISTENCE_BLOCK,
     build_agent_instructions,
     build_round0_coder_body,
 )
@@ -32,32 +35,56 @@ STAGE_CODER_OUTPUT_CONTRACT = """\
 3. Return `Round0StageResult`. No markdown fences, no prose outside the structured response.
 """
 
-STAGE_CODER_RULES = """\
-## Rules
-1. The stage spec, including `plan_excerpt`, `debug_exports`, and `validation_entry_point`, is authoritative for the current step. The machine graph and resource ledger are the global guardrails.
-2. Ownership is advisory, not absolute. Prefer minimal edits, but you may adjust earlier code if needed to keep the staged kernel coherent.
-3. Preserve the frozen resource ledger unless the designer later revises the design.
-4. Do not simplify or erase already approved kernel structure just to make a stage validation pass.
-5. Treat caller-provided approved frontier summaries as the regression contract for previously completed stages.
-6. Implement the current stage together with any prerequisite-stage pipelining, handoff, barrier, or buffer logic that becomes active in the current validation frontier. Do not defer active prefix integration to a later stitch-up pass.
-7. You are responsible for implementing and maintaining the cumulative prefix-frontier validation harness named by `validation_entry_point`.
+STAGE_CODER_CALLER_PAYLOAD_CONTRACT = """\
+## Caller payload contract
+- `current_stage` defines the active stage contract. Its `plan_excerpt`, `checks`, `debug_exports`, and `validation_entry_point` govern this attempt.
+- `relevant_async_pipelines` names the async pipelines that matter to this stage. Only activate or extend pipeline behavior that is required for the current cumulative frontier.
+- `resource_ledger` is the frozen kernel-wide budget for warps, TMEM, SMEM, registers, barriers, and pipeline depth unless the designer later revises the graph. Stage-local resource pressure usually comes from `current_stage`, `relevant_async_pipelines`, and the stage plan excerpt rather than a separate per-stage ledger.
+- `kernel_contract` is the stable kernel interface and workspace contract.
+- `approved_frontier_summaries` are the regression contract for previously completed prefixes. Preserve them while extending the frontier.
+- `is_final_stage` only changes whether you must run the full correctness gate after frontier validation passes.
 """
 
-STAGE_CODER_VALIDATION_WORKFLOW = """\
-## Validation Workflow
-1. Implement the current stage in kernel_0.py and any inline helpers it needs, including prerequisite-stage pipeline integration that becomes active in the current frontier.
+STAGE_CODER_RULES = """\
+## Scope and invariants
+1. Ownership is advisory, not absolute. Prefer minimal edits, but you may adjust earlier code if needed to keep the cumulative kernel coherent.
+2. Do not simplify, erase, or collapse already approved kernel structure just to make the current frontier pass.
+3. Implement the current stage together with any prerequisite-stage pipelining, handoff, barrier, or buffer logic that becomes active in the current validation frontier.
+4. You are responsible for implementing and maintaining the cumulative prefix-frontier validation harness named by `validation_entry_point`.
+"""
+
+STAGE_CODER_WORKFLOW = """\
+## Stage workflow
+1. Implement the active frontier in `kernel_0.py`, including any prerequisite integration that is now live.
 2. Implement or extend the cumulative prefix-frontier validation harness named by `validation_entry_point`, along with the eager prefix reference model it compares against.
-3. In validation mode, export only the stage's declared `debug_exports` from TMEM/SMEM/RMEM to GMEM for comparison.
-4. Run only the current stage's `validation_entry_point` with `run_stage_validation`; it must validate the full declared prefix through this stage, including all prerequisite-stage behavior that is now active.
-5. If the caller marks this as the final stage, run `run_correctness_check` after the frontier validator passes.
-6. Return `Round0StageResult` with the current frontier validation report and final correctness report when applicable.
+3. In validation mode, export only the current stage's declared `debug_exports` from TMEM/SMEM/RMEM to GMEM.
+4. Run only the current stage's `validation_entry_point` with `run_stage_validation`; it must validate the full declared prefix through this stage, including prerequisite behavior that is now active.
+5. If `is_final_stage` is true, run `run_correctness_check` after the frontier validator passes.
+"""
+
+STAGE_CODER_STATUS_RUBRIC = """\
+## `Round0StageResult` status rubric
+- Emit `status="success"` only when the required frontier validation passes, the active stage is integrated coherently, and the final correctness gate also passes when `is_final_stage` is true.
+- For non-final stages, emit `status="success"` only when `frontier_verified` is true. Leave `final_correctness_verified` false unless a real final correctness run happened.
+- Emit `status="compile_error"` when a compile/import/runtime failure blocks a trustworthy frontier validation result.
+- Emit `status="validation_failed"` when the code runs but the frontier check fails, the final correctness gate fails, or a plan-mandated stage contract is still missing.
+- `message` should name the highest-signal outcome for this attempt.
+- `reflection` should summarize the concrete root cause, the smallest next fix, and any regression risk to approved prefixes.
+- Never report success when the frontier validator fails, when the final stage skips the correctness gate, or when the returned fields disagree with the actual tool evidence.
 """
 
 STAGE_CODER_BODY = build_round0_coder_body(
     intro_block=STAGE_CODER_INTRO,
     output_contract_block=STAGE_CODER_OUTPUT_CONTRACT,
     role_rules_block=STAGE_CODER_RULES,
-    extra_sections=(STAGE_CODER_VALIDATION_WORKFLOW,),
+    extra_sections=(
+        STAGE_CODER_CALLER_PAYLOAD_CONTRACT,
+        STAGED_PAYLOAD_GROUNDING_BLOCK,
+        STAGED_TOOL_PERSISTENCE_BLOCK,
+        STAGED_DIFF_FIRST_CODE_DISCIPLINE_BLOCK,
+        STAGE_CODER_WORKFLOW,
+        STAGE_CODER_STATUS_RUBRIC,
+    ),
 )
 
 

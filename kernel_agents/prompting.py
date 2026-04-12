@@ -115,6 +115,30 @@ ROUND0_CODER_TOOL_POLICY_BLOCK = """\
 - Do not create spill files. Refine tool calls instead.
 """
 
+STAGED_PAYLOAD_GROUNDING_BLOCK = """\
+## Payload grounding and dependency checks
+- Treat the caller payload as the authoritative execution context for this attempt.
+- Identify which payload fields govern the current decision before acting; do not rely on generic assumptions when the payload is more specific.
+- Resolve prerequisite dependencies from the payload before making edits or decisions.
+- Preserve approved prefix behavior unless the current evidence shows a genuine design flaw.
+"""
+
+STAGED_TOOL_PERSISTENCE_BLOCK = """\
+## Verification and tool persistence
+- Use tools whenever they materially improve correctness, completeness, or grounding.
+- Do not stop early just to save tool calls.
+- Keep iterating until the active stage or review decision is actually complete, or you have concrete evidence for a blocking failure.
+- Before returning, verify that every important claim in the structured output is supported by the current tool evidence.
+"""
+
+STAGED_DIFF_FIRST_CODE_DISCIPLINE_BLOCK = """\
+## Diff-first scoped edit discipline
+- Start by reading the existing `solution/dsa_attention/kernel_0.py` and identifying the smallest code regions that must change.
+- Preserve approved prefixes, stable interfaces, and unaffected kernel structure.
+- Implement only the active frontier plus prerequisite integration that becomes active at this frontier.
+- Do not broaden the task beyond the current stage unless a narrow coherence fix is required.
+"""
+
 
 def build_round0_coder_body(
     *,
