@@ -1,0 +1,13 @@
+{
+  "stage_id": "S0",
+  "generated": [
+    "solution/dsa_attention/kernel_0.py"
+  ],
+  "frontier_validation_report": "run_stage_validation(S0, kernel_0.py::validate_stage__s0_shell) completed with exit code 0 but 0/5 synthetic cases passed. Failed cases: num_tokens=1,2,6,7,8.",
+  "frontier_verified": false,
+  "final_correctness_verified": false,
+  "correctness_check_report": "",
+  "status": "validation_failed",
+  "message": "Implemented the S0 shell/config/debug-export scaffolding in kernel_0.py, but the stage frontier still fails the synthetic validator for all 5 cases.",
+  "reflection": "The module imports and executes, and I confirmed via a temporary probe that validate_stage__s0_shell is invoked with the expected 8 CUDA tensor arguments including scalar sm_scale as a 0-d fp32 tensor. The remaining blocker is the hidden stage-validation ABI for exporting/comparing S0 debug surfaces: several coherent encodings of launch metadata/token mapping still produce 0/5 passes. The smallest next fix is to align validate_stage__s0_shell with the benchmark service\u2019s expected debug-export return/layout contract before extending any further stage logic. Regression risk to approved prefixes is low because there were no previously approved stages."
+}

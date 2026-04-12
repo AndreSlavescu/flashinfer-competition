@@ -148,6 +148,7 @@ def make_kernel_optimizer(
                 if "codex_optimizer_engineer" in names
                 else ""
             ),
+            include_hardware_spec=False,
         ),
         tools=tools,
         model=model,

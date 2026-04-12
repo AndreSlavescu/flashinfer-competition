@@ -1,0 +1,13 @@
+{
+  "stage_id": "S2",
+  "generated": [
+    "solution/dsa_attention/kernel_0.py"
+  ],
+  "frontier_validation_report": "run_stage_validation(S2, kernel_0.py::validate_stage__s2_qk_logits) completed with exit code 0 and 5/5 synthetic cases passed.",
+  "frontier_verified": true,
+  "final_correctness_verified": false,
+  "correctness_check_report": "",
+  "status": "success",
+  "message": "Implemented the S2 QK logits slice: added padded Q phase loading, slice-accumulated raw fp32 tile-0 logits export, and a cumulative S2 validator that rechecks the approved S0-S1 prefix before validating TMEM-style logits.",
+  "reflection": "The missing frontier work was the tile-0 raw QK accumulator path and its independent oracle. I added a staged host-side qk_mainloop with explicit 64x16 padded Q slices, a separate eager reference for the live 16x32 logits, S2 debug export plumbing, and temporary S2 CuTe shell printf instrumentation while preserving the approved S0-S1 structure. The smallest next fix is S3\u2019s base-2 softmax/correction pipeline; regression risk to approved prefixes is low because the S2 validator re-runs the S1 validator on cloned inputs and the cumulative frontier passed 5/5 synthetic cases."
+}

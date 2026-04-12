@@ -264,10 +264,6 @@ def validate_impl_graph(graph: ImplementationGraph) -> None:
             raise ValueError(
                 f"Stage '{stage.stage_id}' references unknown prerequisites: {missing}"
             )
-        if not stage.debug_exports:
-            raise ValueError(
-                f"Stage '{stage.stage_id}' must declare at least one debug export for frontier validation."
-            )
         late = [
             dep for dep in stage.prerequisites if stage_index[dep] >= stage_index[stage.stage_id]
         ]
@@ -327,8 +323,6 @@ def _approved_frontier_summaries(
                 "stage_id": completed_stage.stage_id,
                 "title": completed_stage.title,
                 "outputs": completed_stage.outputs,
-                "debug_exports": completed_stage.debug_exports,
-                "checks": completed_stage.checks,
                 "frontier_verified": last_result.frontier_verified,
                 "frontier_validation_report": last_result.frontier_validation_report,
             }
@@ -730,8 +724,8 @@ def _build_invalid_impl_graph_feedback(error: ValueError, invalid_path: Path) ->
         "`DesignerResult`. Do not restart from scratch. Preserve the current plan and stable "
         "stage IDs where possible.\n\n"
         "Hard requirements for every stage:\n"
-        "- `owner_warps`, `outputs`, `checks`, and `debug_exports` must all be non-empty.\n"
-        "- `debug_exports` must contain at least one validation surface used by frontier validation.\n"
+        "- `owner_warps`, `outputs`, and `relevant_helpers` must all be non-empty.\n"
+        "- `outputs` must define the concrete cumulative validation contract for the stage.\n"
         "- `validation_entry_point` must remain concrete.\n\n"
         f"The invalid graph was dumped to {_display_path(invalid_path)} for debugging."
     )

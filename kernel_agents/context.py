@@ -191,18 +191,17 @@ class StageSpec(BaseModel):
     )
     outputs: list[str] = Field(
         min_length=1,
-        description="Observable outputs or debug surfaces produced by the stage.",
-    )
-    debug_exports: list[str] = Field(
-        min_length=1,
         description=(
-            "Validation-only observables that must be exported to GMEM for "
-            "the cumulative frontier validator."
+            "Concrete stage outputs that define the cumulative validation contract "
+            "for this frontier."
         ),
     )
-    checks: list[str] = Field(
+    relevant_helpers: list[str] = Field(
         min_length=1,
-        description="Human-readable cumulative-frontier validation checks for the stage.",
+        description=(
+            "CuTeDSL APIs, abstractions, snippets, or examples that are especially "
+            "relevant when implementing this stage."
+        ),
     )
     validation_entry_point: str = Field(
         description=(
@@ -216,10 +215,6 @@ class StageSpec(BaseModel):
             "Exact markdown excerpt copied from kernel_0_plan.md that describes "
             "this stage's intended design."
         ),
-    )
-    target_areas: list[str] = Field(
-        default_factory=list,
-        description="Optional advisory code areas the coder should inspect first.",
     )
 
     @model_validator(mode="after")
@@ -238,15 +233,11 @@ class StageSpec(BaseModel):
         required_list_fields = {
             "owner_warps": self.owner_warps,
             "outputs": self.outputs,
-            "debug_exports": self.debug_exports,
-            "checks": self.checks,
+            "relevant_helpers": self.relevant_helpers,
         }
         for field_name, values in required_list_fields.items():
             if any(not value.strip() for value in values):
                 raise ValueError(f"{field_name} must not contain blank entries.")
-
-        if any(not value.strip() for value in self.target_areas):
-            raise ValueError("target_areas must not contain blank entries.")
 
         return self
 

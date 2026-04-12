@@ -122,6 +122,7 @@ def make_kernel_coder(
             tools=tools,
             extra_instructions=extra_instructions,
             codex_worker_block=codex_worker_block,
+            include_hardware_spec=False,
         )
 
     return Agent[SharedContext](

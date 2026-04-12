@@ -1,0 +1,13 @@
+{
+  "stage_id": "S1",
+  "generated": [
+    "solution/dsa_attention/kernel_0.py"
+  ],
+  "frontier_validation_report": "run_stage_validation(S1, kernel_0.py::validate_stage__s1_sparse_gather) completed with exit code 0 and 5/5 synthetic cases passed.",
+  "frontier_verified": true,
+  "final_correctness_verified": false,
+  "correctness_check_report": "",
+  "status": "success",
+  "message": "Implemented the cumulative S1 sparse-index decode and irregular CKV/KPE gather slice in solution/dsa_attention/kernel_0.py, including tile-0 debug exports and validation, and verified the S0->S1 frontier with 5/5 synthetic cases passing.",
+  "reflection": "The smallest coherent extension was to keep the existing S0 shell intact and add Python-side prefix helpers for the active frontier: tile-0 sparse-index staging, valid-mask decode, zero-filled CKV/KPE gathers, and the derived PV-facing CKV view, then expose them through cumulative S1 debug exports and validation while continuing to backfill output/lse with the eager full reference for the synthetic harness ABI. Regression risk to the approved S0 prefix is low because the launch metadata path and shell launcher were preserved and S1 logic is only activated when its debug exports are requested."
+}

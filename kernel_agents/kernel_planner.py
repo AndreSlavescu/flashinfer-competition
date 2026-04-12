@@ -122,6 +122,7 @@ history summary.
             body=PLANNER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,
+            include_hardware_spec=True,
         ),
         tools=tools,
         model=model,

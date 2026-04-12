@@ -8,7 +8,12 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from agents.stream_events import AgentUpdatedStreamEvent, RunItemStreamEvent, StreamEvent
+from agents.stream_events import (
+    AgentUpdatedStreamEvent,
+    RawResponsesStreamEvent,
+    RunItemStreamEvent,
+    StreamEvent,
+)
 
 MAX_PREVIEW_CHARS = 120
 _HINT_KEYS = (
@@ -286,6 +291,16 @@ class StreamProgressRenderer:
         if isinstance(event, AgentUpdatedStreamEvent):
             self.current_agent_name = event.new_agent.name
             return f"  [{self.current_agent_name}] agent active"
+
+        if isinstance(event, RawResponsesStreamEvent):
+            data = event.data
+            if getattr(data, "type", None) == "response.output_item.added":
+                item = getattr(data, "item", None)
+                if item is not None and getattr(item, "type", None) == "compaction":
+                    return (
+                        f"  [{self.current_agent_name}] !! server-side context compaction occurred"
+                    )
+            return None
 
         if not isinstance(event, RunItemStreamEvent):
             return None

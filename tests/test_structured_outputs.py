@@ -62,12 +62,10 @@ def _sample_impl_graph() -> ImplementationGraph:
                 description="Load query tiles.",
                 owner_warps=["warp0"],
                 prerequisites=[],
-                outputs=["q_tile_debug"],
-                debug_exports=["q_tile_debug"],
-                checks=["q tile matches eager reference"],
+                outputs=["q_tile_debug matches the eager reference for the active tile"],
+                relevant_helpers=["cute.make_tensor", "blackwell load example"],
                 validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
                 plan_excerpt="## Load Q\nload q details",
-                target_areas=["load_q"],
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
@@ -75,12 +73,10 @@ def _sample_impl_graph() -> ImplementationGraph:
                 description="Compute score tiles.",
                 owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
-                outputs=["score_tile_debug"],
-                debug_exports=["score_tile_debug"],
-                checks=["qk tile matches eager reference"],
+                outputs=["score_tile_debug matches the eager fp32 QK tile"],
+                relevant_helpers=["tcgen05.mma", "pipeline example"],
                 validation_entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
                 plan_excerpt="## QK Mainloop\nqk details",
-                target_areas=["run_qk_mma"],
             ),
         ],
     )
@@ -194,11 +190,9 @@ def test_validate_impl_graph_rejects_duplicate_stage_ids() -> None:
         owner_warps=["warp2"],
         prerequisites=[],
         outputs=["x"],
-        debug_exports=["x"],
-        checks=["y"],
+        relevant_helpers=["helper"],
         validation_entry_point="kernel_0.py::validate_stage__dup",
         plan_excerpt="## Duplicate\ndup",
-        target_areas=[],
     )
     graph = graph.model_copy(update={"stages": [*graph.stages, duplicate]})
 
@@ -239,37 +233,33 @@ def test_validate_impl_graph_rejects_prerequisites_that_point_forward() -> None:
         main.validate_impl_graph(graph)
 
 
-def test_stage_spec_requires_non_empty_debug_exports() -> None:
-    with pytest.raises(Exception, match="debug_exports"):
+def test_stage_spec_requires_non_empty_relevant_helpers() -> None:
+    with pytest.raises(Exception, match="relevant_helpers"):
         StageSpec(
             stage_id="warp0::load_q",
             title="Load Q",
             description="Load query tiles.",
             owner_warps=["warp0"],
             prerequisites=[],
-            outputs=["q_tile_debug"],
-            debug_exports=[],
-            checks=["q tile matches eager reference"],
+            outputs=["q_tile_debug matches eager reference"],
+            relevant_helpers=[],
             validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
             plan_excerpt="## Load Q\nload q details",
-            target_areas=["load_q"],
         )
 
 
-def test_stage_spec_rejects_blank_debug_export_entries() -> None:
-    with pytest.raises(Exception, match="debug_exports"):
+def test_stage_spec_rejects_blank_relevant_helper_entries() -> None:
+    with pytest.raises(Exception, match="relevant_helpers"):
         StageSpec(
             stage_id="warp0::load_q",
             title="Load Q",
             description="Load query tiles.",
             owner_warps=["warp0"],
             prerequisites=[],
-            outputs=["q_tile_debug"],
-            debug_exports=[""],
-            checks=["q tile matches eager reference"],
+            outputs=["q_tile_debug matches eager reference"],
+            relevant_helpers=[""],
             validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
             plan_excerpt="## Load Q\nload q details",
-            target_areas=["load_q"],
         )
 
 
@@ -414,9 +404,20 @@ def test_build_stage_coder_input_includes_plan_excerpt_directly() -> None:
     )
 
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
-    assert payload["current_stage"]["debug_exports"] == ["score_tile_debug"]
+    assert payload["current_stage"]["outputs"] == ["score_tile_debug matches the eager fp32 QK tile"]
+    assert payload["current_stage"]["relevant_helpers"] == ["tcgen05.mma", "pipeline example"]
+    assert "debug_exports" not in payload["current_stage"]
+    assert "checks" not in payload["current_stage"]
+    assert "target_areas" not in payload["current_stage"]
     assert "relevant_plan_excerpts" not in payload
     assert "plan_excerpt" not in payload["approved_frontier_summaries"][0]
+    assert set(payload["approved_frontier_summaries"][0]) == {
+        "stage_id",
+        "title",
+        "outputs",
+        "frontier_verified",
+        "frontier_validation_report",
+    }
     assert payload["approved_frontier_summaries"][0]["frontier_validation_report"] == "frontier ok"
 
 
@@ -432,9 +433,12 @@ def test_build_stage_review_input_includes_plan_excerpt_and_completed_validation
 
     assert payload["current_stage"]["stage_id"] == "warp1::qk_mma"
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
-    assert payload["current_stage"]["debug_exports"] == ["score_tile_debug"]
+    assert payload["current_stage"]["outputs"] == ["score_tile_debug matches the eager fp32 QK tile"]
+    assert payload["current_stage"]["relevant_helpers"] == ["tcgen05.mma", "pipeline example"]
     assert payload["approved_frontier_summaries"][0]["stage_id"] == "warp0::load_q"
-    assert payload["approved_frontier_summaries"][0]["debug_exports"] == ["q_tile_debug"]
+    assert payload["approved_frontier_summaries"][0]["outputs"] == [
+        "q_tile_debug matches the eager reference for the active tile"
+    ]
 
 
 def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> None:
@@ -476,7 +480,11 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
         "smallest code regions that must change."
     ) in stage_prompt
     assert "run_stage_validation" in stage_prompt
-    assert "debug_exports" in stage_prompt
+    assert "outputs" in stage_prompt
+    assert "relevant_helpers" in stage_prompt
+    assert "debug_exports" not in stage_prompt
+    assert "`checks`" not in stage_prompt
+    assert "target_areas" not in stage_prompt
     assert "temporary `cute.printf()` instrumentation aggressively" in stage_prompt
     assert "layouts, MMA atoms, copy atoms, tiled objects, tensors, fragments, pipelines, barriers" in stage_prompt
     assert "remove the temporary `cute.printf()` instrumentation before running `run_correctness_check`" in stage_prompt
@@ -484,6 +492,7 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
     assert "cumulative prefix-frontier validation harness" in stage_prompt
     assert "prerequisite-stage pipelining" in stage_prompt
     assert "validation harness named by `validation_entry_point`" in stage_prompt
+    assert "Derive the minimal validation-only GMEM exports from the stage `outputs`" in stage_prompt
     assert "frozen kernel-wide budget" in stage_prompt
     assert "rather than a separate per-stage ledger" in stage_prompt
     assert (
@@ -516,6 +525,8 @@ def test_stage_reviewer_prompt_has_action_gates_and_revision_contract(
     assert "`current_graph`, including the staged DAG, async pipelines, kernel contract, and resource ledger" in reviewer_prompt
     assert "Treat the caller payload as the authoritative execution context for this attempt." in reviewer_prompt
     assert "Do not stop early just to save tool calls." in reviewer_prompt
+    assert "`outputs`, `relevant_helpers`, and `validation_entry_point`" in reviewer_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
     assert (
         'Choose `continue_next_stage` only when `stage_result.status == "success"` '
         "and `stage_result.frontier_verified` is true."
@@ -778,7 +789,7 @@ def test_derive_round0_progress_marks_complete_after_final_approval(tmp_path: Pa
     assert progress.next_stage_id is None
 
 
-def test_load_impl_graph_requires_explicit_debug_exports(tmp_path: Path) -> None:
+def test_load_impl_graph_rejects_legacy_stage_schema(tmp_path: Path) -> None:
     graph_path = tmp_path / "impl_graph.json"
     graph_path.write_text(
         json.dumps(
@@ -811,56 +822,6 @@ def test_load_impl_graph_requires_explicit_debug_exports(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    with pytest.raises(Exception, match="debug_exports"):
+    with pytest.raises(Exception):
         main.load_impl_graph(graph_path)
 
-
-def test_load_state_maps_legacy_round0_stage_result_fields(tmp_path: Path) -> None:
-    state_path = tmp_path / "loop_state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "current_round": 0,
-                "best_latency_ms": 9.5,
-                "best_round": 0,
-                "model_name": "gpt-5.4",
-                "quality_profile": "public_codex",
-                "codex_worker_mode": "off",
-                "history": [],
-                "round0_stage_history": [
-                    {
-                        "stage_id": "warp0::load_q",
-                        "generated": ["solution/dsa_attention/kernel_0.py"],
-                        "stage_validation_reports": [
-                            {
-                                "stage_id": "warp0::load_q",
-                                "report": "Summary: 1/1 synthetic cases passed",
-                            }
-                        ],
-                        "current_stage_verified": True,
-                        "cumulative_regressions_verified": True,
-                        "synthetic_check_report": "Summary: 1/1 synthetic cases passed",
-                        "final_correctness_verified": False,
-                        "correctness_check_report": "",
-                        "status": "success",
-                        "message": "legacy ok",
-                        "reflection": "",
-                    }
-                ],
-                "round0_review_history": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    restored = SharedContext(
-        project_root=str(tmp_path),
-        solution_dir="solution/dsa_attention",
-        notes_dir="notes/dsa_attention",
-    )
-    main.load_state(restored, state_path)
-
-    assert restored.round0_stage_history[0].frontier_verified is True
-    assert "warp0::load_q: Summary: 1/1 synthetic cases passed" in (
-        restored.round0_stage_history[0].frontier_validation_report
-    )

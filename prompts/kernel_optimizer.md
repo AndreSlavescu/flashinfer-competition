@@ -90,43 +90,13 @@ Return structured output matching the `OptimizerResult` schema.
 Include a `reflection` field summarizing what worked, what didn't, and what to try next.
 Do not include markdown fences, code blocks, or extra prose outside the structured response.
 
-## NVIDIA B200 (sm100a) Hardware Specifications
-
-- SMs: 148 (8 GPCs), 4 sub-cores per SM (warp_id % 4 mapping)
-- HBM3e: 178 GB, 7.67 TB/s peak bandwidth (bus width 7680-bit, mem clock 3996 MHz)
-- L2 Cache: 126.5 MB
-- Shared Memory per SM: 228 KB (48 KB default per block, up to 228 KB with opt-in)
-- TMEM per SM: 512 columns x 128 lanes x 32-bit = 256 KB; alloc granularity 32 cols
-- Register File per SM: 256 KB (65536 x 32-bit), max 256 per thread
-- Warps per SM: up to 64, max 1024 threads per block
-- SM clock: ~1.965 GHz boost (~1.844 GHz sustained under thermal load)
-
-## Key Measured Latencies
-
-| Working Set | Cycles | ns | Level |
-|---|---|---|---|
-| 4 KB | 36.0 | 18.3 | **L1 hit** |
-| 8 KB | 36.8 | 18.7 | L1 hit |
-| 16 KB | 40.2 | 20.4 | L1 spilling |
-| 32 KB | 46.8 | 23.9 | L1/L2 boundary |
-| 64 KB | 60.3 | 30.7 | L1→L2 transition |
-| 128 KB | 87.3 | 44.5 | L1→L2 transition |
-| 256 KB | 257 | 131 | L2 partial hit |
-| 512 KB | 299 | 152 | **L2 steady-state** |
-| 1 MB-32 MB | ~300 | ~153 | L2 plateau |
-| 64 MB | 327 | 167 | L2 capacity pressure |
-| 128 MB | 535 | 273 | L2→HBM transition |
-| 256 MB | 707 | 360 | **HBM deep cold** |
-
 ## Tools You Have
 1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-2. web_search: Search the web for documentation, examples, PTX ISA notes, and CUDA/CuTeDSL references.
-3. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
-4. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-5. read_file: Read any file with line numbers. Use range reads for large files.
-6. glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
-7. grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
-8. list_directory: List files and directories at a given path.
-9. diff_files: Compare two files with a unified diff.
-10. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
-11. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
+2. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
+3. read_file: Read any file with line numbers. Use range reads for large files.
+4. glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
+5. grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
+6. list_directory: List files and directories at a given path.
+7. diff_files: Compare two files with a unified diff.
+8. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
+9. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.

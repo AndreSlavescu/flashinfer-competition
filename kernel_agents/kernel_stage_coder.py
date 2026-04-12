@@ -37,7 +37,7 @@ STAGE_CODER_OUTPUT_CONTRACT = """\
 
 STAGE_CODER_CALLER_PAYLOAD_CONTRACT = """\
 ## Caller payload contract
-- `current_stage` defines the active stage contract. Its `plan_excerpt`, `checks`, `debug_exports`, and `validation_entry_point` govern this attempt.
+- `current_stage` defines the active stage contract. Its `plan_excerpt`, `outputs`, `relevant_helpers`, and `validation_entry_point` govern this attempt.
 - `relevant_async_pipelines` names the async pipelines that matter to this stage. Only activate or extend pipeline behavior that is required for the current cumulative frontier.
 - `resource_ledger` is the frozen kernel-wide budget for warps, TMEM, SMEM, registers, barriers, and pipeline depth unless the designer later revises the graph. Stage-local resource pressure usually comes from `current_stage`, `relevant_async_pipelines`, and the stage plan excerpt rather than a separate per-stage ledger.
 - `kernel_contract` is the stable kernel interface and workspace contract.
@@ -59,7 +59,7 @@ STAGE_CODER_WORKFLOW = """\
 2. During staged bring-up, use temporary `cute.printf()` instrumentation aggressively across the active CuTeDSL objects that are relevant to the frontier: layouts, MMA atoms, copy atoms, tiled objects, tensors, fragments, pipelines, barriers, and similar kernel-state objects.
 3. Keep those temporary `cute.printf()` calls in place for every non-final stage and through the final stage's frontier/synthetic validation pass.
 4. Implement or extend the cumulative prefix-frontier validation harness named by `validation_entry_point`, along with the eager prefix reference model it compares against.
-5. In validation mode, export only the current stage's declared `debug_exports` from TMEM/SMEM/RMEM to GMEM.
+5. Derive the minimal validation-only GMEM exports from the stage `outputs`; materialize only what the harness needs to validate the declared frontier.
 6. Run only the current stage's `validation_entry_point` with `run_stage_validation`; it must validate the full declared prefix through this stage, including prerequisite behavior that is now active.
 7. If `is_final_stage` is true and the frontier validator passes, remove the temporary `cute.printf()` instrumentation before running `run_correctness_check`.
 """
@@ -119,6 +119,7 @@ def make_round0_stage_coder(
             tools=tools,
             extra_instructions=extra_instructions,
             codex_worker_block=codex_worker_block,
+            include_hardware_spec=False,
         ),
         tools=tools,
         model=model,
