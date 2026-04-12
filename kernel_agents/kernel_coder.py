@@ -16,24 +16,20 @@ from kernel_agents.context import (
 )
 from kernel_agents.prompting import (
     CODER_CODEX_WORKER_BLOCK,
+    build_round0_coder_body,
     build_agent_instructions,
 )
 from kernel_agents.tools import build_tools_for_role, tool_names
 
 PLAN_FILENAME = "kernel_0_plan.md"
 
-CODER_BODY = """\
+CODER_INTRO = """\
 You are kernel-coder. You implement a CuTeDSL Deepseek Sparse Attention kernel for \
 Blackwell B200 (sm100a) into solution/dsa_attention/kernel_0.py, EXACTLY per the design \
 plan embedded below in these instructions.
+"""
 
-## Kernel interface
-    def kernel(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale, output, lse)
-- q_nope [T,16,512] bf16, q_pe [T,16,64] bf16, ckv_cache [P,64,512] bf16,
-  kpe_cache [P,64,64] bf16, sparse_indices [T,2048] int32 (-1 = padding), sm_scale float
-- output [T,16,512] bf16, lse [T,16] fp32 (base-2) — pre-allocated, in-place writes
-- Logical reference only: references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
-
+CODER_OUTPUT_CONTRACT = """\
 ## Output contract (STRICT)
 1. Single file: solution/dsa_attention/kernel_0.py. Inline every helper.
 2. Every numbered section of the plan must be reflected in kernel_0.py — work \
@@ -42,52 +38,18 @@ synchronization, API map. Omitting or collapsing a section (replacing warp \
 specialization with a single loop, replacing a split-attention + reduction design \
 with one kernel, replacing tcgen05 UMMA with torch ops, etc.) is a failure — return \
 status="validation_failed" with the missing section named in `reflection`.
-3. All attention math in CuTeDSL. Allowed PyTorch surface: validation, allocation, \
-descriptor/layout construction, compile-cache lookup, stream acquisition, kernel launch, \
-output copy. Nothing else.
-4. FORBIDDEN: torch.matmul/bmm/einsum/softmax/logsumexp/masked_fill, advanced-index or \
-index_select sparse KV gathers, any torch op computing logits/probs/outputs/LSE.
-5. Return `CoderResult`. No markdown fences, no prose outside the structured response.
+3. Return `CoderResult`. No markdown fences, no prose outside the structured response.
+"""
 
+CODER_RULES = """\
 ## Rules
 - Follow the plan VERBATIM. Do not simplify decomposition to make correctness pass.
-- Use `cutlass.Constexpr` for static shapes; annotate types for the JIT.
-- Use the JIT compile cache pattern below.
-- Compile only on Modal B200 via `run_synthetic_check` / `run_correctness_check` — \
-never locally. Trust the parsed summaries, not raw shell logs.
-- `grep_search` before `read_file` under `references/`.
 - If the kernel already reflects the plan structure, apply the smallest fix on \
 failure. If a plan-mandated component is missing, adding it is not a 'rewrite' — it \
 is required work.
 - Two-gate acceptance for status="success":
   - Gate 1 (adherence): every numbered section of the plan is reflected in the file.
   - Gate 2 (correctness): all 23/23 correctness workloads pass.
-
-## JIT compile cache pattern
-```
-compile_cache = {}
-
-def _get_compiled_kernel(..., stream):
-    cache_key = (...)  # index by shapes
-    compiled = compile_cache.get(cache_key)
-    if compiled is None:
-        compiled = cute.compile(..., stream)
-        compile_cache[cache_key] = compiled
-    return compiled
-```
-
-## References (follow the plan's own API map for exact call sites)
-- references/cutlass/python/CuTeDSL/cutlass/cute         — core, tma, tcgen05, warp helpers
-- references/cutlass/python/CuTeDSL/cutlass/pipeline     — PipelineTma*/PipelineAsync*/PipelineUmma*
-- references/cutlass/python/CuTeDSL/cutlass/utils        — blackwell_helpers, smem/tmem allocators
-- references/cutlass/examples/python/CuTeDSL/blackwell   — warp-specialized B200 kernels (MLA)
-- references/quack                                        — optimized CuTeDSL kernels
-
-## Tool policy
-- `run_synthetic_check` / `run_correctness_check` are the canonical correctness source.
-- If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
-- If `last_shell_overflow.txt` is written, inspect it before the next overflowing call.
-- Do not create spill files. Refine tool calls instead.
 """
 
 
@@ -113,10 +75,13 @@ def _compose_coder_body_with_plan(ctx: SharedContext) -> str:
             "Run kernel-designer (round 0a) before invoking the coder."
         )
     plan_text = plan_path.read_text()
-    return (
-        f"{CODER_BODY.rstrip()}\n\n"
-        f"## Design plan (VERBATIM — implement this)\n\n"
-        f"{plan_text.strip()}\n"
+    return build_round0_coder_body(
+        intro_block=CODER_INTRO,
+        output_contract_block=CODER_OUTPUT_CONTRACT,
+        role_rules_block=CODER_RULES,
+        extra_sections=(
+            f"## Design plan (VERBATIM — implement this)\n\n{plan_text.strip()}",
+        ),
     )
 
 

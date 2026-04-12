@@ -21,7 +21,8 @@ Blackwell (B200) CUDA kernels using CuTeDSL (CUTLASS Python DSL).
 ## Task
 
 Design a Deepseek Sparse Attention kernel in CuTeDSL for B200 (sm100a). \
-Write the design to solution/dsa_attention/kernel_0_plan.md.
+Write the human-readable design to solution/dsa_attention/kernel_0_plan.md and \
+return a machine-readable staged implementation graph in the `DesignerResult`.
 
 BASELINE KERNEL (FOR LOGICAL REFERENCE ONLY): \
 references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
@@ -31,6 +32,7 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 1. Use optimized B200 (sm100a) features: TMA ld/st, tcgen05 MMA, warp specialization, async pipelining.
 2. kernel_0_plan.md describes ONLY the final CuTeDSL design. No bootstrap path, no future optimized path, no PyTorch fallback.
 3. You MUST write solution/dsa_attention/kernel_0_plan.md.
+4. Minimize duplication between the markdown plan and the implementation graph. The markdown owns the design narrative; the graph owns the machine contract.
 
 ## Workflow
 
@@ -51,7 +53,17 @@ and record its file path. You must be able to point to the exact code region(s) 
    - **Tensor memory plan**: column assignments, layouts for tcgen05 mma and ld/st
    - **Synchronization**: barriers and fences at async pipeline, SMEM, TMEM boundaries
    - **CuTeDSL API map**: for each design element, the specific CuTeDSL API/class and its file path under references/
-4. Read through all references to find CuTeDSL abstractions and APIs that simplify B200 and PTX features you plan to use \
+4. Derive a compact staged implementation graph from the final design plan. The graph must include:
+   - `kernel_contract`: a strict object with `summary` and `items[{key,value}]` covering the kernel interface, workspace contract, split-kv and reduction-kernel contract
+   - `resource_ledger`: a strict object with `summary` and `items[{key,value}]` covering warp map, register budgets, TMEM columns/offsets, SMEM buffers, named barriers, and pipeline stage counts
+   - `async_pipelines`: architectural pipelines modeled after the plan's async-pipeline section
+   - `stages`: ordered stage specs with `stage_id`, `title`, `description`, `owner_warps`, `prerequisites`, `outputs`, `checks`, `validation_entry_point`, `plan_excerpt`, and optional advisory `target_areas`
+5. Keep the staged graph minimal:
+   - no ownership-enforcement fields like owned_symbols, glue_points, or pipeline_membership
+   - stages should be derived from the design itself (for example warp0::load_q, warp1::qk_mma, warp2_3::softmax)
+   - `plan_excerpt` should copy the exact markdown snippet from kernel_0_plan.md that this stage is implementing
+   - each stage must expose a concrete validation entry point in kernel_0.py for `run_stage_validation`
+6. Read through all references to find CuTeDSL abstractions and APIs that simplify B200 and PTX features you plan to use \
 (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.)
 
 ## References
@@ -81,7 +93,7 @@ External:
 
 ## Output Format
 
-Return structured output matching the `DesignerResult` schema.
+Return structured output matching the `DesignerResult` schema, including the staged implementation graph.
 Do not include markdown fences, code blocks, or extra prose outside the structured response.
 """
 

@@ -16,6 +16,13 @@ Verbosity = Literal["low", "medium", "high"]
 QualityProfile = Literal["legacy", "public_codex"]
 CodexWorkerMode = Literal["off", "coder_optimizer"]
 CodexWorkerReasoningEffort = Literal["low", "medium", "high", "xhigh"]
+Round0Mode = Literal["staged", "legacy"]
+Round0StageStatus = Literal["success", "compile_error", "validation_failed"]
+StageReviewAction = Literal[
+    "continue_next_stage",
+    "retry_same_stage",
+    "revise_design_then_retry",
+]
 
 REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
     "none",
@@ -33,6 +40,7 @@ CODEX_WORKER_REASONING_EFFORT_CHOICES: tuple[CodexWorkerReasoningEffort, ...] = 
     "high",
     "xhigh",
 )
+ROUND0_MODE_CHOICES: tuple[Round0Mode, ...] = ("staged", "legacy")
 
 
 @dataclass(frozen=True)
@@ -118,6 +126,10 @@ class SharedContext:
     codex_thread_id_coder_engineer: str | None = None
     codex_thread_id_optimizer_engineer: str | None = None
     current_agent_role: str = ""
+    round0_mode: Round0Mode = "staged"
+    round0_impl_graph_file: str = ""
+    round0_stage_history: list[Round0StageResult] = field(default_factory=list)
+    round0_review_history: list[StageReviewResult] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -132,11 +144,138 @@ class StructuredResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AsyncPipelineSpec(BaseModel):
+    """Machine-readable view of an async pipeline from the design plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pipeline_id: str = Field(description="Stable identifier such as P0/P1.")
+    name: str = Field(description="Human-readable pipeline name.")
+    producer_warps: list[str] = Field(
+        description="Warp names responsible for producing the pipeline payload.",
+    )
+    consumer_warps: list[str] = Field(
+        description="Warp names responsible for consuming the pipeline payload.",
+    )
+    num_stages: int = Field(description="Pipeline depth.")
+    payload: str = Field(description="Short description of the payload being handed off.")
+    smem_budget: str = Field(
+        description="Shared-memory budget or note for this pipeline.",
+    )
+    tmem_budget: str = Field(
+        description="Tensor-memory budget or note for this pipeline.",
+    )
+    register_budget: str = Field(
+        description="Register budget or note for participating warps.",
+    )
+    participating_stages: list[str] = Field(
+        description="Stage IDs that implement or consume this pipeline.",
+    )
+
+
+class StageSpec(BaseModel):
+    """Single implementation stage derived from the design plan."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage_id: str = Field(description="Stable stage identifier.")
+    title: str = Field(description="Short human-readable title.")
+    description: str = Field(description="What this stage implements.")
+    owner_warps: list[str] = Field(
+        description="Warp names primarily responsible for the stage.",
+    )
+    prerequisites: list[str] = Field(
+        default_factory=list,
+        description="Stage IDs that must be completed before this stage runs.",
+    )
+    outputs: list[str] = Field(
+        description="Observable outputs or debug surfaces produced by the stage.",
+    )
+    checks: list[str] = Field(
+        description="Human-readable validation checks for the stage.",
+    )
+    validation_entry_point: str = Field(
+        description=(
+            "Python entry point used by run_stage_validation, e.g. "
+            "'kernel_0.py::validate_stage__foo'."
+        ),
+    )
+    plan_excerpt: str = Field(
+        description=(
+            "Exact markdown excerpt copied from kernel_0_plan.md that describes "
+            "this stage's intended design."
+        ),
+    )
+    target_areas: list[str] = Field(
+        default_factory=list,
+        description="Optional advisory code areas the coder should inspect first.",
+    )
+
+
+class KeyValueNote(BaseModel):
+    """Compact strict-schema entry for plan-derived graph notes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str = Field(description="Stable item key.")
+    value: str = Field(description="Human-readable item value.")
+
+
+class KernelContractSpec(BaseModel):
+    """Strict-schema kernel contract summary for staged round-0 execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(description="One-line summary of the kernel contract.")
+    items: list[KeyValueNote] = Field(
+        description="Key contract points such as entry points, workspaces, and launch interfaces.",
+    )
+
+
+class ResourceLedgerSpec(BaseModel):
+    """Strict-schema resource ledger for staged round-0 execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(description="One-line summary of the frozen resource plan.")
+    items: list[KeyValueNote] = Field(
+        description=(
+            "Key resource notes covering warps, registers, TMEM, SMEM, barriers, "
+            "pipeline depths, and other global kernel constraints."
+        ),
+    )
+
+
+class ImplementationGraph(BaseModel):
+    """Machine contract for staged round-0 implementation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kernel_contract: KernelContractSpec = Field(
+        description="Kernel interface and workspace contract for the implementation.",
+    )
+    resource_ledger: ResourceLedgerSpec = Field(
+        description=(
+            "Frozen resource plan covering warps, registers, TMEM, SMEM, barriers, "
+            "and other stage-spanning kernel resources."
+        ),
+    )
+    async_pipelines: list[AsyncPipelineSpec] = Field(
+        description="Architectural async pipeline definitions derived from the plan.",
+    )
+    stages: list[StageSpec] = Field(
+        description="Ordered stage DAG used by the staged round-0 coder loop.",
+    )
+
+
 class DesignerResult(StructuredResult):
     """Returned by kernel-designer after producing the design plan."""
 
     plan_file: str = Field(
         description="Path to the design plan file written by the agent.",
+    )
+    impl_graph: ImplementationGraph = Field(
+        description="Machine-readable staged implementation graph derived from the plan.",
     )
     status: Literal["success", "error"] = Field(
         description="Whether the designer successfully produced the design plan.",
@@ -166,6 +305,72 @@ class CoderResult(StructuredResult):
             "Reflection covering task difficulty, encountered bugs, helpful resources, "
             "and hindsight design changes."
         ),
+    )
+
+
+class StageValidationReport(BaseModel):
+    """Validation report for a completed round-0 stage."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage_id: str = Field(description="Stage ID that was validated.")
+    report: str = Field(description="Concise report returned by the validation workflow.")
+
+
+class Round0StageResult(StructuredResult):
+    """Returned by the staged round-0 coder after a single stage attempt."""
+
+    stage_id: str = Field(description="Stage ID that was implemented.")
+    generated: list[str] = Field(
+        description="Paths to kernel artifacts touched or produced by this stage.",
+    )
+    stage_validation_reports: list[StageValidationReport] = Field(
+        description="Validation reports for the current stage and cumulative regressions.",
+    )
+    current_stage_verified: bool = Field(
+        description="Whether the current stage's dedicated validation passed.",
+    )
+    cumulative_regressions_verified: bool = Field(
+        description="Whether all previously completed stage validations still pass.",
+    )
+    synthetic_check_report: str = Field(
+        description="Optional full-kernel synthetic report for the current milestone.",
+    )
+    final_correctness_verified: bool = Field(
+        description="Whether the final round-0 correctness gate passed for this stage attempt.",
+    )
+    correctness_check_report: str = Field(
+        description="Optional correctness-only report for the final stage.",
+    )
+    status: Round0StageStatus = Field(
+        description="Final outcome for the stage attempt.",
+    )
+    message: str = Field(
+        description="Brief summary of the stage attempt outcome.",
+    )
+    reflection: str = Field(
+        description="Brief reflection on the stage attempt.",
+    )
+
+
+class StageReviewResult(StructuredResult):
+    """Returned by the designer acting as judge for a round-0 stage attempt."""
+
+    stage_id: str = Field(description="Stage ID under review.")
+    action: StageReviewAction = Field(
+        description="Judge action for the next orchestrator step.",
+    )
+    message: str = Field(
+        description="Brief explanation for the selected action.",
+    )
+    restart_from_stage_id: str | None = Field(
+        description=(
+            "Earliest stage ID in the replacement graph that must be redone after "
+            "a design revision. Null when the current graph remains valid."
+        ),
+    )
+    replacement_impl_graph: ImplementationGraph | None = Field(
+        description="Replacement graph when action is revise_design_then_retry; otherwise null.",
     )
 
 

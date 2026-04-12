@@ -56,6 +56,84 @@ OPTIMIZER_CODEX_WORKER_BLOCK = """
 - Keep validation ownership in this parent agent: run `run_synthetic_check` and `run_correctness_check` yourself and return the final structured result yourself.
 """
 
+ROUND0_CODER_KERNEL_INTERFACE_BLOCK = """\
+## Kernel interface
+    def kernel(q_nope, q_pe, ckv_cache, kpe_cache, sparse_indices, sm_scale, output, lse)
+- q_nope [T,16,512] bf16, q_pe [T,16,64] bf16, ckv_cache [P,64,512] bf16,
+  kpe_cache [P,64,64] bf16, sparse_indices [T,2048] int32 (-1 = padding), sm_scale float
+- output [T,16,512] bf16, lse [T,16] fp32 (base-2) — pre-allocated, in-place writes
+- Logical reference only: references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
+"""
+
+ROUND0_CODER_SUPPORT_BLOCK = """\
+## Shared implementation rules
+- All attention math in CuTeDSL. Allowed PyTorch surface: validation, allocation,
+  descriptor/layout construction, compile-cache lookup, stream acquisition, kernel launch,
+  output copy. Nothing else.
+- FORBIDDEN: torch.matmul/bmm/einsum/softmax/logsumexp/masked_fill, advanced-index or
+  index_select sparse KV gathers, any torch op computing logits/probs/outputs/LSE.
+- Use `cutlass.Constexpr` for static shapes; annotate types for the JIT.
+- Use the JIT compile cache pattern below.
+- Compile only on Modal B200 via `run_synthetic_check` / `run_correctness_check` —
+  never locally. Trust the parsed summaries, not raw shell logs.
+- `grep_search` before `read_file` under `references/`.
+- Do not create spill files. Refine tool calls instead.
+"""
+
+ROUND0_CODER_JIT_CACHE_BLOCK = """\
+## JIT compile cache pattern
+```
+compile_cache = {}
+
+def _get_compiled_kernel(..., stream):
+    cache_key = (...)  # index by shapes
+    compiled = compile_cache.get(cache_key)
+    if compiled is None:
+        compiled = cute.compile(..., stream)
+        compile_cache[cache_key] = compiled
+    return compiled
+```
+"""
+
+ROUND0_CODER_REFERENCES_BLOCK = """\
+## References (follow the plan's own API map for exact call sites)
+- references/cutlass/python/CuTeDSL/cutlass/cute         — core, tma, tcgen05, warp helpers
+- references/cutlass/python/CuTeDSL/cutlass/pipeline     — PipelineTma*/PipelineAsync*/PipelineUmma*
+- references/cutlass/python/CuTeDSL/cutlass/utils        — blackwell_helpers, smem/tmem allocators
+- references/cutlass/examples/python/CuTeDSL/blackwell   — warp-specialized B200 kernels (MLA)
+- references/quack                                        — optimized CuTeDSL kernels
+"""
+
+ROUND0_CODER_TOOL_POLICY_BLOCK = """\
+## Tool policy
+- `run_synthetic_check` / `run_correctness_check` are the canonical correctness source.
+- If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
+- If `last_shell_overflow.txt` is written, inspect it before the next overflowing call.
+- Do not create spill files. Refine tool calls instead.
+"""
+
+
+def build_round0_coder_body(
+    *,
+    intro_block: str,
+    output_contract_block: str,
+    role_rules_block: str,
+    extra_sections: Sequence[str] = (),
+) -> str:
+    """Assemble a round-0 coder prompt from shared and role-specific sections."""
+    parts = [
+        intro_block.strip(),
+        ROUND0_CODER_KERNEL_INTERFACE_BLOCK.strip(),
+        output_contract_block.strip(),
+        role_rules_block.strip(),
+        ROUND0_CODER_SUPPORT_BLOCK.strip(),
+        ROUND0_CODER_JIT_CACHE_BLOCK.strip(),
+        ROUND0_CODER_REFERENCES_BLOCK.strip(),
+        ROUND0_CODER_TOOL_POLICY_BLOCK.strip(),
+    ]
+    parts.extend(section.strip() for section in extra_sections if section.strip())
+    return "\n\n".join(parts) + "\n"
+
 TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "apply_patch": "Create, update, or delete files via SDK apply-patch diffs.",
     "web_search": "Search the web for documentation, examples, PTX ISA notes, and CUDA/CuTeDSL references.",
@@ -71,6 +149,7 @@ TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "run_ncu_profile": "Run NCU profiling on Modal B200 and return hardware utilization metrics.",
     "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return opcode and pipeline analysis.",
     "run_full_benchmark": "Run the full Modal benchmark and return parsed performance results.",
+    "run_stage_validation": "Run a stage-scoped synthetic validation entry point and return a concise parsed summary.",
     "run_synthetic_check": "Run the fast synthetic correctness sweep and return a concise parsed summary.",
     "run_correctness_check": "Run the full Modal correctness check and return a concise parsed summary.",
 }
