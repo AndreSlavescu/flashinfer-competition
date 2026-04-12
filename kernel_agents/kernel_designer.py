@@ -61,6 +61,8 @@ and record its file path. You must be able to point to the exact code region(s) 
 5. For each stage, copy the exact `plan_excerpt` markdown snippet from kernel_0_plan.md, provide a
    concrete cumulative `validation_entry_point` in kernel_0.py for `run_stage_validation`, and define
    the minimal `debug_exports` that must be materialized to GMEM in validation mode.
+   Every stage must declare non-empty `owner_warps`, `outputs`, `checks`, and `debug_exports`.
+   Empty or omitted `debug_exports` make the staged implementation graph invalid.
 6. Read through all references to find CuTeDSL abstractions and APIs that simplify B200 and PTX features you plan to use \
 (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.)
 

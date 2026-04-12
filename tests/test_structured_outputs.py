@@ -239,6 +239,40 @@ def test_validate_impl_graph_rejects_prerequisites_that_point_forward() -> None:
         main.validate_impl_graph(graph)
 
 
+def test_stage_spec_requires_non_empty_debug_exports() -> None:
+    with pytest.raises(Exception, match="debug_exports"):
+        StageSpec(
+            stage_id="warp0::load_q",
+            title="Load Q",
+            description="Load query tiles.",
+            owner_warps=["warp0"],
+            prerequisites=[],
+            outputs=["q_tile_debug"],
+            debug_exports=[],
+            checks=["q tile matches eager reference"],
+            validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
+            plan_excerpt="## Load Q\nload q details",
+            target_areas=["load_q"],
+        )
+
+
+def test_stage_spec_rejects_blank_debug_export_entries() -> None:
+    with pytest.raises(Exception, match="debug_exports"):
+        StageSpec(
+            stage_id="warp0::load_q",
+            title="Load Q",
+            description="Load query tiles.",
+            owner_warps=["warp0"],
+            prerequisites=[],
+            outputs=["q_tile_debug"],
+            debug_exports=[""],
+            checks=["q tile matches eager reference"],
+            validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
+            plan_excerpt="## Load Q\nload q details",
+            target_areas=["load_q"],
+        )
+
+
 def test_save_and_load_state_round0_fields_round_trip(tmp_path: Path) -> None:
     ctx = SharedContext(
         project_root=str(tmp_path),
@@ -443,6 +477,9 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
     ) in stage_prompt
     assert "run_stage_validation" in stage_prompt
     assert "debug_exports" in stage_prompt
+    assert "temporary `cute.printf()` instrumentation aggressively" in stage_prompt
+    assert "layouts, MMA atoms, copy atoms, tiled objects, tensors, fragments, pipelines, barriers" in stage_prompt
+    assert "remove the temporary `cute.printf()` instrumentation before running `run_correctness_check`" in stage_prompt
     assert "Re-run `run_stage_validation` for every previously completed stage" not in stage_prompt
     assert "cumulative prefix-frontier validation harness" in stage_prompt
     assert "prerequisite-stage pipelining" in stage_prompt
@@ -453,6 +490,7 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
         'Emit `status="compile_error"` when a compile/import/runtime failure blocks a '
         "trustworthy frontier validation result."
     ) in stage_prompt
+    assert "final-stage correctness still runs with temporary `cute.printf()` debug instrumentation enabled" in stage_prompt
     assert (
         'For non-final stages, emit `status="success"` only when `frontier_verified` is true.'
     ) in stage_prompt
@@ -773,7 +811,7 @@ def test_load_impl_graph_requires_explicit_debug_exports(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    with pytest.raises(Exception, match="debug export"):
+    with pytest.raises(Exception, match="debug_exports"):
         main.load_impl_graph(graph_path)
 
 

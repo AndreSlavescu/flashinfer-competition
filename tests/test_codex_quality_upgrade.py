@@ -14,9 +14,15 @@ from agents.tool_context import ToolContext
 
 import main
 from kernel_agents.context import (
+    DesignerResult,
+    ImplementationGraph,
+    KernelContractSpec,
+    KeyValueNote,
     LEGACY_TOOL_LIMITS,
     PUBLIC_CODEX_TOOL_LIMITS,
+    ResourceLedgerSpec,
     SharedContext,
+    StageSpec,
     ToolLimitSettings,
     tool_limits_for_profile,
 )
@@ -317,6 +323,135 @@ async def test_run_agent_stops_after_stage_rate_limit_retry_cap(
     ] * main.STAGE_RATE_LIMIT_MAX_RETRIES
 
 
+@pytest.mark.asyncio
+async def test_run_staged_designer_repairs_invalid_impl_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    ctx = _shared_context(tmp_path, quality_profile="public_codex")
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    solution_dir.mkdir(parents=True, exist_ok=True)
+    calls: list[dict[str, Any]] = []
+
+    valid_graph = ImplementationGraph(
+        kernel_contract=KernelContractSpec(
+            summary="kernel entry contract",
+            items=[KeyValueNote(key="entry_point", value="kernel_0.py::kernel")],
+        ),
+        resource_ledger=ResourceLedgerSpec(
+            summary="resource summary",
+            items=[KeyValueNote(key="tmem_cols", value="0-127")],
+        ),
+        async_pipelines=[],
+        stages=[
+            StageSpec(
+                stage_id="warp0::load_q",
+                title="Load Q",
+                description="Load query tiles.",
+                owner_warps=["warp0"],
+                prerequisites=[],
+                outputs=["q_tile_debug"],
+                debug_exports=["q_tile_debug"],
+                checks=["q tile matches eager reference"],
+                validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
+                plan_excerpt="## Load Q\nload q details",
+                target_areas=["load_q"],
+            ),
+            StageSpec(
+                stage_id="warp1::qk_mma",
+                title="QK MMA",
+                description="Compute score tiles.",
+                owner_warps=["warp1"],
+                prerequisites=["warp0::load_q"],
+                outputs=["score_tile_debug"],
+                debug_exports=["score_tile_debug"],
+                checks=["qk tile matches eager reference"],
+                validation_entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
+                plan_excerpt="## QK Mainloop\nqk details",
+                target_areas=["run_qk_mma"],
+            ),
+        ],
+    )
+    invalid_graph = valid_graph.model_copy(
+        update={
+            "stages": [
+                valid_graph.stages[0],
+                valid_graph.stages[1].model_copy(update={"stage_id": "warp0::load_q"}),
+            ]
+        }
+    )
+
+    class _FakeRunResult:
+        def __init__(self, typed_output: DesignerResult) -> None:
+            self.final_output = "{}"
+            self._typed_output = typed_output
+
+        def final_output_as(self, cls: type[Any], raise_if_incorrect_type: bool = False) -> Any:
+            if raise_if_incorrect_type and not isinstance(self._typed_output, cls):
+                raise TypeError(
+                    f"Expected {cls.__name__}, got {type(self._typed_output).__name__}"
+                )
+            return self._typed_output
+
+    results = [
+        _FakeRunResult(
+            DesignerResult(
+                plan_file="solution/dsa_attention/kernel_0_plan.md",
+                impl_graph=invalid_graph,
+                status="success",
+                message="invalid graph first",
+            )
+        ),
+        _FakeRunResult(
+            DesignerResult(
+                plan_file="solution/dsa_attention/kernel_0_plan.md",
+                impl_graph=valid_graph,
+                status="success",
+                message="valid graph second",
+            )
+        ),
+    ]
+
+    async def _fake_run_agent_once(
+        *,
+        starting_agent: object,
+        input: str | list[dict[str, Any]],
+        context: SharedContext,
+        max_turns: int,
+        verbose: bool,
+        session: SQLiteSession | None = None,
+    ) -> tuple[object, float]:
+        calls.append({"input": input, "session": session, "context": context})
+        return results.pop(0), 0.25
+
+    monkeypatch.setattr(main, "_run_agent_once", _fake_run_agent_once)
+
+    raw_result, designer_out, elapsed_s = await main._run_staged_designer_with_graph_validation(
+        starting_agent=object(),
+        initial_input="design the staged graph",
+        context=ctx,
+        max_turns=80,
+        verbose=False,
+        solution_dir=solution_dir,
+        max_graph_repairs=2,
+    )
+
+    assert isinstance(raw_result, _FakeRunResult)
+    assert designer_out.message == "valid graph second"
+    assert elapsed_s >= 0.0
+    assert len(calls) == 2
+    assert calls[0]["input"] == "design the staged graph"
+    assert "duplicate stage IDs" in calls[1]["input"]
+    assert isinstance(calls[0]["session"], SQLiteSession)
+    assert calls[0]["session"] is calls[1]["session"]
+    invalid_path = main.round0_invalid_impl_graph_path(solution_dir, 1)
+    assert invalid_path.exists()
+    assert (
+        json.loads(invalid_path.read_text(encoding="utf-8"))["stages"][1]["stage_id"]
+        == "warp0::load_q"
+    )
+
+
 def test_public_codex_is_the_default_run_config() -> None:
     run_config = main.make_run_config()
 
@@ -416,6 +551,8 @@ def test_designer_prompt_uses_schema_driven_graph_rules_and_b200_guidance() -> N
     assert "aligned with the `DesignerResult` schema" in instructions
     assert "Validation strategy" in instructions
     assert "minimal `debug_exports`" in instructions
+    assert "Every stage must declare non-empty `owner_warps`, `outputs`, `checks`, and `debug_exports`." in instructions
+    assert "Empty or omitted `debug_exports` make the staged implementation graph invalid." in instructions
     assert "The graph must include:" not in instructions
     assert "Architecture: see the B200 hardware specifications block above" not in instructions
 

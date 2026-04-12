@@ -56,10 +56,12 @@ STAGE_CODER_RULES = """\
 STAGE_CODER_WORKFLOW = """\
 ## Stage workflow
 1. Implement the active frontier in `kernel_0.py`, including any prerequisite integration that is now live.
-2. Implement or extend the cumulative prefix-frontier validation harness named by `validation_entry_point`, along with the eager prefix reference model it compares against.
-3. In validation mode, export only the current stage's declared `debug_exports` from TMEM/SMEM/RMEM to GMEM.
-4. Run only the current stage's `validation_entry_point` with `run_stage_validation`; it must validate the full declared prefix through this stage, including prerequisite behavior that is now active.
-5. If `is_final_stage` is true, run `run_correctness_check` after the frontier validator passes.
+2. During staged bring-up, use temporary `cute.printf()` instrumentation aggressively across the active CuTeDSL objects that are relevant to the frontier: layouts, MMA atoms, copy atoms, tiled objects, tensors, fragments, pipelines, barriers, and similar kernel-state objects.
+3. Keep those temporary `cute.printf()` calls in place for every non-final stage and through the final stage's frontier/synthetic validation pass.
+4. Implement or extend the cumulative prefix-frontier validation harness named by `validation_entry_point`, along with the eager prefix reference model it compares against.
+5. In validation mode, export only the current stage's declared `debug_exports` from TMEM/SMEM/RMEM to GMEM.
+6. Run only the current stage's `validation_entry_point` with `run_stage_validation`; it must validate the full declared prefix through this stage, including prerequisite behavior that is now active.
+7. If `is_final_stage` is true and the frontier validator passes, remove the temporary `cute.printf()` instrumentation before running `run_correctness_check`.
 """
 
 STAGE_CODER_STATUS_RUBRIC = """\
@@ -70,7 +72,7 @@ STAGE_CODER_STATUS_RUBRIC = """\
 - Emit `status="validation_failed"` when the code runs but the frontier check fails, the final correctness gate fails, or a plan-mandated stage contract is still missing.
 - `message` should name the highest-signal outcome for this attempt.
 - `reflection` should summarize the concrete root cause, the smallest next fix, and any regression risk to approved prefixes.
-- Never report success when the frontier validator fails, when the final stage skips the correctness gate, or when the returned fields disagree with the actual tool evidence.
+- Never report success when the frontier validator fails, when the final stage skips the correctness gate, when final-stage correctness still runs with temporary `cute.printf()` debug instrumentation enabled, or when the returned fields disagree with the actual tool evidence.
 """
 
 STAGE_CODER_BODY = build_round0_coder_body(
