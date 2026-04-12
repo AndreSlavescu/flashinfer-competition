@@ -1,0 +1,7 @@
+{
+  "stage_id": "S0",
+  "action": "retry_same_stage",
+  "message": "Retry S0 on the current graph. The blocking evidence is still frontier-validation failure (`status=\"validation_failed\"`, `frontier_verified=false`, 0/5 synthetic cases passed), but the reviewed implementation remains aligned with the S0 design rather than contradicting it: `KernelConfig` still freezes the planned shell constants (`threads_per_cta=224`, `dynamic_smem_bytes=154*1024`, `reserved_tmem_columns=512`), `emit_launch_metadata()` exports the expected four launch scalars plus the identity `blockIdx.x -> token` map, and `validate_stage__s0_shell()` now exercises `dsa_sparse_attention_fwd()` before publishing the S0 globals and checking them against `_eager_prefix_reference_s0()`. That points to an implementation/validator ABI mismatch in the S0 debug-export or validation-entry contract, not a flaw in the staged design or implementation graph.",
+  "restart_from_stage_id": null,
+  "replacement_impl_graph": null
+}

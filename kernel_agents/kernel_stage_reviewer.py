@@ -32,7 +32,7 @@ Review the current stage attempt and return one of exactly three actions:
 3. `revise_design_then_retry`
 
 ## Review evidence order
-1. `current_stage`, especially `plan_excerpt`, `checks`, `debug_exports`, and `validation_entry_point`
+1. `current_stage`, especially `plan_excerpt`, `outputs`, `relevant_helpers`, and `validation_entry_point`
 2. `current_graph`, including the staged DAG, async pipelines, kernel contract, and resource ledger
 3. the current `solution/dsa_attention/kernel_0.py` implementation
 4. `stage_result`
@@ -84,6 +84,7 @@ def make_round0_stage_reviewer(
             body=REVIEWER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,
+            include_hardware_spec=True,
         ),
         tools=tools,
         model=model,

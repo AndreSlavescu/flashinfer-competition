@@ -1,0 +1,7 @@
+{
+  "stage_id": "S0",
+  "action": "retry_same_stage",
+  "message": "Retry S0 on the current graph. The stage cannot advance because frontier verification failed in all 5 synthetic cases, but the reviewed evidence points to an implementation/validation-contract problem rather than a design flaw: the S0 resource plan in the payload still matches the code-level shell constants (`threads_per_cta=224`, `dynamic_smem_bytes=154*1024`, `reserved_tmem_columns=512`, one-CTA-per-token mapping), while `validate_stage__s0_shell` currently only re-synthesizes and returns debug tensors instead of exercising the intended shell/export path end-to-end. The next iteration should align the S0 debug-export ABI and validator-facing return/layout contract without changing the staged graph.",
+  "restart_from_stage_id": null,
+  "replacement_impl_graph": null
+}

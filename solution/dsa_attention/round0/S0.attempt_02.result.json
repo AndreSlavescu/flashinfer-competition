@@ -1,0 +1,13 @@
+{
+  "stage_id": "S0",
+  "generated": [
+    "solution/dsa_attention/kernel_0.py"
+  ],
+  "frontier_validation_report": "run_stage_validation(S0, kernel_0.py::validate_stage__s0_shell) completed with exit code 0 but 0/5 synthetic cases passed. Failed cases: num_tokens=1,2,6,7,8.",
+  "frontier_verified": false,
+  "final_correctness_verified": false,
+  "correctness_check_report": "",
+  "status": "validation_failed",
+  "message": "Implemented the S0 shell/config/resource scaffolding and validation harness updates in solution/dsa_attention/kernel_0.py, but the S0 frontier still fails the synthetic validator in all 5 cases.",
+  "reflection": "I tightened the stage-0 slice around the payload contract: added scalar-tensor sm_scale normalization for validator inputs, kept the one-CTA-per-token KernelConfig constants, added a CuTe @cute.jit host launcher with explicit grid/block/SMEM launch parameters, corrected the shell SMEM allocator accounting for the shared-storage header, and routed validate_stage__s0_shell through the forward shell path before checking the eager S0 metadata reference. Despite that, the canonical frontier check still reports 0/5 passes with no surfaced per-case diff, so the remaining blocker appears to be the hidden validator-facing ABI for S0 debug export comparison/return layout rather than the basic resource constants themselves. The smallest next fix is to align validate_stage__s0_shell and the exported debug tensors/globals to the exact bench_synthetic contract while preserving the current shell launcher and resource reservation structure. Regression risk is low because there were no previously approved prefixes and the edits remain confined to kernel_0.py."
+}

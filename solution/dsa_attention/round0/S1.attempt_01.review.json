@@ -1,0 +1,7 @@
+{
+  "stage_id": "S1",
+  "action": "retry_same_stage",
+  "message": "Retry S1. The design graph is still sound, but the current S1 frontier proof is not independent: validate_stage__s1_sparse_gather builds expected_debug via _eager_prefix_reference_s1, which in turn calls export_debug_stage_s1 and therefore reuses the same build_sparse_index_pipeline / gather_sparse_tile / PV-view logic under test. That makes the reported 5/5 pass self-referential rather than a real eager-baseline check for the S1 decode-and-gather contract.",
+  "restart_from_stage_id": null,
+  "replacement_impl_graph": null
+}

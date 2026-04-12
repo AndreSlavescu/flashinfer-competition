@@ -18,8 +18,6 @@ B200_HARDWARE_SPEC_BLOCK = """
 - Warps per SM: up to 64, max 1024 threads per block
 - SM clock: ~1.965 GHz boost (~1.844 GHz sustained under thermal load)
 
-## Key Measured Latencies
-
 | Working Set | Cycles | ns | Level |
 |---|---|---|---|
 | 4 KB | 36.0 | 18.3 | **L1 hit** |
@@ -198,6 +196,7 @@ def build_agent_instructions(
     tools: Sequence[object],
     extra_instructions: str = "",
     codex_worker_block: str = "",
+    include_hardware_spec: bool = False,
 ) -> str:
     """Compose a final agent prompt from role-specific and shared blocks.
 
@@ -205,7 +204,8 @@ def build_agent_instructions(
     (context) -> codex worker block -> tools section -> extra_instructions.
     """
     parts = [body.strip()]
-    parts.append(B200_HARDWARE_SPEC_BLOCK.strip())
+    if include_hardware_spec:
+        parts.append(B200_HARDWARE_SPEC_BLOCK.strip())
     if codex_worker_block.strip():
         parts.append(codex_worker_block.strip())
     parts.append(build_tools_section(tools))

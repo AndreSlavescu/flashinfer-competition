@@ -350,12 +350,10 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
                 description="Load query tiles.",
                 owner_warps=["warp0"],
                 prerequisites=[],
-                outputs=["q_tile_debug"],
-                debug_exports=["q_tile_debug"],
-                checks=["q tile matches eager reference"],
+                outputs=["q_tile_debug matches eager reference"],
+                relevant_helpers=["cute.make_tensor"],
                 validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
                 plan_excerpt="## Load Q\nload q details",
-                target_areas=["load_q"],
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
@@ -363,12 +361,10 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
                 description="Compute score tiles.",
                 owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
-                outputs=["score_tile_debug"],
-                debug_exports=["score_tile_debug"],
-                checks=["qk tile matches eager reference"],
+                outputs=["score_tile_debug matches eager reference"],
+                relevant_helpers=["tcgen05.mma"],
                 validation_entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
                 plan_excerpt="## QK Mainloop\nqk details",
-                target_areas=["run_qk_mma"],
             ),
         ],
     )
@@ -546,15 +542,13 @@ def test_designer_prompt_uses_schema_driven_graph_rules_and_b200_guidance() -> N
     ctx = _shared_context(Path.cwd())
     instructions = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
 
-    assert "Use the B200 hardware specifications block in these instructions" in instructions
-    assert "Do not look for a separate architecture file." in instructions
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in instructions
     assert "aligned with the `DesignerResult` schema" in instructions
     assert "Validation strategy" in instructions
-    assert "minimal `debug_exports`" in instructions
-    assert "Every stage must declare non-empty `owner_warps`, `outputs`, `checks`, and `debug_exports`." in instructions
-    assert "Empty or omitted `debug_exports` make the staged implementation graph invalid." in instructions
-    assert "The graph must include:" not in instructions
-    assert "Architecture: see the B200 hardware specifications block above" not in instructions
+    assert "`outputs` define the validation contract" in instructions
+    assert "`relevant_helpers`" in instructions
+    assert "debug_exports" not in instructions
+    assert "target_areas" not in instructions
 
 
 def test_only_planner_currently_receives_run_full_benchmark() -> None:
@@ -579,6 +573,39 @@ def test_agent_instructions_list_actual_registered_tools(tmp_path: Path) -> None
         instructions = _resolve_instructions(agent, ctx)
         for name in names:
             assert name in instructions
+
+
+def test_web_tools_are_removed_from_agent_tool_surfaces_and_prompt_lists(tmp_path: Path) -> None:
+    _write_kernel_plan_fixture(tmp_path)
+    ctx = _shared_context(tmp_path, codex_worker_mode="coder_optimizer")
+    agents = [
+        make_kernel_designer(context=ctx),
+        make_kernel_coder(context=ctx),
+        make_kernel_planner(context=ctx),
+        make_kernel_optimizer(context=ctx),
+    ]
+
+    for agent in agents:
+        names = tool_names(agent.tools)
+        instructions = _resolve_instructions(agent, ctx)
+        assert "web_search" not in names
+        assert "web_fetch" not in names
+        assert "web_search:" not in instructions
+        assert "web_fetch:" not in instructions
+
+
+def test_hardware_block_only_appears_for_designer_and_planner(tmp_path: Path) -> None:
+    _write_kernel_plan_fixture(tmp_path)
+    ctx = _shared_context(tmp_path)
+    designer_prompt = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
+    coder_prompt = _resolve_instructions(make_kernel_coder(context=ctx), ctx)
+    planner_prompt = _resolve_instructions(make_kernel_planner(context=ctx), ctx)
+    optimizer_prompt = _resolve_instructions(make_kernel_optimizer(context=ctx), ctx)
+
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in designer_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" in planner_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in coder_prompt
+    assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in optimizer_prompt
 
 
 def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:

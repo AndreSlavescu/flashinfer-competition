@@ -91,8 +91,6 @@ The caller input includes the prior-round history, current best latency, and the
 - Warps per SM: up to 64, max 1024 threads per block
 - SM clock: ~1.965 GHz boost (~1.844 GHz sustained under thermal load)
 
-## Key Measured Latencies
-
 | Working Set | Cycles | ns | Level |
 |---|---|---|---|
 | 4 KB | 36.0 | 18.3 | **L1 hit** |
@@ -110,16 +108,14 @@ The caller input includes the prior-round history, current best latency, and the
 
 ## Tools You Have
 1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
-2. web_search: Search the web for documentation, examples, PTX ISA notes, and CUDA/CuTeDSL references.
-3. web_fetch: Fetch content from a specific URL when you already know the page to inspect.
-4. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
-5. read_file: Read any file with line numbers. Use range reads for large files.
-6. glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
-7. grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
-8. list_directory: List files and directories at a given path.
-9. diff_files: Compare two files with a unified diff.
-10. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
-11. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
-12. run_ncu_profile: Run NCU profiling on Modal B200 and return hardware utilization metrics.
-13. run_sass_analysis: Run SASS analysis on a CuTeDSL kernel and return opcode and pipeline analysis.
-14. run_full_benchmark: Run the full Modal benchmark and return parsed performance results.
+2. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.
+3. read_file: Read any file with line numbers. Use range reads for large files.
+4. glob_files: Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.
+5. grep_search: Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.
+6. list_directory: List files and directories at a given path.
+7. diff_files: Compare two files with a unified diff.
+8. run_synthetic_check: Run the fast synthetic correctness sweep and return a concise parsed summary.
+9. run_correctness_check: Run the full Modal correctness check and return a concise parsed summary.
+10. run_ncu_profile: Run NCU profiling on Modal B200 and return hardware utilization metrics.
+11. run_sass_analysis: Run SASS analysis on a CuTeDSL kernel and return opcode and pipeline analysis.
+12. run_full_benchmark: Run the full Modal benchmark and return parsed performance results.

@@ -1326,8 +1326,6 @@ AgentRole = Literal["designer", "coder", "planner", "optimizer"]
 
 _BASE_REPO_TOOLS = [
     apply_patch_tool,
-    web_search_tool,
-    web_fetch,
     codex_kernel_assist,
     read_file,
     glob_files,
@@ -1404,8 +1402,6 @@ def build_tools_for_role(
     # Assemble the tool list.
     tools: list[object] = [
         role_patch_tool,
-        web_search_tool,
-        web_fetch,
         _build_codex_kernel_assist(role),
     ]
     tools.extend(_scoped_file_tools(scope_guardrail))
