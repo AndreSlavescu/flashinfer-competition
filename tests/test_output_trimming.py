@@ -23,6 +23,7 @@ from kernel_agents.tools import (
     read_file,
     run_correctness_check,
     run_full_benchmark,
+    run_stage_validation,
     run_synthetic_check,
     web_fetch,
 )
@@ -330,6 +331,13 @@ async def test_diff_files_rejects_escape(tmp_path: Path) -> None:
     ("tool", "stdout", "expected_source", "expected_command", "expected_summary"),
     [
         (
+            run_stage_validation,
+            ("log\n" * 6_000) + "SYNTHETIC RESULTS: 2/2 cases passed\n",
+            "run_stage_validation",
+            "scripts/bench_synthetic.py",
+            "Summary: 2/2 synthetic cases passed",
+        ),
+        (
             run_synthetic_check,
             ("log\n" * 6_000) + "SYNTHETIC RESULTS: 2/2 cases passed\n",
             "run_synthetic_check",
@@ -370,7 +378,14 @@ async def test_workflow_tools_spill_large_transcripts_and_keep_summaries(
 
     monkeypatch.setattr("kernel_agents.tools.asyncio.create_subprocess_exec", _create_subprocess_exec)
 
-    result = await _invoke_tool(tool, tmp_path)
+    kwargs: dict[str, Any] = {}
+    if tool is run_stage_validation:
+        kwargs = {
+            "stage_id": "warp1::qk_mma",
+            "entry_point": "kernel_0.py::validate_stage__warp1_qk_mma",
+        }
+
+    result = await _invoke_tool(tool, tmp_path, **kwargs)
     overflow_text = _overflow_path(tmp_path).read_text(encoding="utf-8")
 
     assert result.startswith(SHELL_OVERFLOW_BANNER)
