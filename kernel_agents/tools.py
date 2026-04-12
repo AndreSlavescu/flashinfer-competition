@@ -899,6 +899,60 @@ async def run_synthetic_check(
 
 
 @function_tool
+async def run_stage_validation(
+    ctx: RunContextWrapper[SharedContext],
+    stage_id: str,
+    entry_point: str,
+    solution_dir: str = "",
+    include_all_files: bool = False,
+    rebuild_fixture: bool = False,
+) -> str:
+    """Run a stage-specific synthetic validation entry point for the current kernel."""
+    limits = _tool_limits_from_context(ctx)
+    try:
+        solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
+    except Exception as exc:
+        return f"ERROR: {exc}"
+
+    if not solution_path.exists():
+        return f"ERROR: Solution directory not found: {solution_rel}"
+
+    command = [
+        ".venv/bin/python",
+        "scripts/bench_synthetic.py",
+        "--solution-dir",
+        solution_rel,
+        "--entry-point",
+        entry_point,
+    ]
+    if include_all_files:
+        command.append("--include-all-files")
+    if rebuild_fixture:
+        command.append("--rebuild-fixture")
+
+    timeout_s = 120
+    result = await _run_command(
+        project_root=_project_root_from_context(ctx),
+        command=command,
+        timeout_s=timeout_s,
+        source_tool="run_stage_validation",
+        limits=limits,
+    )
+    summary = _summarize_synthetic_output(
+        command,
+        result.returncode,
+        result.stdout,
+        result.stderr,
+        result.timed_out,
+        timeout_s,
+    )
+    return _prepend_notice(
+        f"Stage: {stage_id}\nEntry point: {entry_point}\n{summary}",
+        result.overflow_notice or "",
+    )
+
+
+@function_tool
 async def run_correctness_check(
     ctx: RunContextWrapper[SharedContext],
     solution_dir: str = "",
@@ -1283,6 +1337,7 @@ _BASE_REPO_TOOLS = [
 
 _VALIDATION_TOOLS = [
     diff_files,
+    run_stage_validation,
     run_synthetic_check,
     run_correctness_check,
 ]
@@ -1358,6 +1413,8 @@ def build_tools_for_role(
     if role in {"coder", "optimizer", "planner"}:
         tools.append(_scoped_diff(scope_guardrail))
         tools.extend([run_synthetic_check, run_correctness_check])
+        if role == "coder":
+            tools.append(run_stage_validation)
 
     if role == "planner":
         tools.extend(_PLANNER_ANALYSIS_TOOLS)

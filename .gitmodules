@@ -16,3 +16,12 @@
 [submodule "tools/pygpubench"]
 	path = tools/pygpubench
 	url = https://github.com/gpu-mode/pygpubench.git
+[submodule "CudaForge"]
+	path = CudaForge
+	url = https://github.com/OptimAI-Lab/CudaForge
+[submodule "KernelBench"]
+	path = KernelBench
+	url = https://github.com/ScalingIntelligence/KernelBench
+[submodule "Astra"]
+	path = Astra
+	url = https://github.com/Anjiang-Wei/Astra.git
