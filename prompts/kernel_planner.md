@@ -91,21 +91,6 @@ The caller input includes the prior-round history, current best latency, and the
 - Warps per SM: up to 64, max 1024 threads per block
 - SM clock: ~1.965 GHz boost (~1.844 GHz sustained under thermal load)
 
-| Working Set | Cycles | ns | Level |
-|---|---|---|---|
-| 4 KB | 36.0 | 18.3 | **L1 hit** |
-| 8 KB | 36.8 | 18.7 | L1 hit |
-| 16 KB | 40.2 | 20.4 | L1 spilling |
-| 32 KB | 46.8 | 23.9 | L1/L2 boundary |
-| 64 KB | 60.3 | 30.7 | L1→L2 transition |
-| 128 KB | 87.3 | 44.5 | L1→L2 transition |
-| 256 KB | 257 | 131 | L2 partial hit |
-| 512 KB | 299 | 152 | **L2 steady-state** |
-| 1 MB-32 MB | ~300 | ~153 | L2 plateau |
-| 64 MB | 327 | 167 | L2 capacity pressure |
-| 128 MB | 535 | 273 | L2→HBM transition |
-| 256 MB | 707 | 360 | **HBM deep cold** |
-
 ## Tools You Have
 1. apply_patch: Create, update, or delete files via SDK apply-patch diffs.
 2. codex_kernel_assist: Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.

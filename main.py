@@ -33,6 +33,7 @@ load_repo_dotenv()
 
 import argparse
 import asyncio
+import difflib
 import json
 import logging
 import re
@@ -247,6 +248,136 @@ def _slugify_stage_id(stage_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]+", "_", stage_id).strip("_") or "stage"
 
 
+def _project_relative_path(path: Path, *, project_root: Path = PROJECT_ROOT) -> str:
+    """Return *path* relative to the project root when possible."""
+    try:
+        return str(path.relative_to(project_root))
+    except ValueError:
+        return str(path)
+
+
+def round0_stage_kernel_snapshot_path(solution_dir: Path, stage_id: str, attempt: int) -> Path:
+    """Return the per-attempt staged kernel snapshot path."""
+    return (
+        round0_artifacts_dir(solution_dir)
+        / f"{_slugify_stage_id(stage_id)}.attempt_{attempt:02d}.kernel_0.py"
+    )
+
+
+def _stage_attempt_number_at_history_index(
+    history: list[Round0StageResult],
+    index: int,
+) -> int:
+    """Return the 1-based attempt number for history[index]."""
+    target_stage_id = history[index].stage_id
+    return sum(1 for item in history[: index + 1] if item.stage_id == target_stage_id)
+
+
+def _ensure_round0_kernel_snapshot(
+    solution_dir: Path,
+    *,
+    stage_id: str,
+    attempt: int,
+) -> Path:
+    """Persist the current kernel_0.py as the canonical snapshot for this attempt."""
+    source = solution_dir / "kernel_0.py"
+    destination = round0_stage_kernel_snapshot_path(solution_dir, stage_id, attempt)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if not destination.exists():
+        shutil.copy2(source, destination)
+    return destination
+
+
+def _previous_round0_kernel_snapshot_path(
+    ctx: SharedContext,
+    solution_dir: Path,
+) -> Path | None:
+    """Return the snapshot path for the immediately previous staged kernel attempt."""
+    if len(ctx.round0_stage_history) < 2:
+        return None
+    previous_index = len(ctx.round0_stage_history) - 2
+    previous_stage = ctx.round0_stage_history[previous_index]
+    previous_attempt = _stage_attempt_number_at_history_index(
+        ctx.round0_stage_history,
+        previous_index,
+    )
+    return round0_stage_kernel_snapshot_path(
+        solution_dir,
+        previous_stage.stage_id,
+        previous_attempt,
+    )
+
+
+def _build_round0_kernel_diff_payload(
+    *,
+    ctx: SharedContext,
+    solution_dir: Path,
+    stage_id: str,
+    attempt: int,
+) -> dict[str, str | None]:
+    """Build reviewer diff context from staged kernel snapshots."""
+    project_root = Path(ctx.project_root)
+    current_snapshot = _ensure_round0_kernel_snapshot(
+        solution_dir,
+        stage_id=stage_id,
+        attempt=attempt,
+    )
+    previous_snapshot = _previous_round0_kernel_snapshot_path(ctx, solution_dir)
+    current_display = _project_relative_path(current_snapshot, project_root=project_root)
+    previous_display = (
+        _project_relative_path(previous_snapshot, project_root=project_root)
+        if previous_snapshot is not None
+        else None
+    )
+
+    if previous_snapshot is None:
+        return {
+            "current_kernel_snapshot": current_display,
+            "previous_kernel_snapshot": None,
+            "diff_status": "no_prior_snapshot",
+            "unified_diff": (
+                "NO PRIOR SNAPSHOT: this is the first staged kernel snapshot, so there is "
+                "no earlier kernel_0.py attempt to diff against."
+            ),
+        }
+
+    if not previous_snapshot.exists():
+        return {
+            "current_kernel_snapshot": current_display,
+            "previous_kernel_snapshot": previous_display,
+            "diff_status": "missing_previous_snapshot",
+            "unified_diff": (
+                "MISSING PREVIOUS SNAPSHOT: expected the immediately previous staged kernel "
+                f"snapshot at {previous_display}, but it does not exist."
+            ),
+        }
+
+    previous_text = previous_snapshot.read_text(encoding="utf-8").splitlines(keepends=True)
+    current_text = current_snapshot.read_text(encoding="utf-8").splitlines(keepends=True)
+    diff_text = "".join(
+        difflib.unified_diff(
+            previous_text,
+            current_text,
+            fromfile=previous_display,
+            tofile=current_display,
+        )
+    )
+    if not diff_text.strip():
+        diff_text = (
+            "The current staged kernel snapshot matches the immediately previous snapshot exactly."
+        )
+        diff_status = "no_textual_changes"
+    else:
+        diff_status = "available"
+
+    return {
+        "current_kernel_snapshot": current_display,
+        "previous_kernel_snapshot": previous_display,
+        "diff_status": diff_status,
+        "unified_diff": diff_text,
+    }
+
+
 def validate_impl_graph(graph: ImplementationGraph) -> None:
     """Validate basic graph invariants needed by the staged round-0 loop."""
     stage_ids = [stage.stage_id for stage in graph.stages]
@@ -305,29 +436,6 @@ def relevant_async_pipelines(graph: ImplementationGraph, stage_id: str) -> list[
         if stage_id in pipeline.participating_stages:
             pipelines.append(pipeline.model_dump(mode="json"))
     return pipelines
-
-
-def _approved_frontier_summaries(
-    *,
-    graph: ImplementationGraph,
-    completed_stage_ids: list[str],
-    latest_stage_results: dict[str, Round0StageResult],
-) -> list[dict[str, Any]]:
-    """Return compact summaries for previously approved validation frontiers."""
-    summaries: list[dict[str, Any]] = []
-    for completed_stage_id in completed_stage_ids:
-        completed_stage = get_stage_spec(graph, completed_stage_id)
-        last_result = latest_stage_results[completed_stage_id]
-        summaries.append(
-            {
-                "stage_id": completed_stage.stage_id,
-                "title": completed_stage.title,
-                "outputs": completed_stage.outputs,
-                "frontier_verified": last_result.frontier_verified,
-                "frontier_validation_report": last_result.frontier_validation_report,
-            }
-        )
-    return summaries
 
 
 @dataclass
@@ -1037,92 +1145,116 @@ def _write_round0_artifact(
     return out_path
 
 
-def _render_stage_agent_input(header: str, payload: dict[str, Any]) -> str:
-    """Render a staged agent caller payload as a readable prompt string."""
-    return f"{header}\n\nCaller payload:\n{json.dumps(payload, indent=2)}"
+def _render_json_section(title: str, payload: Any) -> str:
+    """Render a markdown section containing JSON payload data."""
+    return f"## {title}\n```json\n{json.dumps(payload, indent=2)}\n```"
+
+
+def _render_file_diffs_section(file_diffs: dict[str, Any]) -> str:
+    """Render the staged reviewer file-diff context."""
+    current_snapshot = file_diffs["current_kernel_snapshot"]
+    previous_snapshot = file_diffs["previous_kernel_snapshot"] or "(none)"
+    diff_status = file_diffs["diff_status"]
+    unified_diff = str(file_diffs["unified_diff"]).rstrip()
+    return "\n".join(
+        (
+            "## File Diffs",
+            f"Current kernel snapshot: {current_snapshot}",
+            f"Previous kernel snapshot: {previous_snapshot}",
+            f"Diff status: {diff_status}",
+            "```diff",
+            unified_diff,
+            "```",
+        )
+    )
+
+
+def _apply_stage_coder_prompt_sections(
+    ctx: SharedContext,
+    payload: dict[str, Any],
+) -> None:
+    """Populate transient dynamic prompt sections for the stage coder."""
+    ctx.round0_stage_coder_prompt_sections = {
+        "current_stage": _render_json_section(
+            "Current Stage Specifications",
+            payload["current_stage"],
+        ),
+        "prerequisite_stages": _render_json_section(
+            "Pre-requisite Stage Specifications",
+            payload["prerequisite_stages"],
+        ),
+        "relevant_async_pipelines": _render_json_section(
+            "Relevant Async Pipelines",
+            payload["relevant_async_pipelines"],
+        ),
+        "attempt_metadata": _render_json_section(
+            "Attempt Metadata",
+            {"is_final_stage": payload["is_final_stage"]},
+        ),
+    }
+
+
+def _apply_stage_reviewer_prompt_sections(
+    ctx: SharedContext,
+    payload: dict[str, Any],
+) -> None:
+    """Populate transient dynamic prompt sections for the stage reviewer."""
+    ctx.round0_stage_reviewer_prompt_sections = {
+        "current_stage": _render_json_section(
+            "Current Stage Specifications",
+            payload["current_stage"],
+        ),
+        "file_diffs": _render_file_diffs_section(payload["file_diffs"]),
+        "stage_result": _render_json_section(
+            "Round0StageResult",
+            payload["stage_result"],
+        ),
+        "attempt_metadata": _render_json_section(
+            "Attempt Metadata",
+            {"is_final_stage": payload["is_final_stage"]},
+        ),
+    }
 
 
 def _build_stage_coder_payload(
     *,
     graph: ImplementationGraph,
     stage_id: str,
-    completed_stage_ids: list[str],
-    latest_stage_results: dict[str, Round0StageResult],
     is_final_stage: bool,
 ) -> dict[str, Any]:
     stage = get_stage_spec(graph, stage_id)
     return {
         "current_stage": stage.model_dump(mode="json"),
+        "prerequisite_stages": [
+            get_stage_spec(graph, prerequisite_stage_id).model_dump(mode="json")
+            for prerequisite_stage_id in stage.prerequisites
+        ],
         "relevant_async_pipelines": relevant_async_pipelines(graph, stage_id),
-        "resource_ledger": graph.resource_ledger.model_dump(mode="json"),
-        "kernel_contract": graph.kernel_contract.model_dump(mode="json"),
-        "approved_frontier_summaries": _approved_frontier_summaries(
-            graph=graph,
-            completed_stage_ids=completed_stage_ids,
-            latest_stage_results=latest_stage_results,
-        ),
         "is_final_stage": is_final_stage,
     }
 
 
-def _build_stage_coder_input(
-    *,
-    graph: ImplementationGraph,
-    stage_id: str,
-    completed_stage_ids: list[str],
-    latest_stage_results: dict[str, Round0StageResult],
-    is_final_stage: bool,
-) -> str:
-    payload = _build_stage_coder_payload(
-        graph=graph,
-        stage_id=stage_id,
-        completed_stage_ids=completed_stage_ids,
-        latest_stage_results=latest_stage_results,
-        is_final_stage=is_final_stage,
-    )
-    return _render_stage_agent_input(
-        "Implement the assigned staged round-0 kernel slice.",
-        payload,
-    )
-
-
 def _build_stage_review_payload(
     *,
+    ctx: SharedContext,
+    solution_dir: Path,
     graph: ImplementationGraph,
     stage_result: Round0StageResult,
-    completed_stage_ids: list[str],
-    latest_stage_results: dict[str, Round0StageResult],
+    stage_attempt: int,
+    is_final_stage: bool,
 ) -> dict[str, Any]:
     stage = get_stage_spec(graph, stage_result.stage_id)
     return {
         "current_stage": stage.model_dump(mode="json"),
         "stage_result": stage_result.model_dump(mode="json"),
-        "approved_frontier_summaries": _approved_frontier_summaries(
-            graph=graph,
-            completed_stage_ids=completed_stage_ids,
-            latest_stage_results=latest_stage_results,
+        "file_diffs": _build_round0_kernel_diff_payload(
+            ctx=ctx,
+            solution_dir=solution_dir,
+            stage_id=stage_result.stage_id,
+            attempt=stage_attempt,
         ),
-        "current_graph": graph.model_dump(mode="json"),
+        "is_final_stage": is_final_stage,
     }
-
-
-def _build_stage_review_input(
-    *,
-    graph: ImplementationGraph,
-    stage_result: Round0StageResult,
-    completed_stage_ids: list[str],
-    latest_stage_results: dict[str, Round0StageResult],
-) -> str:
-    payload = _build_stage_review_payload(
-        graph=graph,
-        stage_result=stage_result,
-        completed_stage_ids=completed_stage_ids,
-        latest_stage_results=latest_stage_results,
-    )
-    return _render_stage_agent_input(
-        "Review the latest staged round-0 kernel implementation attempt and decide the next action.",
-        payload,
-    )
 
 
 def _final_round0_result(
@@ -1278,7 +1410,6 @@ async def _run_round0_staged(
             sys.exit(1)
 
         is_final_stage = current_stage_id == order[-1]
-        latest_stage_results = progress.latest_stage_results
         stage_out: Round0StageResult
         stage_attempt = progress.attempt_counts.get(current_stage_id, 0)
 
@@ -1305,10 +1436,9 @@ async def _run_round0_staged(
             coder_payload = _build_stage_coder_payload(
                 graph=graph,
                 stage_id=current_stage_id,
-                completed_stage_ids=progress.completed_stage_ids,
-                latest_stage_results=latest_stage_results,
                 is_final_stage=is_final_stage,
             )
+            _apply_stage_coder_prompt_sections(ctx, coder_payload)
             _dump_stage_runtime_prompt_artifacts(
                 prompt_dump=prompt_dump,
                 agent=stage_coder,
@@ -1324,10 +1454,9 @@ async def _run_round0_staged(
             coder_payload = _build_stage_coder_payload(
                 graph=graph,
                 stage_id=current_stage_id,
-                completed_stage_ids=progress.completed_stage_ids,
-                latest_stage_results=latest_stage_results,
                 is_final_stage=is_final_stage,
             )
+            _apply_stage_coder_prompt_sections(ctx, coder_payload)
             _dump_stage_runtime_prompt_artifacts(
                 prompt_dump=prompt_dump,
                 agent=stage_coder,
@@ -1342,10 +1471,7 @@ async def _run_round0_staged(
                 stage_result_raw, stage_elapsed_s = await _run_agent(
                     stage_label=f"kernel-stage-coder-{_slugify_stage_id(current_stage_id)}",
                     starting_agent=stage_coder,
-                    input=_render_stage_agent_input(
-                        "Implement the assigned staged round-0 kernel slice.",
-                        coder_payload,
-                    ),
+                    input="Implement the assigned staged round-0 kernel slice.",
                     context=ctx,
                     max_turns=coder_max_turns,
                     verbose=coder_verbose,
@@ -1387,15 +1513,17 @@ async def _run_round0_staged(
             save_state(ctx, state_path)
 
             progress = _derive_round0_progress(ctx, graph)
-            latest_stage_results = progress.latest_stage_results
 
         ctx.current_agent_role = "designer"
         review_payload = _build_stage_review_payload(
+            ctx=ctx,
+            solution_dir=solution_dir,
             graph=graph,
             stage_result=stage_out,
-            completed_stage_ids=progress.completed_stage_ids,
-            latest_stage_results=latest_stage_results,
+            stage_attempt=stage_attempt,
+            is_final_stage=is_final_stage,
         )
+        _apply_stage_reviewer_prompt_sections(ctx, review_payload)
         _dump_stage_runtime_prompt_artifacts(
             prompt_dump=prompt_dump,
             agent=stage_reviewer,
@@ -1409,9 +1537,9 @@ async def _run_round0_staged(
             review_result_raw, review_elapsed_s = await _run_agent(
                 stage_label=f"kernel-stage-reviewer-{_slugify_stage_id(current_stage_id)}",
                 starting_agent=stage_reviewer,
-                input=_render_stage_agent_input(
-                    "Review the latest staged round-0 kernel implementation attempt and decide the next action.",
-                    review_payload,
+                input=(
+                    "Review the latest staged round-0 kernel implementation attempt and decide "
+                    "the next action."
                 ),
                 context=ctx,
                 max_turns=designer_max_turns,
