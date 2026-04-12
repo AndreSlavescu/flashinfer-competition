@@ -28,6 +28,7 @@ from kernel_agents.context import (
 )
 from kernel_agents.kernel_coder import make_kernel_coder
 from kernel_agents.kernel_stage_coder import make_round0_stage_coder
+from kernel_agents.kernel_stage_reviewer import make_round0_stage_reviewer
 
 
 def _sample_impl_graph() -> ImplementationGraph:
@@ -433,12 +434,67 @@ def test_stage_coder_inherits_shared_kernel_coder_guidance(tmp_path: Path) -> No
 
     assert "Return `CoderResult`" in coder_prompt
     assert "Return `Round0StageResult`" in stage_prompt
+    assert "## Caller payload contract" in stage_prompt
+    assert "Treat the caller payload as the authoritative execution context for this attempt." in stage_prompt
+    assert "Do not stop early just to save tool calls." in stage_prompt
+    assert (
+        "Start by reading the existing `solution/dsa_attention/kernel_0.py` and identifying the "
+        "smallest code regions that must change."
+    ) in stage_prompt
     assert "run_stage_validation" in stage_prompt
     assert "debug_exports" in stage_prompt
     assert "Re-run `run_stage_validation` for every previously completed stage" not in stage_prompt
     assert "cumulative prefix-frontier validation harness" in stage_prompt
     assert "prerequisite-stage pipelining" in stage_prompt
     assert "validation harness named by `validation_entry_point`" in stage_prompt
+    assert "frozen kernel-wide budget" in stage_prompt
+    assert "rather than a separate per-stage ledger" in stage_prompt
+    assert (
+        'Emit `status="compile_error"` when a compile/import/runtime failure blocks a '
+        "trustworthy frontier validation result."
+    ) in stage_prompt
+    assert (
+        'For non-final stages, emit `status="success"` only when `frontier_verified` is true.'
+    ) in stage_prompt
+
+
+def test_stage_reviewer_prompt_has_action_gates_and_revision_contract(
+    tmp_path: Path,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    notes_dir = tmp_path / "notes" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    notes_dir.mkdir(parents=True)
+
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    reviewer = make_round0_stage_reviewer(context=ctx)
+    reviewer_prompt = main._resolve_agent_instructions_text(reviewer, ctx)
+
+    assert "## Review evidence order" in reviewer_prompt
+    assert "`current_graph`, including the staged DAG, async pipelines, kernel contract, and resource ledger" in reviewer_prompt
+    assert "Treat the caller payload as the authoritative execution context for this attempt." in reviewer_prompt
+    assert "Do not stop early just to save tool calls." in reviewer_prompt
+    assert (
+        'Choose `continue_next_stage` only when `stage_result.status == "success"` '
+        "and `stage_result.frontier_verified` is true."
+    ) in reviewer_prompt
+    assert (
+        "Use `retry_same_stage` by default when the design is still sound and the main problem is "
+        "implementation, integration, or validation quality."
+    ) in reviewer_prompt
+    assert "Anchor the chosen action to one primary reason." in reviewer_prompt
+    assert (
+        "For `continue_next_stage` and `retry_same_stage`, both `replacement_impl_graph` and "
+        "`restart_from_stage_id` must be null."
+    ) in reviewer_prompt
+    assert (
+        "For `revise_design_then_retry`, both `replacement_impl_graph` and "
+        "`restart_from_stage_id` are required."
+    ) in reviewer_prompt
 
 
 class _FakeAgent:
