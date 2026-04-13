@@ -1586,9 +1586,9 @@ async def _run_round0_staged(
                     f"returned status={stage_out.status}."
                 )
                 sys.exit(1)
-            if not stage_out.frontier_verified:
+            if not stage_out.stage_output_verified:
                 print(
-                    f"FATAL: reviewer approved stage {current_stage_id} without passing the frontier validation."
+                    f"FATAL: reviewer approved stage {current_stage_id} without passing stage output validation."
                 )
                 sys.exit(1)
             if is_final_stage and not stage_out.final_correctness_verified:

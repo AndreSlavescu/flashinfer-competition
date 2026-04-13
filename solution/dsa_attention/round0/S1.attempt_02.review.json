@@ -1,7 +1,0 @@
-{
-  "stage_id": "S1",
-  "action": "continue_next_stage",
-  "message": "S1 satisfied the action gate: the reported attempt succeeded and the cumulative frontier was verified, and the implementation evidence supports that result. The sparse-index path now decodes tile 0 with explicit validity masking, the gather path zero-initializes CKV/KPE buffers and only fills valid lanes, the PV-facing view is derived from the canonical CKV staging, and the S1 validator compares those exports against an independent eager prefix reference while also re-checking the approved S0 frontier and invalid-lane zero fill. The design graph remains sound, so the next step should advance to S2.",
-  "restart_from_stage_id": null,
-  "replacement_impl_graph": null
-}

@@ -907,7 +907,7 @@ async def run_stage_validation(
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
 ) -> str:
-    """Run a cumulative frontier synthetic validation entry point for the current kernel."""
+    """Run a synthetic stage output validation entry point for the current kernel."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)

@@ -1,7 +1,0 @@
-{
-  "stage_id": "S2",
-  "action": "continue_next_stage",
-  "message": "S2 meets the continuation gate: stage_result reports status=\"success\" with frontier_verified=true, and the current implementation aligns with the S2 contract because load_q_phase_slice and qk_mainloop build padded 64x16 Q slices, accumulate raw fp32 logits for the 64x32 tile, and explicitly zero padded rows 16:64, while validate_stage__s2_qk_logits re-runs the approved S1 frontier and checks the live 0:16 x 0:32 logits plus padded-row/invalid-lane behavior. Proceed to S3.",
-  "restart_from_stage_id": null,
-  "replacement_impl_graph": null
-}

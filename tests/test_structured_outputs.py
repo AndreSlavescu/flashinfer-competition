@@ -84,8 +84,8 @@ def _sample_impl_graph() -> ImplementationGraph:
             {
                 "stage_id",
                 "generated",
-                "frontier_validation_report",
-                "frontier_verified",
+                "stage_output_validation_report",
+                "stage_output_verified",
                 "final_correctness_verified",
                 "correctness_check_report",
                 "status",
@@ -277,8 +277,8 @@ def test_save_and_load_state_round0_fields_round_trip(tmp_path: Path) -> None:
         Round0StageResult(
             stage_id="warp0::load_q",
             generated=["solution/dsa_attention/kernel_0.py"],
-            frontier_validation_report="frontier ok",
-            frontier_verified=True,
+            stage_output_validation_report="stage output ok",
+            stage_output_verified=True,
             final_correctness_verified=False,
             correctness_check_report="",
             status="success",
@@ -350,8 +350,8 @@ def _stage_result(
     return Round0StageResult(
         stage_id=stage_id,
         generated=["solution/dsa_attention/kernel_0.py"],
-        frontier_validation_report="frontier ok",
-        frontier_verified=True,
+        stage_output_validation_report="stage output ok",
+        stage_output_verified=True,
         final_correctness_verified=final_correctness_verified,
         correctness_check_report="correct",
         status="success",
@@ -591,6 +591,7 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
     assert 'action="revise_design_then_retry"' in reviewer_prompt
     assert 'action="continue_next_stage"' in reviewer_prompt
     assert "Be precise." in reviewer_prompt
+    assert "Treat bypassing the declared `validation_entry_point` or replacing it with a standalone validator as an implementation issue." in reviewer_prompt
     assert "Keep `message` terse and precise." not in reviewer_prompt
     assert "## Action gates" not in reviewer_prompt
     assert "## Single-decision discipline" not in reviewer_prompt

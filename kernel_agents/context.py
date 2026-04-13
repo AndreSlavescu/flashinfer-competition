@@ -194,8 +194,7 @@ class StageSpec(BaseModel):
     outputs: list[str] = Field(
         min_length=1,
         description=(
-            "Concrete stage outputs that define the cumulative validation contract "
-            "for this frontier."
+            "Stage output tensors that the coder should validate against naive PyTorch with synthetic inputs."
         ),
     )
     relevant_helpers: list[str] = Field(
@@ -207,9 +206,7 @@ class StageSpec(BaseModel):
     )
     validation_entry_point: str = Field(
         description=(
-            "Python entry point used by run_stage_validation for the cumulative "
-            "prefix frontier through this stage, e.g. "
-            "'kernel_0.py::validate_stage__foo'."
+            "Entry point used by run_stage_validation for validating stage outputs. To preserve correctness of previous stages, the validator function MUST BE EXTENDED, NOT REPLACED (e.g. kernel_0.py::validate_stage__foo)."
         ),
     )
     plan_excerpt: str = Field(
@@ -312,11 +309,11 @@ class Round0StageResult(StructuredResult):
     generated: list[str] = Field(
         description="Paths to kernel artifacts touched or produced by this stage.",
     )
-    frontier_validation_report: str = Field(
-        description="Parsed report for the cumulative validation frontier through this stage.",
+    stage_output_validation_report: str = Field(
+        description="Parsed report for the stage output validation of this stage.",
     )
-    frontier_verified: bool = Field(
-        description="Whether the cumulative validation frontier through this stage passed.",
+    stage_output_verified: bool = Field(
+        description="Whether the stage output validation of this stage passed.",
     )
     final_correctness_verified: bool = Field(
         description="Whether the final round-0 correctness gate passed for this stage attempt.",
