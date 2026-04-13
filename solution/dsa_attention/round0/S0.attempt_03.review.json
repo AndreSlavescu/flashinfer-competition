@@ -1,7 +1,0 @@
-{
-  "stage_id": "S0",
-  "action": "continue_next_stage",
-  "message": "S0 is ready to advance: the attempt reports status=success with frontier_verified=true, and the implementation in solution/dsa_attention/kernel_0.py matches the S0 shell contract by fixing blockDim.x at 224, grid.x at num_tokens, dynamic SMEM at 154*1024 bytes, reserved TMEM columns at 512, W3-owned TMEM allocation via a named barrier, and validator-facing debug exports for launch metadata and token-to-CTA mapping while leaving the shell itself free of attention math side effects.",
-  "restart_from_stage_id": null,
-  "replacement_impl_graph": null
-}
