@@ -1,7 +1,0 @@
-mode,pattern,data_MB,ckv_num_calls,kpe_num_calls,ckv_GBps,kpe_GBps,ckv_ns_per_gather4,kpe_ns_per_gather4
-ckv_only,random,256,65536,65536,7.11,0.00,575.9,0.0
-kpe_only,random,256,65536,65536,0.00,2.54,0.0,201.3
-both,random,256,65536,65536,6.87,0.86,595.9,594.8
-ckv_only,sequential,1024,262144,262144,7.47,0.00,548.2,0.0
-kpe_only,sequential,1024,262144,262144,0.00,1.10,0.0,466.0
-both,sequential,1024,262144,262144,7.47,1.02,548.4,501.6

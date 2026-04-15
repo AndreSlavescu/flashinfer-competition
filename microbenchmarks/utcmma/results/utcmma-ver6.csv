@@ -1,6 +1,0 @@
-experiment,x_var,M,N,k_depth,mode,swizzle,iters,total_cycles,cycles_per_gemm,cycles_per_ktile,ns_per_gemm,tflops,spread_pct
-utcmma_m32_ws_ts,32x64,32,64,1,ws_ts,SW32,10000,1730147,173.0,173.01,93.9,0.698,0.0
-utcmma_m32_ws_ts,32x128,32,128,1,ws_ts,SW32,10000,1730147,173.0,173.01,93.9,1.396,0.0
-utcmma_m32_ws_ts,32x256,32,256,1,ws_ts,SW32,10000,2385147,238.5,238.51,129.5,2.025,0.0
-utcmma_m32_ws_ts,32x64_kd4,32,64,4,ws_ts,SW32,5000,1551819,310.4,77.59,168.5,1.556,0.5
-utcmma_m32_ws_ts,32x64_kd32,32,64,32,ws_ts,SW32,1000,1813960,1814.0,56.69,984.4,2.130,2.1
