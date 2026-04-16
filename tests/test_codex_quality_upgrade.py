@@ -335,7 +335,6 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
         stages=[
             StageSpec(
                 stage_id="warp0::load_q",
-                owner_warps=["warp0"],
                 prerequisites=[],
                 outputs=["q_tile_debug matches eager reference"],
                 relevant_helpers=["cute.make_tensor"],
@@ -343,7 +342,6 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
-                owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
                 outputs=["score_tile_debug matches eager reference"],
                 relevant_helpers=["tcgen05.mma"],

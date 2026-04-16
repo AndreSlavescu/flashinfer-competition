@@ -23,6 +23,12 @@ StageReviewAction = Literal[
     "retry_same_stage",
     "revise_design_then_retry",
 ]
+AsyncPipelineType = Literal[
+    "PipelineTmaUmma",
+    "PipelineAsyncUmma",
+    "PipelineUmmaAsync",
+    "PipelineClcFetchAsync",
+]
 
 REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
     "none",
@@ -152,12 +158,17 @@ class AsyncPipelineSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     pipeline_id: str = Field(description="Stable identifier such as P0/P1.")
-    name: str = Field(description="Human-readable pipeline name.")
-    producer_warps: list[str] = Field(
-        description="Warp names responsible for producing the pipeline payload.",
+    type: AsyncPipelineType = Field(
+        description=(
+            "Exact pipeline class name from references/cutlass/python/CuTeDSL/"
+            "cutlass/pipeline/sm100.py. Only single-consumer pipeline types are allowed."
+        ),
     )
-    consumer_warps: list[str] = Field(
-        description="Warp names responsible for consuming the pipeline payload.",
+    producer_warp: str = Field(
+        description="Single producer warp/group name responsible for the pipeline payload.",
+    )
+    consumer_warp: str = Field(
+        description="Single consumer warp/group name responsible for the pipeline payload.",
     )
     num_stages: int = Field(description="Pipeline depth.")
     payload: str = Field(description="Short description of the payload being handed off.")
@@ -170,9 +181,23 @@ class AsyncPipelineSpec(BaseModel):
     register_budget: str = Field(
         description="Register budget or note for participating warps.",
     )
-    participating_stages: list[str] = Field(
-        description="Stage IDs that implement or consume this pipeline.",
-    )
+
+    @model_validator(mode="after")
+    def _validate_non_empty_pipeline_strings(self) -> "AsyncPipelineSpec":
+        scalar_fields = {
+            "pipeline_id": self.pipeline_id,
+            "type": self.type,
+            "producer_warp": self.producer_warp,
+            "consumer_warp": self.consumer_warp,
+            "payload": self.payload,
+            "smem_budget": self.smem_budget,
+            "tmem_budget": self.tmem_budget,
+            "register_budget": self.register_budget,
+        }
+        for field_name, value in scalar_fields.items():
+            if not value.strip():
+                raise ValueError(f"{field_name} must not be blank.")
+        return self
 
 
 class StageSpec(BaseModel):
@@ -181,10 +206,6 @@ class StageSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stage_id: str = Field(description="Stable stage identifier.")
-    owner_warps: list[str] = Field(
-        min_length=1,
-        description="Warp names primarily responsible for the stage.",
-    )
     prerequisites: list[str] = Field(
         default_factory=list,
         description="Stage IDs that must be completed before this stage runs.",
@@ -220,7 +241,6 @@ class StageSpec(BaseModel):
                 raise ValueError(f"{field_name} must not be blank.")
 
         required_list_fields = {
-            "owner_warps": self.owner_warps,
             "outputs": self.outputs,
             "relevant_helpers": self.relevant_helpers,
         }

@@ -35,6 +35,7 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
 - Use `cutlass.Constexpr` and type annotations extensively for CuTeDSL JIT compiler
 - Run tests only on Modal B200 via `run_stage_validation` / `run_synthetic_check` / `run_correctness_check`
 - Implement a JIT compile cache if it doesn't exist yet
+- `run_stage_validation` always executes `kernel_0.py::prefix_validation_harness`
 - The prefix validation helpers are cumulative. Extend them after each stage; do not replace them with stage-local standalone validators.
 - The values exposed under `outputs` must correspond to the current stage's `StageSpec.outputs` contract.
 
@@ -63,9 +64,6 @@ def _compose_stage_coder_body(ctx: SharedContext) -> str:
     )
 
     parts = [body]
-    relevant_async_pipelines = prompt_sections.get("relevant_async_pipelines", "").strip()
-    if relevant_async_pipelines:
-        parts.append(relevant_async_pipelines)
     attempt_metadata = prompt_sections.get("attempt_metadata", "").strip()
     if attempt_metadata:
         parts.append(attempt_metadata)

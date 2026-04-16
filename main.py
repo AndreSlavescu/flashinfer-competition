@@ -403,18 +403,6 @@ def validate_impl_graph(graph: ImplementationGraph) -> None:
                 f"Stage '{stage.stage_id}' prerequisites must appear earlier in declared order: {late}"
             )
 
-    for pipeline in graph.async_pipelines:
-        missing = [
-            stage_id
-            for stage_id in pipeline.participating_stages
-            if stage_id not in stage_id_set
-        ]
-        if missing:
-            raise ValueError(
-                f"Async pipeline '{pipeline.pipeline_id}' references unknown stages: {missing}"
-            )
-
-
 def iter_stage_order(graph: ImplementationGraph) -> list[str]:
     """Return the canonical stage order from the graph."""
     validate_impl_graph(graph)
@@ -427,15 +415,6 @@ def get_stage_spec(graph: ImplementationGraph, stage_id: str):
         if stage.stage_id == stage_id:
             return stage
     raise KeyError(stage_id)
-
-
-def relevant_async_pipelines(graph: ImplementationGraph, stage_id: str) -> list[dict[str, Any]]:
-    """Return async pipeline specs that reference *stage_id*."""
-    pipelines = []
-    for pipeline in graph.async_pipelines:
-        if stage_id in pipeline.participating_stages:
-            pipelines.append(pipeline.model_dump(mode="json"))
-    return pipelines
 
 
 @dataclass
@@ -832,9 +811,12 @@ def _build_invalid_impl_graph_feedback(error: ValueError, invalid_path: Path) ->
         "`DesignerResult`. Do not restart from scratch. Preserve the current plan and stable "
         "stage IDs where possible.\n\n"
         "Hard requirements for every stage:\n"
-        "- `owner_warps`, `outputs`, and `relevant_helpers` must all be non-empty.\n"
+        "- `outputs` and `relevant_helpers` must both be non-empty.\n"
         "- `outputs` must define the concrete cumulative validation contract for the stage.\n"
         "- `plan_excerpt` must remain concrete.\n\n"
+        "Hard requirements for every async pipeline:\n"
+        "- `type` must be an allowed single-consumer sm100 pipeline class.\n"
+        "- `producer_warp` and `consumer_warp` must both be single non-empty strings.\n\n"
         f"The invalid graph was dumped to {_display_path(invalid_path)} for debugging."
     )
 
@@ -1183,10 +1165,6 @@ def _apply_stage_coder_prompt_sections(
             "Pre-requisite Stage Specifications",
             payload["prerequisite_stages"],
         ),
-        "relevant_async_pipelines": _render_json_section(
-            "Relevant Async Pipelines",
-            payload["relevant_async_pipelines"],
-        ),
         "attempt_metadata": _render_json_section(
             "Attempt Metadata",
             {"is_final_stage": payload["is_final_stage"]},
@@ -1229,7 +1207,6 @@ def _build_stage_coder_payload(
             get_stage_spec(graph, prerequisite_stage_id).model_dump(mode="json")
             for prerequisite_stage_id in stage.prerequisites
         ],
-        "relevant_async_pipelines": relevant_async_pipelines(graph, stage_id),
         "is_final_stage": is_final_stage,
     }
 

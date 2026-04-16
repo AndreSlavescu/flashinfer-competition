@@ -33,21 +33,19 @@ def _sample_impl_graph() -> ImplementationGraph:
         async_pipelines=[
             AsyncPipelineSpec(
                 pipeline_id="P0",
-                name="load q",
-                producer_warps=["warp0"],
-                consumer_warps=["warp1"],
+                type="PipelineTmaUmma",
+                producer_warp="warp0",
+                consumer_warp="warp1",
                 num_stages=1,
                 payload="Q tile",
                 smem_budget="72 KB",
                 tmem_budget="0",
                 register_budget="warp0=32,warp1=64",
-                participating_stages=["warp0::load_q", "warp1::qk_mma"],
             )
         ],
         stages=[
             StageSpec(
                 stage_id="warp0::load_q",
-                owner_warps=["warp0"],
                 prerequisites=[],
                 outputs=["q_tile_debug matches the eager reference for the active tile"],
                 relevant_helpers=["cute.make_tensor", "blackwell load example"],
@@ -55,7 +53,6 @@ def _sample_impl_graph() -> ImplementationGraph:
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
-                owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
                 outputs=["score_tile_debug matches the eager fp32 QK tile"],
                 relevant_helpers=["tcgen05.mma", "pipeline example"],
@@ -167,7 +164,6 @@ def test_validate_impl_graph_rejects_duplicate_stage_ids() -> None:
     graph = _sample_impl_graph()
     duplicate = StageSpec(
         stage_id="warp1::qk_mma",
-        owner_warps=["warp2"],
         prerequisites=[],
         outputs=["x"],
         relevant_helpers=["helper"],
@@ -178,26 +174,57 @@ def test_validate_impl_graph_rejects_duplicate_stage_ids() -> None:
     with pytest.raises(ValueError, match="duplicate stage IDs"):
         main.validate_impl_graph(graph)
 
+def test_async_pipeline_spec_rejects_disallowed_multi_consumer_type() -> None:
+    with pytest.raises(Exception, match="PipelineTmaMultiConsumersAsync"):
+        AsyncPipelineSpec.model_validate(
+            {
+                "pipeline_id": "P1",
+                "type": "PipelineTmaMultiConsumersAsync",
+                "producer_warp": "warp0",
+                "consumer_warp": "warp1",
+                "num_stages": 1,
+                "payload": "bad",
+                "smem_budget": "0",
+                "tmem_budget": "0",
+                "register_budget": "0",
+            }
+        )
 
-def test_validate_impl_graph_rejects_unknown_pipeline_participants() -> None:
-    bad_pipeline = AsyncPipelineSpec(
-        pipeline_id="P1",
-        name="bad",
-        producer_warps=["warp0"],
-        consumer_warps=["warp1"],
-        num_stages=1,
-        payload="bad",
-        smem_budget="0",
-        tmem_budget="0",
-        register_budget="0",
-        participating_stages=["missing::stage"],
-    )
-    graph = _sample_impl_graph().model_copy(
-        update={"async_pipelines": [bad_pipeline]}
-    )
 
-    with pytest.raises(ValueError, match="references unknown stages"):
-        main.validate_impl_graph(graph)
+@pytest.mark.parametrize(("field_name", "value"), [("producer_warp", ""), ("consumer_warp", " ")])
+def test_async_pipeline_spec_rejects_blank_warp_fields(field_name: str, value: str) -> None:
+    payload = {
+        "pipeline_id": "P1",
+        "type": "PipelineTmaUmma",
+        "producer_warp": "warp0",
+        "consumer_warp": "warp1",
+        "num_stages": 1,
+        "payload": "tile",
+        "smem_budget": "0",
+        "tmem_budget": "0",
+        "register_budget": "0",
+    }
+    payload[field_name] = value
+
+    with pytest.raises(Exception, match=field_name):
+        AsyncPipelineSpec.model_validate(payload)
+
+
+def test_async_pipeline_spec_rejects_blank_type() -> None:
+    with pytest.raises(Exception):
+        AsyncPipelineSpec.model_validate(
+            {
+                "pipeline_id": "P1",
+                "type": "",
+                "producer_warp": "warp0",
+                "consumer_warp": "warp1",
+                "num_stages": 1,
+                "payload": "tile",
+                "smem_budget": "0",
+                "tmem_budget": "0",
+                "register_budget": "0",
+            }
+        )
 
 
 def test_validate_impl_graph_rejects_prerequisites_that_point_forward() -> None:
@@ -216,7 +243,6 @@ def test_stage_spec_requires_non_empty_relevant_helpers() -> None:
     with pytest.raises(Exception, match="relevant_helpers"):
         StageSpec(
             stage_id="warp0::load_q",
-            owner_warps=["warp0"],
             prerequisites=[],
             outputs=["q_tile_debug matches eager reference"],
             relevant_helpers=[],
@@ -228,7 +254,6 @@ def test_stage_spec_rejects_blank_relevant_helper_entries() -> None:
     with pytest.raises(Exception, match="relevant_helpers"):
         StageSpec(
             stage_id="warp0::load_q",
-            owner_warps=["warp0"],
             prerequisites=[],
             outputs=["q_tile_debug matches eager reference"],
             relevant_helpers=[""],
@@ -367,7 +392,6 @@ def test_build_stage_coder_payload_keeps_only_required_fields() -> None:
     assert set(payload) == {
         "current_stage",
         "prerequisite_stages",
-        "relevant_async_pipelines",
         "is_final_stage",
     }
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
@@ -375,7 +399,6 @@ def test_build_stage_coder_payload_keeps_only_required_fields() -> None:
     assert payload["current_stage"]["relevant_helpers"] == ["tcgen05.mma", "pipeline example"]
     assert [stage["stage_id"] for stage in payload["prerequisite_stages"]] == ["warp0::load_q"]
     assert payload["prerequisite_stages"][0]["plan_excerpt"] == "## Load Q\nload q details"
-    assert payload["relevant_async_pipelines"][0]["pipeline_id"] == "P0"
     assert payload["is_final_stage"] is False
     assert "debug_exports" not in payload["current_stage"]
     assert "checks" not in payload["current_stage"]
@@ -509,7 +532,6 @@ def test_stage_coder_prompt_uses_new_body_and_dynamic_sections(tmp_path: Path) -
     assert "{..## Pre-requisite Stage Specifications..}" not in stage_prompt
     assert "## Current Stage Specifications" in stage_prompt
     assert "## Pre-requisite Stage Specifications" in stage_prompt
-    assert "## Relevant Async Pipelines" in stage_prompt
     assert "## Attempt Metadata" in stage_prompt
     assert "## References" in stage_prompt
     assert "Return structured output matching `Round0StageResult`." in stage_prompt
@@ -850,6 +872,43 @@ def test_load_impl_graph_rejects_legacy_stage_schema(tmp_path: Path) -> None:
                         "validation_entry_point": "kernel_0.py::validate_stage__warp0_load_q",
                         "plan_excerpt": "## Load Q\nload q details",
                         "target_areas": ["load_q"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Exception):
+        main.load_impl_graph(graph_path)
+
+
+def test_load_impl_graph_rejects_legacy_async_pipeline_schema(tmp_path: Path) -> None:
+    graph_path = tmp_path / "impl_graph.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "async_pipelines": [
+                    {
+                        "pipeline_id": "P0",
+                        "name": "load q",
+                        "producer_warps": ["warp0"],
+                        "consumer_warps": ["warp1"],
+                        "num_stages": 1,
+                        "payload": "Q tile",
+                        "smem_budget": "72 KB",
+                        "tmem_budget": "0",
+                        "register_budget": "warp0=32,warp1=64",
+                        "participating_stages": ["warp0::load_q"],
+                    }
+                ],
+                "stages": [
+                    {
+                        "stage_id": "warp0::load_q",
+                        "prerequisites": [],
+                        "outputs": ["q_tile_debug"],
+                        "relevant_helpers": ["cute.make_tensor"],
+                        "plan_excerpt": "## Load Q\nload q details",
                     }
                 ],
             }
