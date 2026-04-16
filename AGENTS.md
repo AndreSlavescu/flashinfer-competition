@@ -6,7 +6,7 @@
 
 Success means:
 - the generated kernel uses CuTeDSL for the attention compute path
-- correctness is proven through the repo’s parsed validation tools
+- correctness is proven through the repo’s Modal-backed validation tools
 - optimization rounds preserve correctness while improving measured latency
 
 ## Canonical Commands
@@ -34,7 +34,7 @@ Success means:
 - Prefer repo-native tools for file reads, search, diffs, validation, and profiling.
 - Prefer parsed repo validation tools over ad hoc shell parsing when both exist.
 - If a tool reports trimmed output, narrow the next request instead of rerunning the same broad read.
-- If a shell-like workflow overflows, inspect `last_shell_overflow.txt` before another large shell-like call. The next overflow replaces it.
+- If a Modal-backed workflow trims its returned context, inspect `last_shell_dump.txt` with `read_file` or `grep_search` before another broad shell-like call. The next shell-like tool call replaces that dump.
 
 ## File Ownership
 

@@ -194,7 +194,11 @@ class TestScopeGuardrail:
     def test_allows_in_scope_read(self, project_root: Path) -> None:
         guardrail = make_scope_guardrail("designer")
         data = _make_guardrail_data(
-            project_root, "read_file", {"file_path": "references/cutlass/example.py"}
+            project_root,
+            "read_file",
+            {
+                "file_path": "references/cutlass/python/CuTeDSL/cutlass/cute/example.py"
+            },
         )
         result = guardrail.guardrail_function(data)
         assert result.behavior["type"] == "allow"

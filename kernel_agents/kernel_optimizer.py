@@ -111,7 +111,8 @@ Output tensors (pre-allocated, write in-place):
 - Use `grep_search` before `read_file` when locating symbols under `references/`.
 - When reading strategy file and kernel, batch both reads in one turn.
 - If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
-- If `last_shell_overflow.txt` is written, inspect it before running another overflowing tool.
+- If a Modal tool trims its returned context, inspect `last_shell_dump.txt` with `read_file`
+  or `grep_search` before running another broad shell command.
 
 ## Output Format
 

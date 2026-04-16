@@ -14,15 +14,18 @@ from kernel_agents.context import LEGACY_TOOL_LIMITS, SharedContext
 from kernel_agents.tools import (
     DEFAULT_READ_FILE_LIMIT,
     DEFAULT_SEARCH_OUTPUT_LIMIT,
+    DEFAULT_SHELL_DUMP_CONTEXT_LINES,
     DEFAULT_WEB_FETCH_LIMIT,
-    SHELL_OVERFLOW_BANNER,
-    SHELL_OVERFLOW_FILE_NAME,
+    SHELL_DUMP_FILE_NAME,
+    SHELL_DUMP_TAIL_BANNER,
     diff_files,
     grep_search,
     list_directory,
     read_file,
     run_correctness_check,
     run_full_benchmark,
+    run_ncu_profile,
+    run_sass_analysis,
     run_stage_validation,
     run_synthetic_check,
     web_fetch,
@@ -52,8 +55,8 @@ async def _invoke_tool(tool: Any, project_root: Path, **kwargs: Any) -> str:
     return result
 
 
-def _overflow_path(project_root: Path) -> Path:
-    return project_root / SHELL_OVERFLOW_FILE_NAME
+def _dump_path(project_root: Path) -> Path:
+    return project_root / SHELL_DUMP_FILE_NAME
 
 
 class _FakeProcess:
@@ -231,7 +234,7 @@ async def test_web_fetch_marks_trimmed_responses(tmp_path: Path, monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_persistent_data_tools_do_not_create_shell_overflow_file(
+async def test_persistent_data_tools_do_not_create_shell_dump_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -241,7 +244,7 @@ async def test_persistent_data_tools_do_not_create_shell_overflow_file(
 
     read_result = await _invoke_tool(read_file, tmp_path, file_path="kernel_agents/huge.py")
     assert f"... (truncated at {DEFAULT_READ_FILE_LIMIT} chars)" in read_result
-    assert _overflow_path(tmp_path).exists() is False
+    assert _dump_path(tmp_path).exists() is False
 
     httpx = pytest.importorskip("httpx")
 
@@ -269,7 +272,7 @@ async def test_persistent_data_tools_do_not_create_shell_overflow_file(
     monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
     fetch_result = await _invoke_tool(web_fetch, tmp_path, url="https://example.com/ptx")
     assert fetch_result.startswith("retrieved trimmed https://example.com/ptx")
-    assert _overflow_path(tmp_path).exists() is False
+    assert _dump_path(tmp_path).exists() is False
 
 
 @pytest.mark.asyncio
@@ -328,49 +331,69 @@ async def test_diff_files_rejects_escape(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("tool", "stdout", "expected_source", "expected_command", "expected_summary"),
+    ("tool", "source_tool", "command_fragment", "kwargs", "tail_marker"),
     [
         (
             run_stage_validation,
-            ("log\n" * 6_000) + "SYNTHETIC RESULTS: 2/2 cases passed\n",
             "run_stage_validation",
             "scripts/bench_synthetic.py",
-            "Summary: 2/2 synthetic cases passed",
+            {"stage_id": "warp1::qk_mma"},
+            "SYNTHETIC RESULTS: 2/2 cases passed",
         ),
         (
             run_synthetic_check,
-            ("log\n" * 6_000) + "SYNTHETIC RESULTS: 2/2 cases passed\n",
             "run_synthetic_check",
             "scripts/bench_synthetic.py",
-            "Summary: 2/2 synthetic cases passed",
+            {},
+            "SYNTHETIC RESULTS: 2/2 cases passed",
         ),
         (
             run_correctness_check,
-            ("log\n" * 6_000) + "RESULTS: 3/3 workloads passed\nAverage speedup: 1.5x\n",
             "run_correctness_check",
             "scripts/bench.py",
-            "Summary: 3/3 workloads passed",
+            {},
+            "RESULTS: 3/3 workloads passed",
         ),
         (
             run_full_benchmark,
-            ("log\n" * 6_000) + "RESULTS: 3/3 workloads passed\nAverage speedup: 1.5x\n",
             "run_full_benchmark",
             "scripts/bench.py",
-            "Summary: 3/3 workloads passed",
+            {},
+            "Average speedup: 1.5x",
+        ),
+        (
+            run_ncu_profile,
+            "run_ncu_profile",
+            "tools/ncu/ncu_modal.py",
+            {},
+            "metric_259",
+        ),
+        (
+            run_sass_analysis,
+            "run_sass_analysis",
+            "tools/sass/dump_sass_modal.py",
+            {"kernel_file": "solution/dsa_attention/kernel.py"},
+            "metric_259",
         ),
     ],
 )
-async def test_workflow_tools_spill_large_transcripts_and_keep_summaries(
+async def test_modal_tools_write_shell_dump_and_return_recent_raw_context(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     tool: Any,
-    stdout: str,
-    expected_source: str,
-    expected_command: str,
-    expected_summary: str,
+    source_tool: str,
+    command_fragment: str,
+    kwargs: dict[str, Any],
+    tail_marker: str,
 ) -> None:
     solution_dir = tmp_path / "solution" / "dsa_attention"
     solution_dir.mkdir(parents=True)
+    (solution_dir / "kernel.py").write_text("def kernel():\n    pass\n", encoding="utf-8")
+    stdout = "".join(f"metric_{i}\n" for i in range(1, 260))
+    if tool is run_stage_validation or tool is run_synthetic_check:
+        stdout += "SYNTHETIC RESULTS: 2/2 cases passed\n"
+    elif tool is run_correctness_check or tool is run_full_benchmark:
+        stdout += "RESULTS: 3/3 workloads passed\nAverage speedup: 1.5x\n"
     process = _FakeProcess(stdout=stdout, stderr="", returncode=0)
 
     async def _create_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeProcess:
@@ -378,21 +401,68 @@ async def test_workflow_tools_spill_large_transcripts_and_keep_summaries(
 
     monkeypatch.setattr("kernel_agents.tools.asyncio.create_subprocess_exec", _create_subprocess_exec)
 
-    kwargs: dict[str, Any] = {}
-    if tool is run_stage_validation:
-        kwargs = {
-            "stage_id": "warp1::qk_mma",
-        }
-
     result = await _invoke_tool(tool, tmp_path, **kwargs)
-    overflow_text = _overflow_path(tmp_path).read_text(encoding="utf-8")
+    dump_text = _dump_path(tmp_path).read_text(encoding="utf-8")
 
-    assert result.startswith(SHELL_OVERFLOW_BANNER)
-    assert expected_summary in result
-    assert "Command:" in result
-    assert f"Source tool: {expected_source}" in overflow_text
-    assert expected_command in overflow_text
-    assert "This file is overwritten by the next overflowing shell-like tool call." in overflow_text
+    assert result.startswith(SHELL_DUMP_TAIL_BANNER)
+    assert "Summary:" not in result
+    assert "Stage:" not in result
+    assert "Entry point:" not in result
+    assert "metric_1\n" not in result
+    assert tail_marker in result
+    assert f"Source tool: {source_tool}" in dump_text
+    assert command_fragment in dump_text
+    assert "This file is overwritten by the next shell-like tool call." in dump_text
+    assert "metric_1" in dump_text
+    assert "metric_259" in dump_text
+
+
+@pytest.mark.asyncio
+async def test_modal_tools_tail_to_last_200_lines(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    stdout = "".join(f"metric_{i}\n" for i in range(1, 261))
+    process = _FakeProcess(stdout=stdout, stderr="", returncode=0)
+
+    async def _create_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeProcess:
+        return process
+
+    monkeypatch.setattr("kernel_agents.tools.asyncio.create_subprocess_exec", _create_subprocess_exec)
+    result = await _invoke_tool(run_correctness_check, tmp_path)
+
+    tail = result.splitlines()[1:]
+    assert len(tail) == DEFAULT_SHELL_DUMP_CONTEXT_LINES
+    assert "metric_1\n" not in result
+    assert "metric_260" in result
+
+
+@pytest.mark.asyncio
+async def test_modal_tools_overwrite_shell_dump_on_subsequent_calls(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    processes = [
+        _FakeProcess(stdout="first run\n", stderr="", returncode=0),
+        _FakeProcess(stdout="second run\n", stderr="", returncode=0),
+    ]
+
+    async def _create_subprocess_exec(*args: Any, **kwargs: Any) -> _FakeProcess:
+        return processes.pop(0)
+
+    monkeypatch.setattr("kernel_agents.tools.asyncio.create_subprocess_exec", _create_subprocess_exec)
+
+    first_result = await _invoke_tool(run_correctness_check, tmp_path)
+    first_dump = _dump_path(tmp_path).read_text(encoding="utf-8")
+    second_result = await _invoke_tool(run_correctness_check, tmp_path)
+    second_dump = _dump_path(tmp_path).read_text(encoding="utf-8")
+
+    assert "first run" in first_result
+    assert "second run" in second_result
+    assert "first run" in first_dump
+    assert "first run" not in second_dump
+    assert "second run" in second_dump
 
 
 def test_public_codex_is_the_default_run_config_profile() -> None:

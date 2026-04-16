@@ -10,11 +10,10 @@ from __future__ import annotations
 import asyncio
 import difflib
 import os
-import re
 import shlex
 import subprocess
 from collections.abc import Sequence
-from dataclasses import dataclass, replace as dataclass_replace
+from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Literal
 
@@ -39,7 +38,6 @@ from kernel_agents.context import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SEARCH_OUTPUT_LIMIT = LEGACY_TOOL_LIMITS.search_output_limit_chars
-DEFAULT_SHELL_OUTPUT_LIMIT = LEGACY_TOOL_LIMITS.shell_output_limit_chars
 DEFAULT_READ_FILE_LIMIT = LEGACY_TOOL_LIMITS.read_file_limit_chars
 DEFAULT_WEB_FETCH_LIMIT = LEGACY_TOOL_LIMITS.web_fetch_limit_chars
 DEFAULT_SEARCH_MATCH_LIMIT = LEGACY_TOOL_LIMITS.search_match_limit
@@ -50,36 +48,27 @@ DEFAULT_LIST_DIRECTORY_CAP = LEGACY_TOOL_LIMITS.list_directory_cap
 DEFAULT_GREP_MAX_COLUMNS = LEGACY_TOOL_LIMITS.grep_max_columns
 DEFAULT_BENCH_LANGUAGE = "python"
 DEFAULT_STAGE_VALIDATION_ENTRY_POINT = "kernel_0.py::prefix_validation_harness"
-SHELL_OVERFLOW_FILE_NAME = "last_shell_overflow.txt"
+SHELL_DUMP_FILE_NAME = "last_shell_dump.txt"
+DEFAULT_SHELL_DUMP_CONTEXT_LINES = 200
 
 
-def _shell_overflow_banner(limit: int) -> str:
+def _shell_dump_tail_banner(max_lines: int, *, char_limit: int | None = None) -> str:
+    if char_limit is None:
+        trimmed_at = f"to the last {max_lines} lines"
+    else:
+        trimmed_at = f"to the last {max_lines} lines and {char_limit} chars"
     return (
-        "retrieved trimmed shell output at "
-        f"{limit} chars; full transcript saved to {SHELL_OVERFLOW_FILE_NAME} and it will be "
-        "replaced by the next overflowing shell-like tool call. Form a concrete hypothesis "
-        "before running another potentially overflowing shell command. "
-        f"Use read_file or grep_search on {SHELL_OVERFLOW_FILE_NAME} if you need more detail."
+        f"retrieved trimmed shell output {trimmed_at}; "
+        f"full transcript saved to {SHELL_DUMP_FILE_NAME}. "
+        f"Use read_file or grep_search on {SHELL_DUMP_FILE_NAME} if you need more detail."
     )
 
-
-SHELL_OVERFLOW_BANNER = _shell_overflow_banner(DEFAULT_SHELL_OUTPUT_LIMIT)
+SHELL_DUMP_TAIL_BANNER = _shell_dump_tail_banner(DEFAULT_SHELL_DUMP_CONTEXT_LINES)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class CommandRunResult:
-    """Structured result for a local subprocess helper command."""
-
-    returncode: int
-    stdout: str
-    stderr: str
-    timed_out: bool
-    overflow_notice: str | None = None
 
 def _project_root_from_context(ctx: RunContextWrapper[SharedContext] | None) -> Path:
     """Resolve the active project root from run context or fall back to this repo."""
@@ -162,17 +151,6 @@ def _truncate_output(
     return text[:keep] + suffix
 
 
-def _truncate_block(text: str, *, max_lines: int = 48, max_chars: int = 10_000) -> str:
-    """Trim multiline output without losing the leading context."""
-    stripped = text.strip()
-    if not stripped:
-        return ""
-    lines = stripped.splitlines()
-    if len(lines) > max_lines:
-        lines = lines[:max_lines] + ["... (truncated)"]
-    return _truncate_output("\n".join(lines), limit=max_chars)
-
-
 def _prepend_notice(text: str, notice: str) -> str:
     """Attach a single-line notice ahead of tool output."""
     if not notice:
@@ -244,13 +222,13 @@ def _command_display(command: Sequence[str]) -> str:
     return shlex.join(list(command))
 
 
-def _shell_overflow_path(project_root: Path) -> Path:
-    """Resolve the stable shell overflow transcript path."""
-    return project_root / SHELL_OVERFLOW_FILE_NAME
+def _shell_dump_path(project_root: Path) -> Path:
+    """Resolve the stable shell dump transcript path."""
+    return project_root / SHELL_DUMP_FILE_NAME
 
 
 def _render_shell_transcript_block(output: ShellCommandOutput) -> str:
-    """Render a single shell output entry into a full overflow transcript block."""
+    """Render a single shell output entry into a plain-text transcript block."""
     lines: list[str] = []
     if output.command:
         lines.append(f"Command: {output.command}")
@@ -266,18 +244,18 @@ def _render_shell_transcript_block(output: ShellCommandOutput) -> str:
     return "\n".join(lines)
 
 
-def _build_shell_overflow_transcript(
+def _build_shell_dump_transcript(
     *,
     source_tool: str,
     working_directory: Path,
     outputs: Sequence[ShellCommandOutput],
 ) -> str:
-    """Build the full plain-text transcript written on shell overflow."""
+    """Build the full plain-text transcript written to the shell dump file."""
     lines = [
         f"Source tool: {source_tool}",
         f"Working directory: {working_directory}",
-        f"Overflow file: {SHELL_OVERFLOW_FILE_NAME}",
-        "This file is overwritten by the next overflowing shell-like tool call.",
+        f"Dump file: {SHELL_DUMP_FILE_NAME}",
+        "This file is overwritten by the next shell-like tool call.",
         "",
     ]
     if not outputs:
@@ -290,80 +268,65 @@ def _build_shell_overflow_transcript(
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _write_shell_overflow(project_root: Path, transcript: str, limit: int) -> str:
-    """Persist the current overflowing shell transcript and return the banner."""
-    overflow_path = _shell_overflow_path(project_root)
-    overflow_path.write_text(transcript, encoding="utf-8")
-    return _shell_overflow_banner(limit)
+def _write_shell_dump(project_root: Path, transcript: str) -> None:
+    """Persist the current shell transcript to the stable dump file."""
+    dump_path = _shell_dump_path(project_root)
+    dump_path.write_text(transcript, encoding="utf-8")
 
 
-def _maybe_write_shell_overflow(
+def _write_shell_dump_for_outputs(
     *,
     project_root: Path,
     source_tool: str,
     working_directory: Path,
     outputs: Sequence[ShellCommandOutput],
-    limit: int,
-) -> str | None:
-    """Write the overflow transcript when a shell-like tool exceeds its limit."""
-    transcript = _build_shell_overflow_transcript(
+) -> None:
+    """Write the current shell transcript to the stable dump file."""
+    transcript = _build_shell_dump_transcript(
         source_tool=source_tool,
         working_directory=working_directory,
         outputs=outputs,
     )
-    if limit > 0 and len(transcript) <= limit:
-        return None
-    return _write_shell_overflow(project_root, transcript, limit)
+    _write_shell_dump(project_root, transcript)
 
 
-def _extract_section(text: str, marker: str) -> str:
-    """Extract a trailing section from a CLI transcript."""
-    lines = text.splitlines()
-    for index, line in enumerate(lines):
-        if marker in line:
-            return "\n".join(lines[index:])
-    return ""
-
-
-def _build_workflow_report(
+def _format_shell_context_window(
+    text: str,
     *,
-    command: Sequence[str],
-    returncode: int,
-    stdout: str,
-    stderr: str,
-    timed_out: bool,
-    timeout_s: int,
-    summary: str | None,
-    failure_marker: str,
-    extra_line: str | None = None,
+    max_lines: int,
+    char_limit: int,
 ) -> str:
-    """Build a concise, model-friendly workflow summary."""
-    lines = [f"Command: {_command_display(command)}"]
-    if timed_out:
-        lines.append(f"Status: timed out after {timeout_s}s")
-        lines.append("WARNING: A timeout at this length is MOST LIKELY A DEADLOCK in the kernel (e.g. producer/consumer pipeline stall, unmet mbarrier arrival count, missing async fence/commit, warp specialization hang). Investigate the synchronization logic before retrying.")
-    else:
-        lines.append(f"Exit code: {returncode}")
-    if summary:
-        lines.append(f"Summary: {summary}")
-    if extra_line:
-        lines.append(extra_line)
+    """Keep the latest shell context window while preserving dump-search guidance."""
+    lines = text.splitlines()
+    was_line_trimmed = len(lines) > max_lines
+    if was_line_trimmed:
+        lines = lines[-max_lines:]
+    rendered = "\n".join(lines)
+    was_char_trimmed = len(rendered) > char_limit
+    rendered = _truncate_output(rendered, limit=char_limit)
 
-    failure_section = _extract_section(stdout, failure_marker)
-    if failure_section:
-        lines.append("Failures:")
-        lines.append(_truncate_block(failure_section))
-    elif returncode != 0:
-        details = stderr.strip() or stdout.strip()
-        if details:
-            lines.append("Logs:")
-            lines.append(_truncate_block(details))
-    elif stderr.strip():
-        lines.append("Warnings:")
-        lines.append(_truncate_block(stderr))
+    if was_line_trimmed or was_char_trimmed:
+        return _prepend_notice(
+            rendered,
+            _shell_dump_tail_banner(
+                max_lines,
+                char_limit=char_limit if was_char_trimmed else None,
+            ),
+        )
+    return rendered
 
-    return "\n".join(lines)
 
+def _format_modal_shell_output(
+    output: ShellCommandOutput,
+    *,
+    limits: ToolLimitSettings,
+) -> str:
+    """Render Modal-backed tool output as recent raw shell context."""
+    return _format_shell_context_window(
+        _render_shell_transcript_block(output),
+        max_lines=DEFAULT_SHELL_DUMP_CONTEXT_LINES,
+        char_limit=limits.shell_output_limit_chars,
+    )
 
 async def _run_command(
     *,
@@ -371,8 +334,7 @@ async def _run_command(
     command: Sequence[str],
     timeout_s: int,
     source_tool: str,
-    limits: ToolLimitSettings,
-) -> CommandRunResult:
+) -> ShellCommandOutput:
     """Run a fixed command locally and capture UTF-8 output."""
     proc = await asyncio.create_subprocess_exec(
         *command,
@@ -401,20 +363,13 @@ async def _run_command(
             exit_code=getattr(proc, "returncode", None),
         ),
     )
-    overflow_notice = _maybe_write_shell_overflow(
+    _write_shell_dump_for_outputs(
         project_root=project_root,
         source_tool=source_tool,
         working_directory=project_root,
         outputs=[output],
-        limit=limits.shell_output_limit_chars,
     )
-    return CommandRunResult(
-        returncode=proc.returncode or 0,
-        stdout=stdout,
-        stderr=stderr,
-        timed_out=timed_out,
-        overflow_notice=overflow_notice,
-    )
+    return output
 
 
 def _resolve_solution_dir(
@@ -787,68 +742,6 @@ async def grep_search(
 # Custom workflow tools
 # ---------------------------------------------------------------------------
 
-_SYNTHETIC_SUMMARY_RE = re.compile(r"SYNTHETIC RESULTS:\s*(\d+)/(\d+)\s+cases passed")
-_BENCHMARK_SUMMARY_RE = re.compile(r"RESULTS:\s*(\d+)/(\d+)\s+workloads passed")
-_SPEEDUP_RE = re.compile(r"Average speedup:\s*([^\n]+)")
-
-
-def _summarize_synthetic_output(
-    command: Sequence[str],
-    returncode: int,
-    stdout: str,
-    stderr: str,
-    timed_out: bool,
-    timeout_s: int,
-) -> str:
-    """Parse synthetic-check output into a concise report."""
-    match = _SYNTHETIC_SUMMARY_RE.search(stdout)
-    summary = f"{match.group(1)}/{match.group(2)} synthetic cases passed" if match else None
-    return _build_workflow_report(
-        command=command,
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-        timed_out=timed_out,
-        timeout_s=timeout_s,
-        summary=summary,
-        failure_marker="FAILED synthetic cases (",
-    )
-
-
-def _summarize_benchmark_output(
-    command: Sequence[str],
-    returncode: int,
-    stdout: str,
-    stderr: str,
-    timed_out: bool,
-    timeout_s: int,
-) -> str:
-    """Parse correctness/full benchmark output into a concise report."""
-    summary_match = _BENCHMARK_SUMMARY_RE.search(stdout)
-    speedup_match = _SPEEDUP_RE.search(stdout)
-    summary = (
-        f"{summary_match.group(1)}/{summary_match.group(2)} workloads passed"
-        if summary_match
-        else None
-    )
-    speedup_line = (
-        f"Average speedup: {speedup_match.group(1).strip()}"
-        if speedup_match
-        else None
-    )
-    return _build_workflow_report(
-        command=command,
-        returncode=returncode,
-        stdout=stdout,
-        stderr=stderr,
-        timed_out=timed_out,
-        timeout_s=timeout_s,
-        summary=summary,
-        failure_marker="FAILED workloads (",
-        extra_line=speedup_line,
-    )
-
-
 @function_tool
 async def run_synthetic_check(
     ctx: RunContextWrapper[SharedContext],
@@ -857,7 +750,7 @@ async def run_synthetic_check(
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
 ) -> str:
-    """Run the fast synthetic correctness sweep for a solution directory."""
+    """Run the fast synthetic correctness sweep and return recent raw shell context."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
@@ -881,22 +774,13 @@ async def run_synthetic_check(
         command.append("--rebuild-fixture")
 
     timeout_s = 120
-    result = await _run_command(
+    output = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
         source_tool="run_synthetic_check",
-        limits=limits,
     )
-    summary = _summarize_synthetic_output(
-        command,
-        result.returncode,
-        result.stdout,
-        result.stderr,
-        result.timed_out,
-        timeout_s,
-    )
-    return _prepend_notice(summary, result.overflow_notice or "")
+    return _format_modal_shell_output(output, limits=limits)
 
 
 @function_tool
@@ -907,7 +791,7 @@ async def run_stage_validation(
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
 ) -> str:
-    """Run a synthetic stage output validation entry point for the current kernel."""
+    """Run the synthetic stage validation entry point and return recent raw shell context."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
@@ -932,25 +816,13 @@ async def run_stage_validation(
         command.append("--rebuild-fixture")
 
     timeout_s = 120
-    result = await _run_command(
+    output = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
         source_tool="run_stage_validation",
-        limits=limits,
     )
-    summary = _summarize_synthetic_output(
-        command,
-        result.returncode,
-        result.stdout,
-        result.stderr,
-        result.timed_out,
-        timeout_s,
-    )
-    return _prepend_notice(
-        f"Stage: {stage_id}\nEntry point: {entry_point}\n{summary}",
-        result.overflow_notice or "",
-    )
+    return _format_modal_shell_output(output, limits=limits)
 
 
 @function_tool
@@ -960,7 +832,7 @@ async def run_correctness_check(
     entry_point: str = "kernel.py::kernel",
     lang: str = DEFAULT_BENCH_LANGUAGE,
 ) -> str:
-    """Run the Modal correctness-only benchmark flow."""
+    """Run the Modal correctness-only benchmark flow and return recent raw shell context."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
@@ -986,22 +858,13 @@ async def run_correctness_check(
         command.extend(["--lang", lang])
 
     timeout_s = 120
-    result = await _run_command(
+    output = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
         source_tool="run_correctness_check",
-        limits=limits,
     )
-    summary = _summarize_benchmark_output(
-        command,
-        result.returncode,
-        result.stdout,
-        result.stderr,
-        result.timed_out,
-        timeout_s,
-    )
-    return _prepend_notice(summary, result.overflow_notice or "")
+    return _format_modal_shell_output(output, limits=limits)
 
 
 @function_tool
@@ -1011,7 +874,7 @@ async def run_full_benchmark(
     entry_point: str = "kernel.py::kernel",
     lang: str = DEFAULT_BENCH_LANGUAGE,
 ) -> str:
-    """Run the full Modal benchmark flow."""
+    """Run the full Modal benchmark flow and return recent raw shell context."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
@@ -1036,22 +899,13 @@ async def run_full_benchmark(
         command.extend(["--lang", lang])
 
     timeout_s = 300
-    result = await _run_command(
+    output = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
         source_tool="run_full_benchmark",
-        limits=limits,
     )
-    summary = _summarize_benchmark_output(
-        command,
-        result.returncode,
-        result.stdout,
-        result.stderr,
-        result.timed_out,
-        timeout_s,
-    )
-    return _prepend_notice(summary, result.overflow_notice or "")
+    return _format_modal_shell_output(output, limits=limits)
 
 # ---------------------------------------------------------------------------
 # Custom exact-URL fallback
@@ -1225,8 +1079,9 @@ async def run_ncu_profile(
 ) -> str:
     """Run NCU profiling on Modal B200 to get GPU hardware utilization metrics.
 
-    Returns DRAM throughput, SM utilization, L2 hit rate, warp stall reasons,
-    and occupancy data.
+    Returns recent raw shell context from the profiling run. Use
+    ``last_shell_dump.txt`` for the full transcript when the returned context
+    is trimmed.
 
     Args:
         solution_dir: Solution directory (default: from context). Reserved for
@@ -1241,24 +1096,13 @@ async def run_ncu_profile(
     command = [".venv/bin/modal", "run", "tools/ncu/ncu_modal.py"]
 
     timeout_s = 1800
-    result = await _run_command(
+    output = await _run_command(
         project_root=_project_root_from_context(ctx),
         command=command,
         timeout_s=timeout_s,
         source_tool="run_ncu_profile",
-        limits=limits,
     )
-
-    lines = [f"Command: {_command_display(command)}"]
-    if result.timed_out:
-        lines.append(f"Status: timed out after {timeout_s}s")
-    else:
-        lines.append(f"Exit code: {result.returncode}")
-    output = (result.stdout.strip() or result.stderr.strip() or "(no output)")
-    lines.append(output)
-    report = "\n".join(lines)
-    report = _truncate_output(report, limit=limits.shell_output_limit_chars)
-    return _prepend_notice(report, result.overflow_notice or "")
+    return _format_modal_shell_output(output, limits=limits)
 
 
 @function_tool
@@ -1269,8 +1113,9 @@ async def run_sass_analysis(
 ) -> str:
     """Run SASS instruction set analysis on a kernel via Modal B200.
 
-    Compiles the kernel, extracts the cubin, disassembles it, and returns a
-    pipeline analysis with opcode classification and cost estimates.
+    Compiles the kernel, extracts the cubin, disassembles it, and returns
+    recent raw shell context from that analysis. Use ``last_shell_dump.txt``
+    for the full transcript when the returned context is trimmed.
 
     Args:
         kernel_file: Path to the kernel file to analyse (project-relative or
@@ -1297,24 +1142,13 @@ async def run_sass_analysis(
     command = [".venv/bin/modal", "run", "tools/sass/dump_sass_modal.py", flag, str(target)]
 
     timeout_s = 1200
-    result = await _run_command(
+    output = await _run_command(
         project_root=project_root,
         command=command,
         timeout_s=timeout_s,
         source_tool="run_sass_analysis",
-        limits=limits,
     )
-
-    lines = [f"Command: {_command_display(command)}"]
-    if result.timed_out:
-        lines.append(f"Status: timed out after {timeout_s}s")
-    else:
-        lines.append(f"Exit code: {result.returncode}")
-    output = (result.stdout.strip() or result.stderr.strip() or "(no output)")
-    lines.append(output)
-    report = "\n".join(lines)
-    report = _truncate_output(report, limit=limits.shell_output_limit_chars)
-    return _prepend_notice(report, result.overflow_notice or "")
+    return _format_modal_shell_output(output, limits=limits)
 
 
 # ---------------------------------------------------------------------------

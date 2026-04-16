@@ -370,11 +370,11 @@ These tools inject directory structure and search results into the transcript. T
 
 ### `shell`
 
-The local shell tool returns command output back into the transcript. If output is too large, the workflow writes overflow to `last_shell_overflow.txt` and returns a message telling the model where to inspect the overflow.
+The local shell tool returns command output back into the transcript. Modal-backed tools write the full transcript to `last_shell_dump.txt`, and when the returned context is trimmed they tell the model where to inspect the full dump.
 
 That means large logs do not automatically flood context. Instead, the model sees:
 
-1. a summarized or truncated tool result
+1. a recent raw-shell tail or truncated tool result
 2. a path it can inspect later if needed
 
 The shell environment also advertises a local shell skill:

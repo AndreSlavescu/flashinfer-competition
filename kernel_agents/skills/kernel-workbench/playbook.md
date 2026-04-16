@@ -20,7 +20,7 @@ Benchmark:
 .venv/bin/modal run scripts/bench.py --track dsa_attention --solution-dir solution/dsa_attention --entry-point kernel.py::kernel --lang python
 ```
 
-If a shell-like tool overflows, inspect `last_shell_overflow.txt` with `read_file` or `grep_search` before launching another large shell command. That file is overwritten by the next overflowing shell-like call.
+If a Modal-backed shell tool trims its returned context, inspect `last_shell_dump.txt` with `read_file` or `grep_search` before launching another broad shell command. That file is overwritten by the next shell-like tool call.
 
 ## References
 

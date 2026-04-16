@@ -50,7 +50,7 @@ State is persisted to `solution/dsa_attention/loop_state.json` for resumability 
 ### Agent Modules (`kernel_agents/`)
 
 - **`context.py`** - Shared types: `SharedContext` (mutable state threaded through agents), `RoundRecord`, and Pydantic structured output models (`DesignerResult`, `CoderResult`, `PlannerResult`, `OptimizerResult`).
-- **`tools.py`** - All agent tools: file I/O, shell execution, validation (`run_synthetic_check`, `run_correctness_check`, `run_full_benchmark`), web access. Enforces output trimming limits (shell: 20k chars, read_file: 40k, search: 20k). Overflow spills to `last_shell_overflow.txt`. Designer gets read-only `DESIGNER_TOOLS`; coder/planner/optimizer get `ALL_TOOLS`.
+- **`tools.py`** - All agent tools: file I/O, shell execution, validation (`run_synthetic_check`, `run_correctness_check`, `run_full_benchmark`), web access. Enforces output trimming limits (shell: 20k chars, read_file: 40k, search: 20k). Modal-backed tools write full transcripts to `last_shell_dump.txt` and return recent raw shell context. Designer gets read-only `DESIGNER_TOOLS`; coder/planner/optimizer get `ALL_TOOLS`.
 - **`stream_logging.py`** - Streaming progress display for agent runs.
 
 ### Key Constraints

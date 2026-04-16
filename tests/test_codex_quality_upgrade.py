@@ -30,7 +30,7 @@ from kernel_agents.kernel_planner import make_kernel_planner
 from kernel_agents.scoping import AGENT_SCOPES
 from kernel_agents.tools import (
     PROJECT_ROOT,
-    SHELL_OVERFLOW_FILE_NAME,
+    SHELL_DUMP_FILE_NAME,
     build_tools_for_role,
     diff_files,
     glob_files,
@@ -589,6 +589,18 @@ def test_hardware_block_appears_for_designer_and_planner_only(tmp_path: Path) ->
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in optimizer_prompt
 
 
+def test_planner_and_optimizer_prompts_reference_shell_dump_guidance(tmp_path: Path) -> None:
+    _write_kernel_plan_fixture(tmp_path)
+    ctx = _shared_context(tmp_path)
+    planner_prompt = _resolve_instructions(make_kernel_planner(context=ctx), ctx)
+    optimizer_prompt = _resolve_instructions(make_kernel_optimizer(context=ctx), ctx)
+
+    assert "last_shell_dump.txt" in planner_prompt
+    assert "recent raw shell context" in planner_prompt
+    assert "last_shell_dump.txt" in optimizer_prompt
+    assert "recent raw shell context" in optimizer_prompt
+
+
 def test_narrowed_scopes_still_include_required_reference_paths() -> None:
     expected_roles = ("designer", "coder", "planner")
 
@@ -597,6 +609,11 @@ def test_narrowed_scopes_still_include_required_reference_paths() -> None:
         assert "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py" in read_allow
         assert "references/quack/" in read_allow
         assert "solution/dsa_attention/" in read_allow
+
+
+def test_shell_dump_file_is_exposed_to_roles_that_need_it() -> None:
+    for role in ("coder", "planner", "optimizer"):
+        assert "last_shell_dump.txt" in AGENT_SCOPES[role].read_allow
 
 
 def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:
@@ -921,14 +938,16 @@ async def test_context_aware_limits_propagate_to_grep_glob_list_web_diff_and_she
 
     monkeypatch.setattr("kernel_agents.tools.asyncio.create_subprocess_exec", _create_subprocess_exec)
     shell_result = await _invoke_tool(run_synthetic_check, tmp_path, context=ctx)
-    overflow_path = tmp_path / SHELL_OVERFLOW_FILE_NAME
+    overflow_path = tmp_path / SHELL_DUMP_FILE_NAME
 
     assert shell_result.startswith(
-        "retrieved trimmed shell output at 60 chars; full transcript saved to last_shell_overflow.txt"
+        "retrieved trimmed shell output to the last 200 lines and 60 chars; full transcript saved to last_shell_dump.txt"
     )
-    assert "Summary: 1/1 synthetic cases passed" in shell_result
+    assert "Summary:" not in shell_result
     assert overflow_path.exists()
-    assert "Source tool: run_synthetic_check" in overflow_path.read_text(encoding="utf-8")
+    overflow_text = overflow_path.read_text(encoding="utf-8")
+    assert "Source tool: run_synthetic_check" in overflow_text
+    assert "SYNTHETIC RESULTS: 1/1 cases passed" in overflow_text
 
 
 @pytest.mark.asyncio
@@ -952,6 +971,7 @@ async def test_run_stage_validation_reports_stage_metadata(
         stage_id="warp1::qk_mma",
     )
 
-    assert "Stage: warp1::qk_mma" in shell_result
-    assert "Entry point: kernel_0.py::prefix_validation_harness" in shell_result
-    assert "Summary: 1/1 synthetic cases passed" in shell_result
+    assert "Stage: warp1::qk_mma" not in shell_result
+    assert "Entry point: kernel_0.py::prefix_validation_harness" not in shell_result
+    assert "Summary:" not in shell_result
+    assert "SYNTHETIC RESULTS: 1/1 cases passed" in shell_result

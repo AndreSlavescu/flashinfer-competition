@@ -28,15 +28,15 @@ designer
   write: solution/dsa_attention/kernel_0_plan.md
 
 coder
-  read:  references/, solution/dsa_attention/, last_shell_overflow.txt
+  read:  references/, solution/dsa_attention/, last_shell_dump.txt
   write: solution/dsa_attention/
 
 planner
-  read:  references/, solution/dsa_attention/, notes/dsa_attention/, last_shell_overflow.txt
+  read:  references/, solution/dsa_attention/, notes/dsa_attention/, last_shell_dump.txt
   write: notes/dsa_attention/
 
 optimizer
-  read:  references/, solution/dsa_attention/, notes/dsa_attention/, last_shell_overflow.txt
+  read:  references/, solution/dsa_attention/, notes/dsa_attention/, last_shell_dump.txt
   write: solution/dsa_attention/
 ```
 
@@ -121,7 +121,7 @@ _build_codex_kernel_assist(role)
 ```
 
 The Codex helper uses directory scope only.
-Single-file exceptions like `last_shell_overflow.txt` are not exposed through
+Single-file exceptions like `last_shell_dump.txt` are not exposed through
 Codex assist.
 
 ### 4. Write-capable Codex workers
@@ -217,7 +217,7 @@ kernel-coder
   read scope:
     references/
     solution/dsa_attention/
-    last_shell_overflow.txt
+    last_shell_dump.txt
 
   write scope:
     solution/dsa_attention/
@@ -228,8 +228,8 @@ kernel-coder
 | `apply_patch` | Can only write under `solution/dsa_attention/`. |
 | `web_search` | No filesystem scope. Web-only. |
 | `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/]`. Does not expose `last_shell_overflow.txt` as a standalone file root. |
-| `read_file` | Can read `references/`, `solution/dsa_attention/`, and `last_shell_overflow.txt`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/]`. Does not expose `last_shell_dump.txt` as a standalone file root. |
+| `read_file` | Can read `references/`, `solution/dsa_attention/`, and `last_shell_dump.txt`. |
 | `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the coder read allowlist. |
 | `grep_search` | Can search only within an explicit scoped `path` under the coder read allowlist. |
 | `list_directory` | Can list only an explicit scoped directory under the coder read allowlist. |
@@ -246,7 +246,7 @@ kernel-planner
     references/
     solution/dsa_attention/
     notes/dsa_attention/
-    last_shell_overflow.txt
+    last_shell_dump.txt
 
   write scope:
     notes/dsa_attention/
@@ -257,8 +257,8 @@ kernel-planner
 | `apply_patch` | Can only write under `notes/dsa_attention/`. |
 | `web_search` | No filesystem scope. Web-only. |
 | `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/, notes/dsa_attention/]`. Does not expose `last_shell_overflow.txt` as a standalone file root. |
-| `read_file` | Can read `references/`, `solution/dsa_attention/`, `notes/dsa_attention/`, and `last_shell_overflow.txt`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/, notes/dsa_attention/]`. Does not expose `last_shell_dump.txt` as a standalone file root. |
+| `read_file` | Can read `references/`, `solution/dsa_attention/`, `notes/dsa_attention/`, and `last_shell_dump.txt`. |
 | `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the planner read allowlist. |
 | `grep_search` | Can search only within an explicit scoped `path` under the planner read allowlist. |
 | `list_directory` | Can list only an explicit scoped directory under the planner read allowlist. |
@@ -277,7 +277,7 @@ kernel-optimizer
     references/
     solution/dsa_attention/
     notes/dsa_attention/
-    last_shell_overflow.txt
+    last_shell_dump.txt
 
   write scope:
     solution/dsa_attention/
@@ -288,8 +288,8 @@ kernel-optimizer
 | `apply_patch` | Can only write under `solution/dsa_attention/`. |
 | `web_search` | No filesystem scope. Web-only. |
 | `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/, notes/dsa_attention/]`. Does not expose `last_shell_overflow.txt` as a standalone file root. |
-| `read_file` | Can read `references/`, `solution/dsa_attention/`, `notes/dsa_attention/`, and `last_shell_overflow.txt`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/, notes/dsa_attention/]`. Does not expose `last_shell_dump.txt` as a standalone file root. |
+| `read_file` | Can read `references/`, `solution/dsa_attention/`, `notes/dsa_attention/`, and `last_shell_dump.txt`. |
 | `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the optimizer read allowlist. |
 | `grep_search` | Can search only within an explicit scoped `path` under the optimizer read allowlist. |
 | `list_directory` | Can list only an explicit scoped directory under the optimizer read allowlist. |

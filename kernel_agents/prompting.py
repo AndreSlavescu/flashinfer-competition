@@ -30,8 +30,8 @@ CODER_CODEX_WORKER_BLOCK = """
 - `codex_coder_engineer` is a write-capable Codex worker for bounded coding subtasks.
 - Use it when a focused Codex edit or repo investigation pass would speed up progress, but keep the scope concrete.
 - Keep validation ownership in this parent agent: run the repo validation tools (`run_stage_validation`,
-  `run_synthetic_check`, `run_correctness_check`) yourself as appropriate, inspect their parsed
-  summaries yourself, and return the final structured result yourself.
+  `run_synthetic_check`, `run_correctness_check`) yourself as appropriate, inspect their returned
+  tool output yourself, and return the final structured result yourself.
 """
 
 OPTIMIZER_CODEX_WORKER_BLOCK = """
@@ -61,7 +61,8 @@ ROUND0_CODER_SUPPORT_BLOCK = """\
 - Use `cutlass.Constexpr` for static shapes; annotate types for the JIT.
 - Use the JIT compile cache pattern below.
 - Compile only on Modal B200 via `run_synthetic_check` / `run_correctness_check` —
-  never locally. Trust the parsed summaries, not raw shell logs.
+  never locally. For long Modal logs, inspect `last_shell_dump.txt` with `read_file` or
+  `grep_search`.
 - `grep_search` before `read_file` under `references/`.
 - Do not create spill files. Refine tool calls instead.
 """
@@ -94,10 +95,11 @@ ROUND0_CODER_REFERENCES_BLOCK = """\
 
 ROUND0_CODER_TOOL_POLICY_BLOCK = """\
 ## Tool policy
-- The repo's parsed validation tools (`run_stage_validation`, `run_synthetic_check`,
+- The repo's Modal-backed validation tools (`run_stage_validation`, `run_synthetic_check`,
   `run_correctness_check`) are the canonical correctness source.
 - If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
-- If `last_shell_overflow.txt` is written, inspect it before the next overflowing call.
+- If a Modal tool trims its returned context, inspect `last_shell_dump.txt` with `read_file`
+  or `grep_search` before rerunning another broad shell command.
 - Do not create spill files. Refine tool calls instead.
 """
 
@@ -143,12 +145,12 @@ TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "grep_search": "Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.",
     "list_directory": "List files and directories at a given path.",
     "diff_files": "Compare two files with a unified diff.",
-    "run_ncu_profile": "Run NCU profiling on Modal B200 and return hardware utilization metrics.",
-    "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return opcode and pipeline analysis.",
-    "run_full_benchmark": "Run the full Modal benchmark and return parsed performance results.",
-    "run_stage_validation": "Run the fixed `kernel_0.py::prefix_validation_harness` stage validation entry point and return a concise parsed summary.",
-    "run_synthetic_check": "Run the fast synthetic correctness sweep and return a concise parsed summary.",
-    "run_correctness_check": "Run the full Modal correctness check and return a concise parsed summary.",
+    "run_ncu_profile": "Run NCU profiling on Modal B200 and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_full_benchmark": "Run the full Modal benchmark and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_stage_validation": "Run the fixed `kernel_0.py::prefix_validation_harness` stage validation entry point and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_synthetic_check": "Run the fast synthetic correctness sweep and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_correctness_check": "Run the full Modal correctness check and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
 }
 
 
