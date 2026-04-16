@@ -191,6 +191,55 @@ def test_async_pipeline_spec_rejects_disallowed_multi_consumer_type() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "pipeline_type",
+    [
+        "PipelineAsync",
+        "PipelineCpAsync",
+        "PipelineTmaAsync",
+        "PipelineTmaUmma",
+        "PipelineAsyncUmma",
+        "PipelineUmmaAsync",
+        "PipelineClcFetchAsync",
+    ],
+)
+def test_async_pipeline_spec_accepts_allowed_single_producer_single_consumer_types(
+    pipeline_type: str,
+) -> None:
+    pipeline = AsyncPipelineSpec.model_validate(
+        {
+            "pipeline_id": "P1",
+            "type": pipeline_type,
+            "producer_warp": "warp0",
+            "consumer_warp": "warp1",
+            "num_stages": 1,
+            "payload": "tile",
+            "smem_budget": "0",
+            "tmem_budget": "0",
+            "register_budget": "0",
+        }
+    )
+
+    assert pipeline.type == pipeline_type
+
+
+def test_async_pipeline_spec_rejects_exported_type_without_consumer() -> None:
+    with pytest.raises(Exception, match="PipelineTmaStore"):
+        AsyncPipelineSpec.model_validate(
+            {
+                "pipeline_id": "P1",
+                "type": "PipelineTmaStore",
+                "producer_warp": "warp0",
+                "consumer_warp": "warp1",
+                "num_stages": 1,
+                "payload": "tile",
+                "smem_budget": "0",
+                "tmem_budget": "0",
+                "register_budget": "0",
+            }
+        )
+
+
 @pytest.mark.parametrize(("field_name", "value"), [("producer_warp", ""), ("consumer_warp", " ")])
 def test_async_pipeline_spec_rejects_blank_warp_fields(field_name: str, value: str) -> None:
     payload = {

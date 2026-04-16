@@ -815,7 +815,7 @@ def _build_invalid_impl_graph_feedback(error: ValueError, invalid_path: Path) ->
         "- `outputs` must define the concrete cumulative validation contract for the stage.\n"
         "- `plan_excerpt` must remain concrete.\n\n"
         "Hard requirements for every async pipeline:\n"
-        "- `type` must be an allowed single-consumer sm100 pipeline class.\n"
+        "- `type` must be an allowed single-producer/single-consumer pipeline class exported by cutlass.pipeline.\n"
         "- `producer_warp` and `consumer_warp` must both be single non-empty strings.\n\n"
         f"The invalid graph was dumped to {_display_path(invalid_path)} for debugging."
     )

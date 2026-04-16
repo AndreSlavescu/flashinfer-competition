@@ -24,6 +24,9 @@ StageReviewAction = Literal[
     "revise_design_then_retry",
 ]
 AsyncPipelineType = Literal[
+    "PipelineAsync",
+    "PipelineCpAsync",
+    "PipelineTmaAsync",
     "PipelineTmaUmma",
     "PipelineAsyncUmma",
     "PipelineUmmaAsync",
@@ -160,8 +163,8 @@ class AsyncPipelineSpec(BaseModel):
     pipeline_id: str = Field(description="Stable identifier such as P0/P1.")
     type: AsyncPipelineType = Field(
         description=(
-            "Exact pipeline class name from references/cutlass/python/CuTeDSL/"
-            "cutlass/pipeline/sm100.py. Only single-consumer pipeline types are allowed."
+            "Exact single-producer/single-consumer pipeline class name exported by "
+            "references/cutlass/python/CuTeDSL/cutlass/pipeline/__init__.py."
         ),
     )
     producer_warp: str = Field(
