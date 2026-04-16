@@ -25,3 +25,6 @@
 [submodule "Astra"]
 	path = Astra
 	url = https://github.com/Anjiang-Wei/Astra.git
+[submodule "flashinfer"]
+	path = flashinfer
+	url = https://github.com/flashinfer-ai/flashinfer.git

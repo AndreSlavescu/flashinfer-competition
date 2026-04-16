@@ -47,24 +47,18 @@ def _sample_impl_graph() -> ImplementationGraph:
         stages=[
             StageSpec(
                 stage_id="warp0::load_q",
-                title="Load Q",
-                description="Load query tiles.",
                 owner_warps=["warp0"],
                 prerequisites=[],
                 outputs=["q_tile_debug matches the eager reference for the active tile"],
                 relevant_helpers=["cute.make_tensor", "blackwell load example"],
-                validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
                 plan_excerpt="## Load Q\nload q details",
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
-                title="QK MMA",
-                description="Compute score tiles.",
                 owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
                 outputs=["score_tile_debug matches the eager fp32 QK tile"],
                 relevant_helpers=["tcgen05.mma", "pipeline example"],
-                validation_entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
                 plan_excerpt="## QK Mainloop\nqk details",
             ),
         ],
@@ -83,7 +77,6 @@ def _sample_impl_graph() -> ImplementationGraph:
             Round0StageResult,
             {
                 "stage_id",
-                "generated",
                 "stage_output_validation_report",
                 "stage_output_verified",
                 "final_correctness_verified",
@@ -174,13 +167,10 @@ def test_validate_impl_graph_rejects_duplicate_stage_ids() -> None:
     graph = _sample_impl_graph()
     duplicate = StageSpec(
         stage_id="warp1::qk_mma",
-        title="Duplicate",
-        description="bad",
         owner_warps=["warp2"],
         prerequisites=[],
         outputs=["x"],
         relevant_helpers=["helper"],
-        validation_entry_point="kernel_0.py::validate_stage__dup",
         plan_excerpt="## Duplicate\ndup",
     )
     graph = graph.model_copy(update={"stages": [*graph.stages, duplicate]})
@@ -226,13 +216,10 @@ def test_stage_spec_requires_non_empty_relevant_helpers() -> None:
     with pytest.raises(Exception, match="relevant_helpers"):
         StageSpec(
             stage_id="warp0::load_q",
-            title="Load Q",
-            description="Load query tiles.",
             owner_warps=["warp0"],
             prerequisites=[],
             outputs=["q_tile_debug matches eager reference"],
             relevant_helpers=[],
-            validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
             plan_excerpt="## Load Q\nload q details",
         )
 
@@ -241,13 +228,10 @@ def test_stage_spec_rejects_blank_relevant_helper_entries() -> None:
     with pytest.raises(Exception, match="relevant_helpers"):
         StageSpec(
             stage_id="warp0::load_q",
-            title="Load Q",
-            description="Load query tiles.",
             owner_warps=["warp0"],
             prerequisites=[],
             outputs=["q_tile_debug matches eager reference"],
             relevant_helpers=[""],
-            validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
             plan_excerpt="## Load Q\nload q details",
         )
 
@@ -276,7 +260,6 @@ def test_save_and_load_state_round0_fields_round_trip(tmp_path: Path) -> None:
     ctx.round0_stage_history = [
         Round0StageResult(
             stage_id="warp0::load_q",
-            generated=["solution/dsa_attention/kernel_0.py"],
             stage_output_validation_report="stage output ok",
             stage_output_verified=True,
             final_correctness_verified=False,
@@ -349,7 +332,6 @@ def _stage_result(
 ) -> Round0StageResult:
     return Round0StageResult(
         stage_id=stage_id,
-        generated=["solution/dsa_attention/kernel_0.py"],
         stage_output_validation_report="stage output ok",
         stage_output_verified=True,
         final_correctness_verified=final_correctness_verified,
@@ -533,6 +515,11 @@ def test_stage_coder_prompt_uses_new_body_and_dynamic_sections(tmp_path: Path) -
     assert "Return structured output matching `Round0StageResult`." in stage_prompt
     assert "Read through the current stage specifications and the existing stages written in kernel_0.py" in stage_prompt
     assert "Run tests only on Modal B200 via `run_stage_validation` / `run_synthetic_check` / `run_correctness_check`" in stage_prompt
+    assert "`prefix_validation_outputs_cute`" in stage_prompt
+    assert "`prefix_validation_outputs_torch`" in stage_prompt
+    assert "`prefix_validation_harness`" in stage_prompt
+    assert "`run_stage_validation` always executes `kernel_0.py::prefix_validation_harness`" in stage_prompt
+    assert "The prefix validation helpers are cumulative." in stage_prompt
     assert "references/cutlass/examples/python/CuTeDSL/blackwell" in stage_prompt
     assert '"is_final_stage": false' in stage_prompt
     assert "approved_frontier_summaries" not in stage_prompt
@@ -591,7 +578,11 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
     assert 'action="revise_design_then_retry"' in reviewer_prompt
     assert 'action="continue_next_stage"' in reviewer_prompt
     assert "Be precise." in reviewer_prompt
-    assert "Treat bypassing the declared `validation_entry_point` or replacing it with a standalone validator as an implementation issue." in reviewer_prompt
+    assert "`prefix_validation_outputs_cute`" in reviewer_prompt
+    assert "`prefix_validation_outputs_torch`" in reviewer_prompt
+    assert "`prefix_validation_harness`" in reviewer_prompt
+    assert "all completed prefix stages plus the current stage" in reviewer_prompt
+    assert "validation_entry_point" not in reviewer_prompt
     assert "Keep `message` terse and precise." not in reviewer_prompt
     assert "## Action gates" not in reviewer_prompt
     assert "## Single-decision discipline" not in reviewer_prompt
@@ -868,3 +859,46 @@ def test_load_impl_graph_rejects_legacy_stage_schema(tmp_path: Path) -> None:
 
     with pytest.raises(Exception):
         main.load_impl_graph(graph_path)
+
+
+def test_load_state_rejects_legacy_round0_stage_history_with_generated_field(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "loop_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "current_round": 0,
+                "best_latency_ms": 1.0,
+                "best_round": -1,
+                "model_name": "gpt-5.4",
+                "quality_profile": "public_codex",
+                "codex_worker_mode": "off",
+                "history": [],
+                "round0_stage_history": [
+                    {
+                        "stage_id": "warp0::load_q",
+                        "generated": ["solution/dsa_attention/kernel_0.py"],
+                        "stage_output_validation_report": "ok",
+                        "stage_output_verified": True,
+                        "final_correctness_verified": False,
+                        "correctness_check_report": "",
+                        "status": "success",
+                        "message": "ok",
+                        "reflection": "",
+                    }
+                ],
+                "round0_review_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+
+    with pytest.raises(Exception):
+        main.load_state(restored, state_path)

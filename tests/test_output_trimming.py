@@ -382,7 +382,6 @@ async def test_workflow_tools_spill_large_transcripts_and_keep_summaries(
     if tool is run_stage_validation:
         kwargs = {
             "stage_id": "warp1::qk_mma",
-            "entry_point": "kernel_0.py::validate_stage__warp1_qk_mma",
         }
 
     result = await _invoke_tool(tool, tmp_path, **kwargs)

@@ -834,7 +834,7 @@ def _build_invalid_impl_graph_feedback(error: ValueError, invalid_path: Path) ->
         "Hard requirements for every stage:\n"
         "- `owner_warps`, `outputs`, and `relevant_helpers` must all be non-empty.\n"
         "- `outputs` must define the concrete cumulative validation contract for the stage.\n"
-        "- `validation_entry_point` must remain concrete.\n\n"
+        "- `plan_excerpt` must remain concrete.\n\n"
         f"The invalid graph was dumped to {_display_path(invalid_path)} for debugging."
     )
 

@@ -335,24 +335,18 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
         stages=[
             StageSpec(
                 stage_id="warp0::load_q",
-                title="Load Q",
-                description="Load query tiles.",
                 owner_warps=["warp0"],
                 prerequisites=[],
                 outputs=["q_tile_debug matches eager reference"],
                 relevant_helpers=["cute.make_tensor"],
-                validation_entry_point="kernel_0.py::validate_stage__warp0_load_q",
                 plan_excerpt="## Load Q\nload q details",
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
-                title="QK MMA",
-                description="Compute score tiles.",
                 owner_warps=["warp1"],
                 prerequisites=["warp0::load_q"],
                 outputs=["score_tile_debug matches eager reference"],
                 relevant_helpers=["tcgen05.mma"],
-                validation_entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
                 plan_excerpt="## QK Mainloop\nqk details",
             ),
         ],
@@ -958,9 +952,8 @@ async def test_run_stage_validation_reports_stage_metadata(
         tmp_path,
         context=ctx,
         stage_id="warp1::qk_mma",
-        entry_point="kernel_0.py::validate_stage__warp1_qk_mma",
     )
 
     assert "Stage: warp1::qk_mma" in shell_result
-    assert "Entry point: kernel_0.py::validate_stage__warp1_qk_mma" in shell_result
+    assert "Entry point: kernel_0.py::prefix_validation_harness" in shell_result
     assert "Summary: 1/1 synthetic cases passed" in shell_result

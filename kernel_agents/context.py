@@ -181,8 +181,6 @@ class StageSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     stage_id: str = Field(description="Stable stage identifier.")
-    title: str = Field(description="Short human-readable title.")
-    description: str = Field(description="What this stage implements.")
     owner_warps: list[str] = Field(
         min_length=1,
         description="Warp names primarily responsible for the stage.",
@@ -204,11 +202,6 @@ class StageSpec(BaseModel):
             "relevant when implementing this stage."
         ),
     )
-    validation_entry_point: str = Field(
-        description=(
-            "Entry point used by run_stage_validation for validating stage outputs. To preserve correctness of previous stages, the validator function MUST BE EXTENDED, NOT REPLACED (e.g. kernel_0.py::validate_stage__foo)."
-        ),
-    )
     plan_excerpt: str = Field(
         description=(
             "Exact markdown excerpt copied from kernel_0_plan.md that describes "
@@ -220,9 +213,6 @@ class StageSpec(BaseModel):
     def _validate_non_empty_required_strings(self) -> "StageSpec":
         scalar_fields = {
             "stage_id": self.stage_id,
-            "title": self.title,
-            "description": self.description,
-            "validation_entry_point": self.validation_entry_point,
             "plan_excerpt": self.plan_excerpt,
         }
         for field_name, value in scalar_fields.items():
@@ -306,9 +296,6 @@ class Round0StageResult(StructuredResult):
     """Returned by the staged round-0 coder after a single stage attempt."""
 
     stage_id: str = Field(description="Stage ID that was implemented.")
-    generated: list[str] = Field(
-        description="Paths to kernel artifacts touched or produced by this stage.",
-    )
     stage_output_validation_report: str = Field(
         description="Parsed report for the stage output validation of this stage.",
     )

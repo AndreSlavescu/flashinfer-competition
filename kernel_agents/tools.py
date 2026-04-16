@@ -49,6 +49,7 @@ DEFAULT_GLOB_MATCH_LIMIT = LEGACY_TOOL_LIMITS.glob_match_limit
 DEFAULT_LIST_DIRECTORY_CAP = LEGACY_TOOL_LIMITS.list_directory_cap
 DEFAULT_GREP_MAX_COLUMNS = LEGACY_TOOL_LIMITS.grep_max_columns
 DEFAULT_BENCH_LANGUAGE = "python"
+DEFAULT_STAGE_VALIDATION_ENTRY_POINT = "kernel_0.py::prefix_validation_harness"
 SHELL_OVERFLOW_FILE_NAME = "last_shell_overflow.txt"
 
 
@@ -902,7 +903,6 @@ async def run_synthetic_check(
 async def run_stage_validation(
     ctx: RunContextWrapper[SharedContext],
     stage_id: str,
-    entry_point: str,
     solution_dir: str = "",
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
@@ -917,6 +917,7 @@ async def run_stage_validation(
     if not solution_path.exists():
         return f"ERROR: Solution directory not found: {solution_rel}"
 
+    entry_point = DEFAULT_STAGE_VALIDATION_ENTRY_POINT
     command = [
         ".venv/bin/python",
         "scripts/bench_synthetic.py",

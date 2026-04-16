@@ -146,7 +146,7 @@ TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "run_ncu_profile": "Run NCU profiling on Modal B200 and return hardware utilization metrics.",
     "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return opcode and pipeline analysis.",
     "run_full_benchmark": "Run the full Modal benchmark and return parsed performance results.",
-    "run_stage_validation": "Run a synthetic stage output validation entry point and return a concise parsed summary.",
+    "run_stage_validation": "Run the fixed `kernel_0.py::prefix_validation_harness` stage validation entry point and return a concise parsed summary.",
     "run_synthetic_check": "Run the fast synthetic correctness sweep and return a concise parsed summary.",
     "run_correctness_check": "Run the full Modal correctness check and return a concise parsed summary.",
 }
