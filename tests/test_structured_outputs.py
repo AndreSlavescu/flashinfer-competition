@@ -38,9 +38,6 @@ def _sample_impl_graph() -> ImplementationGraph:
                 consumer_warp="warp1",
                 num_stages=1,
                 payload="Q tile",
-                smem_budget="72 KB",
-                tmem_budget="0",
-                register_budget="warp0=32,warp1=64",
             )
         ],
         stages=[
@@ -65,7 +62,7 @@ def _sample_impl_graph() -> ImplementationGraph:
 @pytest.mark.parametrize(
     ("result_type", "expected_fields"),
     [
-        (DesignerResult, {"plan_file", "impl_graph", "status", "message"}),
+        (DesignerResult, {"plan_file", "impl_graph", "status"}),
         (
             CoderResult,
             {"generated", "correctness_verified", "status", "message", "reflection"},
@@ -80,7 +77,6 @@ def _sample_impl_graph() -> ImplementationGraph:
                 "correctness_check_report",
                 "status",
                 "message",
-                "reflection",
             },
         ),
         (
@@ -182,9 +178,6 @@ def test_async_pipeline_spec_rejects_disallowed_multi_consumer_type() -> None:
                 "consumer_warp": "warp1",
                 "num_stages": 1,
                 "payload": "bad",
-                "smem_budget": "0",
-                "tmem_budget": "0",
-                "register_budget": "0",
             }
         )
 
@@ -212,9 +205,6 @@ def test_async_pipeline_spec_accepts_allowed_single_producer_single_consumer_typ
             "consumer_warp": "warp1",
             "num_stages": 1,
             "payload": "tile",
-            "smem_budget": "0",
-            "tmem_budget": "0",
-            "register_budget": "0",
         }
     )
 
@@ -231,9 +221,6 @@ def test_async_pipeline_spec_rejects_exported_type_without_consumer() -> None:
                 "consumer_warp": "warp1",
                 "num_stages": 1,
                 "payload": "tile",
-                "smem_budget": "0",
-                "tmem_budget": "0",
-                "register_budget": "0",
             }
         )
 
@@ -247,9 +234,6 @@ def test_async_pipeline_spec_rejects_blank_warp_fields(field_name: str, value: s
         "consumer_warp": "warp1",
         "num_stages": 1,
         "payload": "tile",
-        "smem_budget": "0",
-        "tmem_budget": "0",
-        "register_budget": "0",
     }
     payload[field_name] = value
 
@@ -267,9 +251,23 @@ def test_async_pipeline_spec_rejects_blank_type() -> None:
                 "consumer_warp": "warp1",
                 "num_stages": 1,
                 "payload": "tile",
-                "smem_budget": "0",
+            }
+        )
+
+
+def test_async_pipeline_spec_rejects_legacy_budget_fields() -> None:
+    with pytest.raises(Exception, match="smem_budget|tmem_budget|register_budget"):
+        AsyncPipelineSpec.model_validate(
+            {
+                "pipeline_id": "P1",
+                "type": "PipelineTmaUmma",
+                "producer_warp": "warp0",
+                "consumer_warp": "warp1",
+                "num_stages": 1,
+                "payload": "tile",
+                "smem_budget": "72 KB",
                 "tmem_budget": "0",
-                "register_budget": "0",
+                "register_budget": "warp0=32,warp1=64",
             }
         )
 
@@ -338,7 +336,6 @@ def test_save_and_load_state_round0_fields_round_trip(tmp_path: Path) -> None:
             correctness_check_report="",
             status="success",
             message="validated",
-            reflection="none",
         )
     ]
     ctx.round0_review_history = [
@@ -408,7 +405,6 @@ def _stage_result(
         correctness_check_report="correct",
         status="success",
         message=f"{stage_id} ok",
-        reflection="",
     )
 
 
@@ -605,7 +601,8 @@ def test_stage_coder_prompt_uses_new_body_and_dynamic_sections(tmp_path: Path) -
     assert "## Attempt Metadata" in stage_prompt
     assert "## References" in stage_prompt
     assert "Return structured output matching `Round0StageResult`." in stage_prompt
-    assert "Read through the current stage specifications and the existing stages written in kernel_0.py" in stage_prompt
+    assert "Read through the current stage specifications and the pre-requisite stage specifications" in stage_prompt
+    assert "Read through the pre-requisite stage implementations in kernel_0.py" in stage_prompt
     assert "Run tests only on Modal B200 via `run_stage_validation` / `run_synthetic_check` / `run_correctness_check`" in stage_prompt
     assert "`prefix_validation_outputs_cute`" in stage_prompt
     assert "`prefix_validation_outputs_torch`" in stage_prompt
@@ -1017,6 +1014,47 @@ def test_load_state_rejects_legacy_round0_stage_history_with_generated_field(
                     {
                         "stage_id": "warp0::load_q",
                         "generated": ["solution/dsa_attention/kernel_0.py"],
+                        "stage_output_validation_report": "ok",
+                        "stage_output_verified": True,
+                        "final_correctness_verified": False,
+                        "correctness_check_report": "",
+                        "status": "success",
+                        "message": "ok",
+                    }
+                ],
+                "round0_review_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+
+    with pytest.raises(Exception):
+        main.load_state(restored, state_path)
+
+
+def test_load_state_rejects_legacy_round0_stage_history_with_reflection_field(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "loop_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "current_round": 0,
+                "best_latency_ms": 1.0,
+                "best_round": -1,
+                "model_name": "gpt-5.4",
+                "quality_profile": "public_codex",
+                "codex_worker_mode": "off",
+                "history": [],
+                "round0_stage_history": [
+                    {
+                        "stage_id": "warp0::load_q",
                         "stage_output_validation_report": "ok",
                         "stage_output_verified": True,
                         "final_correctness_verified": False,

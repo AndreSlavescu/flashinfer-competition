@@ -1298,7 +1298,7 @@ def _final_round0_result(
         correctness_verified=stage_result.final_correctness_verified,
         status="success" if stage_result.final_correctness_verified else "validation_failed",
         message=stage_result.message,
-        reflection=stage_result.reflection,
+        reflection="",
     )
 
 
@@ -1394,7 +1394,9 @@ async def _run_round0_staged(
             sys.exit(1)
 
         if designer_out.status != "success":
-            print(f"FATAL: staged kernel-designer failed: {designer_out.message}")
+            print("FATAL: staged kernel-designer failed.")
+            if designer_out.plan_file:
+                print(f"  Design plan: {designer_out.plan_file}")
             sys.exit(1)
 
         validate_impl_graph(designer_out.impl_graph)
@@ -1406,7 +1408,6 @@ async def _run_round0_staged(
         )
         print(f"  Design plan: {designer_out.plan_file}")
         print(f"  Impl graph: {impl_graph_file.relative_to(PROJECT_ROOT)}")
-        print(f"  {designer_out.message}")
 
     validate_impl_graph(graph)
     save_state(ctx, state_path)
@@ -1655,9 +1656,9 @@ async def _run_round0_staged(
                 sys.exit(1)
 
             if designer_out.status != "success":
-                print(
-                    f"FATAL: staged kernel-designer revision failed: {designer_out.message}"
-                )
+                print("FATAL: staged kernel-designer revision failed.")
+                if designer_out.plan_file:
+                    print(f"  Design plan: {designer_out.plan_file}")
                 sys.exit(1)
 
             validate_impl_graph(designer_out.impl_graph)
@@ -1886,12 +1887,13 @@ async def run_loop(
                     sys.exit(1)
 
                 if designer_out.status != "success":
-                    print(f"FATAL: kernel-designer failed: {designer_out.message}")
+                    print("FATAL: kernel-designer failed.")
+                    if designer_out.plan_file:
+                        print(f"  Design plan: {designer_out.plan_file}")
                     sys.exit(1)
 
                 print(f"  {format_run_telemetry('kernel-designer', designer_elapsed_s, designer_result)}")
                 print(f"  Design plan: {designer_out.plan_file}")
-                print(f"  {designer_out.message}")
 
             # ── Round 0b: Implement kernel from design plan ────────────────────
             print()

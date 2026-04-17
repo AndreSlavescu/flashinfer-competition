@@ -37,7 +37,7 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
    - **Async pipelining**:
      - Overlap opportunities (e.g., gather KV -> QK MMA)
      - Pipeline types (TmaAsync, TmaUmma, AsyncUmma, UmmaAsync, TmaStore etc.)
-     - For each pipeline: producer/consumer warps, num_stages (pipeline depth)
+     - For each pipeline: producer/consumer warps, payload, num_stages (pipeline depth)
      - For each pipeline and warp: SMEM, TMEM, and register budgets for occupancy limits
      - Prefetch strategy
    - **Shared memory plan**: buffer layouts for tensors, total SMEM requirement (pipeline stages)

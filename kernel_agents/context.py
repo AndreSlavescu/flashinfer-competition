@@ -156,7 +156,7 @@ class StructuredResult(BaseModel):
 
 
 class AsyncPipelineSpec(BaseModel):
-    """Machine-readable view of an async pipeline from the design plan."""
+    """Machine-readable structural view of an async pipeline from the design plan."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -175,15 +175,6 @@ class AsyncPipelineSpec(BaseModel):
     )
     num_stages: int = Field(description="Pipeline depth.")
     payload: str = Field(description="Short description of the payload being handed off.")
-    smem_budget: str = Field(
-        description="Shared-memory budget or note for this pipeline.",
-    )
-    tmem_budget: str = Field(
-        description="Tensor-memory budget or note for this pipeline.",
-    )
-    register_budget: str = Field(
-        description="Register budget or note for participating warps.",
-    )
 
     @model_validator(mode="after")
     def _validate_non_empty_pipeline_strings(self) -> "AsyncPipelineSpec":
@@ -193,9 +184,6 @@ class AsyncPipelineSpec(BaseModel):
             "producer_warp": self.producer_warp,
             "consumer_warp": self.consumer_warp,
             "payload": self.payload,
-            "smem_budget": self.smem_budget,
-            "tmem_budget": self.tmem_budget,
-            "register_budget": self.register_budget,
         }
         for field_name, value in scalar_fields.items():
             if not value.strip():
@@ -211,12 +199,12 @@ class StageSpec(BaseModel):
     stage_id: str = Field(description="Stable stage identifier.")
     prerequisites: list[str] = Field(
         default_factory=list,
-        description="Stage IDs that must be completed before this stage runs.",
+        description="Stage IDs that must be completed and validated before this stage runs.",
     )
     outputs: list[str] = Field(
         min_length=1,
         description=(
-            "Stage output tensors that the coder should validate against naive PyTorch with synthetic inputs."
+            "Stage output tensors that the coder MUST validate against naive PyTorch with synthetic inputs."
         ),
     )
     relevant_helpers: list[str] = Field(
@@ -273,13 +261,10 @@ class DesignerResult(StructuredResult):
         description="Path to the design plan file written by the agent.",
     )
     impl_graph: ImplementationGraph = Field(
-        description="Machine-readable staged implementation graph derived from the plan.",
+        description="Staged implementation graph derived from the plan.",
     )
     status: Literal["success", "error"] = Field(
         description="Whether the designer successfully produced the design plan.",
-    )
-    message: str = Field(
-        description="Brief human-readable summary of the design approach or failure.",
     )
 
 
@@ -326,19 +311,16 @@ class Round0StageResult(StructuredResult):
         description="Whether the stage output validation of this stage passed.",
     )
     final_correctness_verified: bool = Field(
-        description="Whether the final round-0 correctness gate passed for this stage attempt.",
+        description="Whether the final round-0 correctness validation for this stage passed.",
     )
     correctness_check_report: str = Field(
-        description="Optional correctness-only report for the final stage.",
+        description="Parsed correctness-only report for the final stage.",
     )
     status: Round0StageStatus = Field(
         description="Final outcome for the stage attempt.",
     )
     message: str = Field(
         description="Brief summary of the stage attempt outcome.",
-    )
-    reflection: str = Field(
-        description="Brief reflection on the stage attempt.",
     )
 
 

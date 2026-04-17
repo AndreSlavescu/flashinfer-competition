@@ -376,7 +376,6 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
                 plan_file="solution/dsa_attention/kernel_0_plan.md",
                 impl_graph=invalid_graph,
                 status="success",
-                message="invalid graph first",
             )
         ),
         _FakeRunResult(
@@ -384,7 +383,6 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
                 plan_file="solution/dsa_attention/kernel_0_plan.md",
                 impl_graph=valid_graph,
                 status="success",
-                message="valid graph second",
             )
         ),
     ]
@@ -414,7 +412,8 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
     )
 
     assert isinstance(raw_result, _FakeRunResult)
-    assert designer_out.message == "valid graph second"
+    assert designer_out.status == "success"
+    assert designer_out.impl_graph == valid_graph
     assert elapsed_s >= 0.0
     assert len(calls) == 2
     assert calls[0]["input"] == "design the staged graph"
@@ -524,6 +523,8 @@ def test_designer_prompt_matches_current_schema_driven_guidance() -> None:
     instructions = _resolve_instructions(make_kernel_designer(context=ctx), ctx)
 
     assert "aligned with the `DesignerResult` schema" in instructions
+    assert "For each pipeline: producer/consumer warps, payload, num_stages" in instructions
+    assert "each stage section must include the stage-local SMEM, TMEM, and register-budget notes" in instructions
     assert "find ALL CuTeDSL abstractions and APIs" in instructions
     assert "comprehensive staged implementation graph" in instructions
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in instructions
