@@ -39,8 +39,18 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
 - The prefix validation helpers are cumulative. Extend them after each stage; do not replace them with stage-local standalone validators.
 - The values exposed under `outputs` must correspond to the current stage's `StageSpec.outputs` contract.
 
+## Stopping rule
+- After implementing the stage and prefix validations, call `run_stage_validation` EXACTLY ONCE.
+- On the final stage only, if `run_stage_validation` passes, then call `run_correctness_check` EXACTLY ONCE. Otherwise skip it.
+- After the last tool call returns, emit the `Round0StageResult` and STOP. Do NOT edit the kernel, re-run validation, or call any other tool afterwards — diagnosis belongs to the stage-reviewer.
+- Map the outcome to `status`:
+  - `"compile_error"` if compilation failed
+  - `"validation_failed"` if the harness or correctness check ran but disagreed with the reference
+  - `"success"` if every mandated check passed
+
 {..## Current Stage Specifications..}
 {..## Pre-requisite Stage Specifications..}
+{..## Last Reviewer Feedback..}
 """
 
 STAGE_CODER_OUTPUT_REMINDER = """\
@@ -60,6 +70,7 @@ def _compose_stage_coder_body(ctx: SharedContext) -> str:
                 "prerequisite_stages",
                 "",
             ),
+            "{..## Last Reviewer Feedback..}": prompt_sections.get("last_review", ""),
         },
     )
 

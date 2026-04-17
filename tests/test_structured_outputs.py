@@ -89,8 +89,6 @@ def _sample_impl_graph() -> ImplementationGraph:
                 "stage_id",
                 "action",
                 "message",
-                "restart_from_stage_id",
-                "replacement_impl_graph",
             },
         ),
         (
@@ -348,8 +346,6 @@ def test_save_and_load_state_round0_fields_round_trip(tmp_path: Path) -> None:
             stage_id="warp0::load_q",
             action="continue_next_stage",
             message="continue",
-            restart_from_stage_id=None,
-            replacement_impl_graph=None,
         )
     ]
 
@@ -419,15 +415,11 @@ def _stage_result(
 def _review(
     stage_id: str,
     action: str,
-    *,
-    restart_from_stage_id: str | None = None,
 ) -> StageReviewResult:
     return StageReviewResult(
         stage_id=stage_id,
         action=action,
         message=action,
-        restart_from_stage_id=restart_from_stage_id,
-        replacement_impl_graph=_sample_impl_graph() if action == "revise_design_then_retry" else None,
     )
 
 
@@ -436,11 +428,13 @@ def test_build_stage_coder_payload_keeps_only_required_fields() -> None:
         graph=_sample_impl_graph(),
         stage_id="warp1::qk_mma",
         is_final_stage=False,
+        last_review=None,
     )
 
     assert set(payload) == {
         "current_stage",
         "prerequisite_stages",
+        "last_review",
         "is_final_stage",
     }
     assert payload["current_stage"]["plan_excerpt"] == "## QK Mainloop\nqk details"
@@ -449,10 +443,26 @@ def test_build_stage_coder_payload_keeps_only_required_fields() -> None:
     assert [stage["stage_id"] for stage in payload["prerequisite_stages"]] == ["warp0::load_q"]
     assert payload["prerequisite_stages"][0]["plan_excerpt"] == "## Load Q\nload q details"
     assert payload["is_final_stage"] is False
+    assert payload["last_review"] is None
     assert "debug_exports" not in payload["current_stage"]
     assert "checks" not in payload["current_stage"]
     assert "target_areas" not in payload["current_stage"]
     assert "approved_frontier_summaries" not in payload
+
+
+def test_build_stage_coder_payload_includes_trimmed_last_review() -> None:
+    review = _review("warp1::qk_mma", "retry_same_stage")
+    payload = main._build_stage_coder_payload(
+        graph=_sample_impl_graph(),
+        stage_id="warp1::qk_mma",
+        is_final_stage=False,
+        last_review=review,
+    )
+
+    assert payload["last_review"] == {
+        "action": "retry_same_stage",
+        "message": "retry_same_stage",
+    }
 
 
 def test_build_stage_review_payload_includes_diff_context_without_prior_snapshot(
@@ -483,7 +493,8 @@ def test_build_stage_review_payload_includes_diff_context_without_prior_snapshot
 
     assert set(payload) == {
         "current_stage",
-        "stage_result",
+        "stage_results_history",
+        "review_history",
         "file_diffs",
         "is_final_stage",
     }
@@ -492,6 +503,15 @@ def test_build_stage_review_payload_includes_diff_context_without_prior_snapshot
     assert payload["current_stage"]["outputs"] == ["score_tile_debug matches the eager fp32 QK tile"]
     assert payload["current_stage"]["relevant_helpers"] == ["tcgen05.mma", "pipeline example"]
     assert payload["is_final_stage"] is False
+    assert payload["stage_results_history"] == [
+        {
+            "stage_id": "warp1::qk_mma",
+            "stage_output_validation_report": "stage output ok",
+            "correctness_check_report": "correct",
+            "message": "warp1::qk_mma ok",
+        }
+    ]
+    assert payload["review_history"] == []
     assert payload["file_diffs"]["diff_status"] == "no_prior_snapshot"
     assert payload["file_diffs"]["previous_kernel_snapshot"] is None
     assert "NO PRIOR SNAPSHOT" in payload["file_diffs"]["unified_diff"]
@@ -573,6 +593,7 @@ def test_stage_coder_prompt_uses_new_body_and_dynamic_sections(tmp_path: Path) -
         graph=_sample_impl_graph(),
         stage_id="warp1::qk_mma",
         is_final_stage=False,
+        last_review=None,
     )
     main._apply_stage_coder_prompt_sections(ctx, payload)
     stage_prompt = main._resolve_agent_instructions_text(stage_coder, ctx)
@@ -618,7 +639,8 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
 
     assert "{..## Current Stage Specifications..}" in static_prompt
     assert "{..## File Diffs..}" in static_prompt
-    assert "{..## Round0StageResult..}" in static_prompt
+    assert "{..## Trimmed Round0StageResult history..}" in static_prompt
+    assert "{..## Trimmed StageReviewResult history..}" in static_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in static_prompt
     assert "## Tools You Have" in static_prompt
     assert "## Action gates" not in static_prompt
@@ -626,6 +648,7 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
 
     stage_result = _stage_result("warp1::qk_mma")
     ctx.round0_stage_history = [stage_result]
+    ctx.round0_review_history = [_review("warp0::load_q", "continue_next_stage")]
     payload = main._build_stage_review_payload(
         ctx=ctx,
         solution_dir=solution_dir,
@@ -639,10 +662,14 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
 
     assert "{..## Current Stage Specifications..}" not in reviewer_prompt
     assert "{..## File Diffs..}" not in reviewer_prompt
-    assert "{..## Round0StageResult..}" not in reviewer_prompt
+    assert "{..## Trimmed Round0StageResult history..}" not in reviewer_prompt
+    assert "{..## Trimmed StageReviewResult history..}" not in reviewer_prompt
     assert "## Current Stage Specifications" in reviewer_prompt
     assert "## File Diffs" in reviewer_prompt
-    assert "## Round0StageResult" in reviewer_prompt
+    assert "## Trimmed Round0StageResult history" in reviewer_prompt
+    assert "## Trimmed StageReviewResult history" in reviewer_prompt
+    assert '"stage_output_validation_report": "stage output ok"' in reviewer_prompt
+    assert '"action": "continue_next_stage"' in reviewer_prompt
     assert "## Attempt Metadata" in reviewer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
     assert 'action="retry_same_stage"' in reviewer_prompt
@@ -652,7 +679,7 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
     assert "`prefix_validation_outputs_cute`" in reviewer_prompt
     assert "`prefix_validation_outputs_torch`" in reviewer_prompt
     assert "`prefix_validation_harness`" in reviewer_prompt
-    assert "all completed prefix stages plus the current stage" in reviewer_prompt
+    assert "completed prefix stages plus the current stage" in reviewer_prompt
     assert "validation_entry_point" not in reviewer_prompt
     assert "Keep `message` terse and precise." not in reviewer_prompt
     assert "## Action gates" not in reviewer_prompt
@@ -838,7 +865,14 @@ def test_derive_round0_progress_retry_keeps_same_stage_active(tmp_path: Path) ->
     assert progress.next_stage_id == "warp1::qk_mma"
 
 
-def test_derive_round0_progress_revise_rewinds_from_restart_stage(tmp_path: Path) -> None:
+def test_derive_round0_progress_revise_resets_all_progress(tmp_path: Path) -> None:
+    """A stale revise_design_then_retry entry in the histories should reset progress.
+
+    In normal operation the orchestrator clears both histories after a revision, so this
+    code path is only reached defensively (e.g., a corrupted state file). When it is
+    reached, the derivation must treat it as a full reset so no stale completions leak
+    into the new graph.
+    """
     ctx = SharedContext(
         project_root=str(tmp_path),
         solution_dir="solution/dsa_attention",
@@ -850,17 +884,13 @@ def test_derive_round0_progress_revise_rewinds_from_restart_stage(tmp_path: Path
     ]
     ctx.round0_review_history = [
         _review("warp0::load_q", "continue_next_stage"),
-        _review(
-            "warp1::qk_mma",
-            "revise_design_then_retry",
-            restart_from_stage_id="warp1::qk_mma",
-        ),
+        _review("warp1::qk_mma", "revise_design_then_retry"),
     ]
 
     progress = main._derive_round0_progress(ctx, _sample_impl_graph())
 
-    assert progress.completed_stage_ids == ["warp0::load_q"]
-    assert progress.next_stage_id == "warp1::qk_mma"
+    assert progress.completed_stage_ids == []
+    assert progress.next_stage_id == "warp0::load_q"
 
 
 def test_derive_round0_progress_detects_pending_unreviewed_stage(tmp_path: Path) -> None:

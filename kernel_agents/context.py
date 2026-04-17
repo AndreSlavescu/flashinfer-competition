@@ -352,15 +352,6 @@ class StageReviewResult(StructuredResult):
     message: str = Field(
         description="Brief explanation for the selected action.",
     )
-    restart_from_stage_id: str | None = Field(
-        description=(
-            "Earliest stage ID in the replacement graph that must be redone after "
-            "a design revision. Null when the current graph remains valid."
-        ),
-    )
-    replacement_impl_graph: ImplementationGraph | None = Field(
-        description="Replacement graph when action is revise_design_then_retry; otherwise null.",
-    )
 
 
 class NCUMetrics(BaseModel):

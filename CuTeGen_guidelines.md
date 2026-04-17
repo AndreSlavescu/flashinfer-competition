@@ -134,12 +134,12 @@ PART 4: ASYNC COPY & SYNC
 - a clear “consume” point (copy completed + visible)
 - correct barrier/wait placement
 - Symptom mapping:
-- stale/previous-tile values → missing wait/barrier
-- fails only when stages > 1 → stage index math or barrier placement bug
+   - stale/previous-tile values → missing wait/barrier
+   - fails only when stages > 1 → stage index math or barrier placement bug
 - For debugging you may temporarily serialize:
-- stages = 1
-- copy then compute
-- extra sync
+   - stages = 1
+   - copy then compute
+   - extra sync
 Then restore original pipeline once fixed.
 ===============================================================================
 PART 5: MMA / TiledMMA PITFALLS

@@ -18,20 +18,23 @@ NEW_STAGE_REVIEWER_BODY = """\
 You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention kernel correctness judge.
 
 ## Workflow
-1. Read through kernel_0_plan.md and kernel_0_impl_graph.json to understand the kernel design
-2. Analyze the last stage that kernel-stage-coder implemented in kernel_0.py, along with the returned Round0StageResult
-3. Report at most ONE critical correctness issue in the last stage, including any deviations from the plan and issues with the stage output validation harness. Be precise.
-4. Report at most ONE critical correctness issue with the design kernel_0_plan.md and kernel_0_impl_graph.json
+1. Read through 'kernel_0_plan.md' and the current stage of 'kernel_0_impl_graph.json' to understand the kernel design
+2. Analyze the implementation of the current stage from kernel-stage-coder in kernel_0.py
+3. Analyze all error messages in 'last_shell_dump.txt', the trimmed stage-result history, and the trimmed review history to identify persistent failure patterns
+4. Report at most ONE critical correctness issue in the last stage, including any deviations from the plan and issues with the stage output validation harness. Be precise.
+5. Report at most ONE critical correctness issue with the design 'kernel_0_plan.md' and 'kernel_0_impl_graph.json'
 
 ## Rules
 - It's a LOT more likely that the implementation is wrong, and not the plan. Be absolutely sure when blaming the design.
 - When there are multiple issues, report the most critical one
-- Failing to extend `prefix_validation_outputs_cute`, `prefix_validation_outputs_torch`, or `prefix_validation_harness` cumulatively across all completed prefix stages plus the current stage is an implementation issue.
+- Failing to extend `prefix_validation_outputs_cute`, `prefix_validation_outputs_torch`, or `prefix_validation_harness` cumulatively across completed prefix stages plus the current stage is an implementation issue.
 - Treat `plan_excerpt` as the source of truth for stage ownership and stage-local responsibilities.
+- The latest entry of the trimmed stage-result history is the current attempt under review.
 
 {..## Current Stage Specifications..}
 {..## File Diffs..}
-{..## Round0StageResult..}
+{..## Trimmed Round0StageResult history..}
+{..## Trimmed StageReviewResult history..}
 
 
 ## References
@@ -58,7 +61,14 @@ def _compose_stage_reviewer_body(ctx: SharedContext) -> str:
         {
             "{..## Current Stage Specifications..}": prompt_sections.get("current_stage", ""),
             "{..## File Diffs..}": prompt_sections.get("file_diffs", ""),
-            "{..## Round0StageResult..}": prompt_sections.get("stage_result", ""),
+            "{..## Trimmed Round0StageResult history..}": prompt_sections.get(
+                "stage_results_history",
+                "",
+            ),
+            "{..## Trimmed StageReviewResult history..}": prompt_sections.get(
+                "review_history",
+                "",
+            ),
         },
     )
 
