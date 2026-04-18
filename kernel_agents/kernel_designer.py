@@ -29,22 +29,20 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 
 ## Workflow
 
-1. Read CuTeDSL kernel examples to brainstorm a design for the algorithm. Use the PyTorch baseline only to confirm semantics and edge cases.
+1. Research CuTeDSL kernel examples to write a design plan for the algorithm. Use the PyTorch baseline only to confirm semantics and edge cases.
 2. Write the design plan kernel_0_plan.md, covering:
-   - **Work partition**: distributing Qs and topk KVs across CTAs
-   - **Warp specialization**: which warps handle each stage (sparse KV loading, QK MMA, softmax, PV MMA, combine partials etc.)
-   - **Memory flow**: how each tensor (Q, K, V, P, O etc.) moves between TMEM, RMEM, SMEM, GMEM
+   - **Problem Specification**: inputs/outputs shapes and layouts, data types, constraints, correctness criteria, edge cases
+   - **Launch Configurations**: cluster/grid configs, work partition, tile sizes, persistent CTA scheduling
+   - **Warp Schedule**: which warps handle which stage (page table loads, KV TMA, QK MMA, softmax, PV MMA, combine partials, writeback etc.), warp register budgets
    - **Async pipelining**:
-     - Overlap opportunities (e.g., gather KV -> QK MMA)
-     - Pipeline types (TmaAsync, TmaUmma, AsyncUmma, UmmaAsync, TmaStore etc.)
-     - For each pipeline: producer/consumer warps, payload, num_stages (pipeline depth)
-     - For each pipeline and warp: SMEM, TMEM, and register budgets for occupancy limits
+     - Analyze warp roles for overlapping opportunities, and organize them into pipelines (PipelineCpAsync, PipelineTmaAsync, PipelineTmaUmma, PipelineAsyncUmma, PipelineUmmaAsync etc.)
+     - Custom named barrier and fence synchronization (TMEM, exchange etc.)
+     - For all pipelines, determine producer/consumer warps, stage count for every pipeline, tx count (if applicable), barriers
+     - For all warps, determine thread counts based on pipeline type for cooperative groups (leader only, full warp etc.)
      - Prefetch strategy
-   - **Shared memory plan**: buffer layouts for tensors, total SMEM requirement (pipeline stages)
-   - **Tensor memory plan**: column assignments, layouts for tcgen05 mma and ld/st
-   - **Synchronization**: barriers and fences at async pipeline, SMEM, TMEM boundaries
+   - **Infrastructure**: MMA atoms, SMEM layouts, TMEM layouts, TMA atoms/descriptors, SharedStorage struct fields (barriers, staged tiles, aux buffers etc.)
 3. For each stage of the plan, find ALL CuTeDSL abstractions and APIs that can help with the implementation (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.)
-4. Derive the comprehensive staged implementation graph from kernel_0_plan.md
+4. Break down the plan into concrete and SMALL implementation stages (ex. define MMA atoms and layouts, implement TMA warp role etc.) for `kernel_0_impl_graph.json`
 """
 
 
