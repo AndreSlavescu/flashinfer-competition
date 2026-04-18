@@ -137,8 +137,8 @@ TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
     "run_ncu_profile": "Run NCU profiling on Modal B200 and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
     "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
     "run_full_benchmark": "Run the full Modal benchmark and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_stage_validation": "Run the fixed `kernel_0.py::prefix_validation_harness` stage validation entry point and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_synthetic_check": "Run the fast synthetic correctness sweep and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_stage_validation": "Run the fixed `kernel_0.py::prefix_validation_harness` entry point in dedicated single-case stage-validation mode and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
+    "run_synthetic_check": "Run the fast multi-case synthetic correctness sweep and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
     "run_correctness_check": "Run the full Modal correctness check and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
 }
 

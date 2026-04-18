@@ -34,6 +34,7 @@ from bench_synthetic_common import (
     FIXTURE_VOLUME_NAME,
     FUNCTION_NAME,
     REFERENCE_FILENAME,
+    STAGE_VALIDATION_NUM_TOKENS,
     SYNTHETIC_CASE_SEEDS,
     SYNTHETIC_CKV_DIM,
     SYNTHETIC_KPE_DIM,
@@ -360,6 +361,32 @@ def _ensure_solution_module(raw_files: dict[str, str], entry_point: str, entry_f
     return module, payload_hash, "reloaded"
 
 
+def _restrict_bundle_to_num_tokens(
+    bundle: dict,
+    *,
+    allowed_num_tokens: tuple[int, ...],
+) -> dict:
+    allowed = set(allowed_num_tokens)
+    cases = []
+    reference_outputs = []
+    for case, refs in zip(
+        bundle["cases"],
+        bundle["reference_outputs"],
+        strict=True,
+    ):
+        if case["num_tokens"] in allowed:
+            cases.append(case)
+            reference_outputs.append(refs)
+    if not cases:
+        raise RuntimeError(
+            f"No synthetic cases found for allowed_num_tokens={allowed_num_tokens!r}."
+        )
+    return {
+        "cases": cases,
+        "reference_outputs": reference_outputs,
+    }
+
+
 def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[dict]:
     import contextlib
     import io
@@ -369,8 +396,10 @@ def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[di
     use_run = callable(solution_run)
 
     if not use_run and not callable(solution_entry):
+        case_tokens = tuple(case["num_tokens"] for case in bundle["cases"])
         return make_synthetic_failure_results(
-            f"Solution module is missing callable run() and '{entry_func}()'."
+            f"Solution module is missing callable run() and '{entry_func}()'.",
+            num_tokens_cases=case_tokens,
         )
 
     results = []
@@ -459,6 +488,7 @@ def run_dsa_synthetic_fast(
     raw_files: dict[str, str],
     entry_point: str = "kernel.py::kernel",
     rebuild_fixture: bool = False,
+    stage_validation: bool = False,
 ) -> dict:
     """Run the optimized synthetic DSA correctness sweep on Modal."""
     start = time.perf_counter()
@@ -473,14 +503,25 @@ def run_dsa_synthetic_fast(
 
     if entry_file not in raw_files:
         available = ", ".join(sorted(raw_files))
+        case_tokens = (
+            (STAGE_VALIDATION_NUM_TOKENS,)
+            if stage_validation
+            else SYNTHETIC_NUM_TOKENS
+        )
         return {
             "success": True,
             "results": make_synthetic_failure_results(
-                f"Entry file '{entry_file}' not found in payload. Available: {available}"
+                f"Entry file '{entry_file}' not found in payload. Available: {available}",
+                num_tokens_cases=case_tokens,
             ),
         }
 
     bundle, fixture_version, fixture_source = _ensure_fixture_bundle(rebuild_fixture)
+    if stage_validation:
+        bundle = _restrict_bundle_to_num_tokens(
+            bundle,
+            allowed_num_tokens=(STAGE_VALIDATION_NUM_TOKENS,),
+        )
     solution_mod, payload_hash, solution_source = _ensure_solution_module(
         raw_files,
         entry_point,

@@ -792,7 +792,7 @@ async def run_stage_validation(
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
 ) -> str:
-    """Run the synthetic stage validation entry point and return recent raw shell context."""
+    """Run the single-case synthetic stage validation entry point and return recent raw shell context."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
@@ -810,6 +810,7 @@ async def run_stage_validation(
         solution_rel,
         "--entry-point",
         entry_point,
+        "--stage-validation",
     ]
     if include_all_files:
         command.append("--include-all-files")

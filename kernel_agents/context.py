@@ -210,8 +210,9 @@ class StageOutput(BaseModel):
     scope: StageOutputScope = Field(
         description=(
             "Validation scope metadata for the output. 'gmem', 'rmem', and 'smem' are "
-            "runtime compared through matching [PyTorch Val] / [CuTe Val] blocks; "
-            "'host' is inspection-only and uses a [CuTe Host] block."
+            "runtime compared through matching [PyTorch Val] / [CuTe Val] blocks with "
+            "comma-separated numeric bodies; 'host' is CuTe inspection-only and uses "
+            "a [CuTe Host] block."
         ),
     )
 

@@ -400,6 +400,10 @@ def test_stage_agent_prompts_render_dynamic_sections_and_scope_references(
     assert "parser-compatible" in coder_prompt
     assert "[PyTorch Val] <name>: BEGIN" in coder_prompt
     assert "[CuTe Val] <name>" in coder_prompt
+    assert "comma-separated numeric values" in coder_prompt
+    assert "[PyTorch Host] <name>: BEGIN/END" in coder_prompt
+    assert "shape=... dtype=... scope=..." not in coder_prompt
+    assert "data=[...]" not in coder_prompt
     assert "thread 0 of block 0" not in coder_prompt
     assert "if tidx == 0 and bidx == 0" not in coder_prompt
     assert extract_markdown_section(coder_prompt, "## References").splitlines() == [

@@ -31,6 +31,7 @@ import modal
 from bench_synthetic_common import (
     APP_NAME,
     FUNCTION_NAME,
+    STAGE_VALIDATION_NUM_TOKENS,
     TRACK,
     parse_entry_point,
     print_synthetic_results,
@@ -221,6 +222,14 @@ def main() -> None:
     parser.add_argument("--entry-point", default="kernel.py::kernel")
     parser.add_argument("--include-all-files", action="store_true")
     parser.add_argument("--rebuild-fixture", action="store_true")
+    parser.add_argument(
+        "--stage-validation",
+        action="store_true",
+        help=(
+            "Run the entry point in dedicated single-case stage-validation mode. "
+            "This is intended for parser-backed prefix_validation_harness runs."
+        ),
+    )
     args = parser.parse_args()
 
     if args.track != TRACK:
@@ -257,6 +266,8 @@ def main() -> None:
     print(f"Track: {args.track}")
     print(f"Solution: {solution_path}")
     print(f"Entry point: {args.entry_point}")
+    if args.stage_validation:
+        print(f"Mode: stage-validation (single case, num_tokens={STAGE_VALIDATION_NUM_TOKENS})")
     print(
         f"Payload: {len(raw_files)} file(s), {payload_bytes / 1024:.1f} KiB "
         f"{'(all files)' if args.include_all_files else '(dependency closure)'}"
@@ -270,6 +281,7 @@ def main() -> None:
             raw_files=raw_files,
             entry_point=args.entry_point,
             rebuild_fixture=args.rebuild_fixture,
+            stage_validation=args.stage_validation,
         )
     except modal.exception.NotFoundError:
         print(
@@ -307,7 +319,7 @@ def main() -> None:
         r.get("log", "") for r in results if r.get("log")
     )
     report = compare_tagged_outputs(transcript)
-    if report.fields:
+    if args.stage_validation or report.fields:
         print()
         print(report.format_summary())
         if not report.overall_pass:

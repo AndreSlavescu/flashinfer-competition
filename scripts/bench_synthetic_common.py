@@ -15,6 +15,7 @@ REFERENCE_FILENAME = "reference.py"
 FIXTURE_SCHEMA_VERSION = 1
 FIXTURE_SHARED_CACHE_SEED = 20260402
 SYNTHETIC_NUM_TOKENS = (1, 2, 6, 7, 8)
+STAGE_VALIDATION_NUM_TOKENS = SYNTHETIC_NUM_TOKENS[0]
 SYNTHETIC_CASE_SEEDS = {num_tokens: 42 + num_tokens for num_tokens in SYNTHETIC_NUM_TOKENS}
 SYNTHETIC_NUM_PAGES = 8462
 SYNTHETIC_PAGE_SIZE = 64
@@ -47,8 +48,13 @@ def parse_entry_point(entry_point: str) -> tuple[str, str]:
     return entry_file, entry_func
 
 
-def make_synthetic_failure_results(message: str) -> list[dict]:
-    """Create one failure row per canonical synthetic workload."""
+def make_synthetic_failure_results(
+    message: str,
+    *,
+    num_tokens_cases: tuple[int, ...] | None = None,
+) -> list[dict]:
+    """Create one failure row per requested synthetic workload."""
+    cases = num_tokens_cases or SYNTHETIC_NUM_TOKENS
     return [
         {
             "workload_uuid": f"synthetic-{num_tokens}",
@@ -57,7 +63,7 @@ def make_synthetic_failure_results(message: str) -> list[dict]:
             "status": "FAILED",
             "log": message,
         }
-        for num_tokens in SYNTHETIC_NUM_TOKENS
+        for num_tokens in cases
     ]
 
 

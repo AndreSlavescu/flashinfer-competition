@@ -4,31 +4,36 @@ The stage validation protocol relies on tagged print streams inside the
 synthetic bench stdout:
 
     [PyTorch Val] <field>: BEGIN
-    shape=(d0,d1,...) dtype=<torch-dtype> scope=<gmem|rmem|smem>
-    data=[v0, v1, v2, ..., vN-1]
+    0.0, 1.0, 2.0, 3.0
     [PyTorch Val] <field>: END
 
     [CuTe Val] <field>: BEGIN
-    <cute.print_tensor(...) output -- multi-line>
+    0.0, 1.0, 2.0, 3.0
     [CuTe Val] <field>: END
+
+    [PyTorch Host] <name>: BEGIN
+    <python print(obj) output for an arbitrary PyTorch object>
+    [PyTorch Host] <name>: END
 
     [CuTe Host] <name>: BEGIN
     <python print(obj) output for a host-side CuTe object>
     [CuTe Host] <name>: END
 
-`[CuTe Host]` blocks are inspection-only: they surface static JIT-trace-time
-metadata (TiledMma, SMEM layouts, TMA atoms, SharedStorage structs, etc.).
-No PyTorch counterpart is expected; the parser reports them as `INFO` rows
-without gating `overall_pass`.
+`[PyTorch Val]` and `[CuTe Val]` blocks are machine-compared and must contain
+comma-separated numeric values. Signed ints, decimals, and scientific notation
+are accepted; whitespace and multiline CSV are allowed; trailing commas are
+ignored.
+
+`[PyTorch Host]` and `[CuTe Host]` blocks are inspection-only: they surface raw
+debug output without gating `overall_pass`.
 
 Single-part-per-field: duplicate BEGIN for the same (source, field) is a parse
-error. Fields present on only one side (PyTorch Val / CuTe Val) are reported
-as MISSING.
+error. Fields present on only one numeric side (PyTorch Val / CuTe Val) are
+reported as MISSING.
 """
 
 from __future__ import annotations
 
-import ast
 import re
 from dataclasses import dataclass, field
 from typing import Iterable
@@ -41,23 +46,14 @@ _PYTORCH_BEGIN = re.compile(r"^\s*\[PyTorch Val\]\s+(?P<name>.+?)\s*:\s*BEGIN\s*
 _PYTORCH_END = re.compile(r"^\s*\[PyTorch Val\]\s+(?P<name>.+?)\s*:\s*END\s*$")
 _CUTE_BEGIN = re.compile(r"^\s*\[CuTe Val\]\s+(?P<name>.+?)\s*:\s*BEGIN\s*$")
 _CUTE_END = re.compile(r"^\s*\[CuTe Val\]\s+(?P<name>.+?)\s*:\s*END\s*$")
+_PYTORCH_HOST_BEGIN = re.compile(
+    r"^\s*\[PyTorch Host\]\s+(?P<name>.+?)\s*:\s*BEGIN\s*$"
+)
+_PYTORCH_HOST_END = re.compile(
+    r"^\s*\[PyTorch Host\]\s+(?P<name>.+?)\s*:\s*END\s*$"
+)
 _CUTE_HOST_BEGIN = re.compile(r"^\s*\[CuTe Host\]\s+(?P<name>.+?)\s*:\s*BEGIN\s*$")
 _CUTE_HOST_END = re.compile(r"^\s*\[CuTe Host\]\s+(?P<name>.+?)\s*:\s*END\s*$")
-
-_PYTORCH_HEADER = re.compile(
-    r"shape\s*=\s*\((?P<shape>[^)]*)\)"
-    r".*?dtype\s*=\s*(?P<dtype>\S+)"
-    r".*?scope\s*=\s*(?P<scope>\S+)",
-    re.DOTALL,
-)
-_PYTORCH_DATA = re.compile(r"data\s*=\s*(?P<body>\[.*\])", re.DOTALL)
-
-_CUTE_RAW_PTR = re.compile(
-    r"raw_ptr\([^:]*:\s*(?P<dtype>[^,\)]+)(?:,\s*[^)]*)?\)"
-)
-_CUTE_LAYOUT = re.compile(r"\bo\s*\((?P<shape>[^)]*)\)\s*:\s*\((?P<stride>[^)]*)\)")
-_CUTE_DATA_MARKER = re.compile(r"data\s*=")
-_FLOAT_LITERAL = re.compile(r"[-+]?\d+\.\d+(?:[eE][-+]?\d+)?")
 
 
 @dataclass
@@ -67,19 +63,8 @@ class RawBlock:
 
 
 @dataclass
-class ParsedPyTorch:
+class ParsedNumeric:
     name: str
-    shape: tuple[int, ...]
-    dtype: str
-    scope: str
-    values: np.ndarray
-
-
-@dataclass
-class ParsedCuTe:
-    name: str
-    shape: tuple[int, ...] | None
-    dtype: str | None
     values: np.ndarray
 
 
@@ -126,14 +111,35 @@ class ParseError(ValueError):
 
 def _extract_blocks(
     transcript: str,
-) -> tuple[dict[str, RawBlock], dict[str, RawBlock], dict[str, RawBlock], list[str]]:
+) -> tuple[
+    dict[str, RawBlock],
+    dict[str, RawBlock],
+    dict[str, RawBlock],
+    dict[str, RawBlock],
+    list[str],
+]:
     pytorch: dict[str, RawBlock] = {}
     cute: dict[str, RawBlock] = {}
-    host: dict[str, RawBlock] = {}
+    pytorch_host: dict[str, RawBlock] = {}
+    cute_host: dict[str, RawBlock] = {}
     errors: list[str] = []
 
     current: RawBlock | None = None
-    current_source: str | None = None  # "pytorch" | "cute" | "host"
+    current_source: str | None = None  # "pytorch" | "cute" | "pytorch_host" | "cute_host"
+
+    def _store_block(
+        target: dict[str, RawBlock],
+        source_label: str,
+        name: str,
+    ) -> None:
+        nonlocal current, current_source
+        assert current is not None
+        if name in target:
+            errors.append(f"Duplicate {source_label} block for {name!r}.")
+        else:
+            target[name] = current
+        current = None
+        current_source = None
 
     for raw_line in transcript.splitlines():
         line = raw_line.rstrip("\n")
@@ -155,13 +161,22 @@ def _extract_blocks(
             current_source = "cute"
             current = RawBlock(name=m.group("name").strip())
             continue
+        m = _PYTORCH_HOST_BEGIN.match(line)
+        if m:
+            if current is not None:
+                errors.append(
+                    f"Unclosed {current_source} block for {current.name!r} before new BEGIN."
+                )
+            current_source = "pytorch_host"
+            current = RawBlock(name=m.group("name").strip())
+            continue
         m = _CUTE_HOST_BEGIN.match(line)
         if m:
             if current is not None:
                 errors.append(
                     f"Unclosed {current_source} block for {current.name!r} before new BEGIN."
                 )
-            current_source = "host"
+            current_source = "cute_host"
             current = RawBlock(name=m.group("name").strip())
             continue
         m = _PYTORCH_END.match(line)
@@ -172,12 +187,7 @@ def _extract_blocks(
                 current = None
                 current_source = None
                 continue
-            if name in pytorch:
-                errors.append(f"Duplicate PyTorch block for {name!r}.")
-            else:
-                pytorch[name] = current
-            current = None
-            current_source = None
+            _store_block(pytorch, "PyTorch", name)
             continue
         m = _CUTE_END.match(line)
         if m:
@@ -187,27 +197,27 @@ def _extract_blocks(
                 current = None
                 current_source = None
                 continue
-            if name in cute:
-                errors.append(f"Duplicate CuTe block for {name!r}.")
-            else:
-                cute[name] = current
-            current = None
-            current_source = None
+            _store_block(cute, "CuTe", name)
+            continue
+        m = _PYTORCH_HOST_END.match(line)
+        if m:
+            name = m.group("name").strip()
+            if current is None or current_source != "pytorch_host" or current.name != name:
+                errors.append(f"Unexpected PyTorch Host END for {name!r}.")
+                current = None
+                current_source = None
+                continue
+            _store_block(pytorch_host, "PyTorch Host", name)
             continue
         m = _CUTE_HOST_END.match(line)
         if m:
             name = m.group("name").strip()
-            if current is None or current_source != "host" or current.name != name:
+            if current is None or current_source != "cute_host" or current.name != name:
                 errors.append(f"Unexpected CuTe Host END for {name!r}.")
                 current = None
                 current_source = None
                 continue
-            if name in host:
-                errors.append(f"Duplicate CuTe Host block for {name!r}.")
-            else:
-                host[name] = current
-            current = None
-            current_source = None
+            _store_block(cute_host, "CuTe Host", name)
             continue
         if current is not None:
             current.lines.append(line)
@@ -217,83 +227,36 @@ def _extract_blocks(
             f"Transcript ended mid-block: {current_source} {current.name!r}."
         )
 
-    return pytorch, cute, host, errors
+    return pytorch, cute, pytorch_host, cute_host, errors
 
 
-def _parse_shape(text: str) -> tuple[int, ...]:
-    pieces = [p.strip() for p in text.split(",") if p.strip()]
-    return tuple(int(p) for p in pieces)
-
-
-def _parse_pytorch(block: RawBlock) -> ParsedPyTorch:
-    body = "\n".join(block.lines)
-    hdr = _PYTORCH_HEADER.search(body)
-    if hdr is None:
-        raise ParseError(
-            "Missing 'shape=..., dtype=..., scope=...' header in PyTorch block."
-        )
-    data = _PYTORCH_DATA.search(body)
-    if data is None:
-        raise ParseError("Missing 'data=[...]' in PyTorch block.")
+def _parse_csv_numeric_values(block: RawBlock, *, source_label: str) -> ParsedNumeric:
+    body = "\n".join(block.lines).strip()
+    tokens = [token.strip() for token in body.split(",")]
+    values_raw = [token for token in tokens if token]
+    if not values_raw:
+        raise ParseError(f"No comma-separated numeric data found in {source_label} block.")
     try:
-        values = np.asarray(ast.literal_eval(data.group("body")), dtype=np.float64)
-    except (ValueError, SyntaxError) as exc:
-        raise ParseError(f"Could not parse PyTorch data list: {exc}") from exc
-    if values.size > MAX_ELEMENTS:
-        raise ParseError(
-            f"PyTorch block has {values.size} elements; exceeds cap {MAX_ELEMENTS}."
-        )
-    return ParsedPyTorch(
-        name=block.name,
-        shape=_parse_shape(hdr.group("shape")),
-        dtype=hdr.group("dtype"),
-        scope=hdr.group("scope"),
-        values=values.flatten(),
-    )
-
-
-def _parse_cute(block: RawBlock) -> ParsedCuTe:
-    body = "\n".join(block.lines)
-    raw_ptr_match = _CUTE_RAW_PTR.search(body)
-    dtype = raw_ptr_match.group("dtype").strip() if raw_ptr_match else None
-    layout_match = _CUTE_LAYOUT.search(body)
-    shape: tuple[int, ...] | None = None
-    if layout_match:
-        try:
-            shape = _parse_shape(layout_match.group("shape"))
-        except ValueError:
-            shape = None
-
-    data_marker = _CUTE_DATA_MARKER.search(body)
-    if data_marker is None:
-        raise ParseError("Missing 'data=' marker in CuTe block.")
-    tail = body[data_marker.end():]
-    floats = _FLOAT_LITERAL.findall(tail)
-    if not floats:
-        raise ParseError("No numeric data found in CuTe block.")
-    try:
-        values = np.asarray([float(x) for x in floats], dtype=np.float64)
+        values = np.asarray([float(token) for token in values_raw], dtype=np.float64)
     except ValueError as exc:
-        raise ParseError(f"Could not parse CuTe data: {exc}") from exc
+        raise ParseError(f"Could not parse {source_label} CSV numeric values: {exc}") from exc
     if values.size > MAX_ELEMENTS:
         raise ParseError(
-            f"CuTe block has {values.size} elements; exceeds cap {MAX_ELEMENTS}."
+            f"{source_label} block has {values.size} elements; exceeds cap {MAX_ELEMENTS}."
         )
-    return ParsedCuTe(name=block.name, shape=shape, dtype=dtype, values=values)
+    return ParsedNumeric(name=block.name, values=values)
 
 
 def _compare_field(
     name: str,
-    pt: ParsedPyTorch,
-    ct: ParsedCuTe,
+    pt: ParsedNumeric,
+    ct: ParsedNumeric,
     rtol: float,
     atol: float,
 ) -> FieldReport:
     report = FieldReport(
         name=name,
         status="PASS",
-        pytorch_shape=pt.shape,
-        cute_shape=ct.shape,
     )
     if pt.values.size != ct.values.size:
         report.status = "FAIL"
@@ -322,12 +285,19 @@ def compare_tagged_outputs(
     rtol: float = 1e-3,
     atol: float = 1e-3,
 ) -> ComparisonReport:
-    """Parse a transcript and compare tagged PyTorch vs CuTe blocks per field.
+    """Parse a transcript and compare tagged PyTorch vs CuTe numeric CSV blocks.
 
-    `[CuTe Host]` blocks are emitted as inspection-only `INFO` rows carrying the
-    raw `print(obj)` text; they do not gate `overall_pass`.
+    `[PyTorch Host]` and `[CuTe Host]` blocks are emitted as inspection-only
+    `INFO` rows carrying the raw `print(obj)` text; they do not gate
+    `overall_pass`.
     """
-    pytorch_blocks, cute_blocks, host_blocks, block_errors = _extract_blocks(transcript)
+    (
+        pytorch_blocks,
+        cute_blocks,
+        pytorch_host_blocks,
+        cute_host_blocks,
+        block_errors,
+    ) = _extract_blocks(transcript)
     all_names = sorted(set(pytorch_blocks) | set(cute_blocks))
     field_reports: list[FieldReport] = []
 
@@ -336,10 +306,18 @@ def compare_tagged_outputs(
             FieldReport(name="<transcript>", status="PARSE_ERROR", detail=err)
         )
 
-    for name in sorted(host_blocks):
-        body = "\n".join(host_blocks[name].lines).strip()
+    for name in sorted(pytorch_host_blocks):
+        body = "\n".join(pytorch_host_blocks[name].lines).strip()
+        detail = f"Source: PyTorch Host\n{body}" if body else "Source: PyTorch Host"
         field_reports.append(
-            FieldReport(name=name, status="INFO", detail=body)
+            FieldReport(name=name, status="INFO", detail=detail)
+        )
+
+    for name in sorted(cute_host_blocks):
+        body = "\n".join(cute_host_blocks[name].lines).strip()
+        detail = f"Source: CuTe Host\n{body}" if body else "Source: CuTe Host"
+        field_reports.append(
+            FieldReport(name=name, status="INFO", detail=detail)
         )
 
     for name in all_names:
@@ -362,14 +340,20 @@ def compare_tagged_outputs(
             )
             continue
         try:
-            pt = _parse_pytorch(pytorch_blocks[name])
+            pt = _parse_csv_numeric_values(
+                pytorch_blocks[name],
+                source_label="PyTorch",
+            )
         except ParseError as exc:
             field_reports.append(
                 FieldReport(name=name, status="PARSE_ERROR", detail=f"PyTorch: {exc}")
             )
             continue
         try:
-            ct = _parse_cute(cute_blocks[name])
+            ct = _parse_csv_numeric_values(
+                cute_blocks[name],
+                source_label="CuTe",
+            )
         except ParseError as exc:
             field_reports.append(
                 FieldReport(name=name, status="PARSE_ERROR", detail=f"CuTe: {exc}")
@@ -390,7 +374,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     from pathlib import Path
 
     parser = argparse.ArgumentParser(
-        description="Compare [PyTorch Val] / [CuTe Val] tagged blocks in a transcript."
+        description="Compare CSV bodies inside [PyTorch Val] / [CuTe Val] tagged blocks."
     )
     parser.add_argument(
         "transcript",

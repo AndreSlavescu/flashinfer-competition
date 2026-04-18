@@ -149,7 +149,7 @@ async def test_diff_files_shows_unified_changes(tmp_path: Path) -> None:
             "run_stage_validation",
             "scripts/bench_synthetic.py",
             {"stage_id": "warp1::qk_mma"},
-            "SYNTHETIC RESULTS: 2/2 cases passed",
+            "SYNTHETIC RESULTS: 1/1 cases passed",
         ),
         (
             run_synthetic_check,
@@ -202,7 +202,9 @@ async def test_modal_tools_write_shell_dump_and_return_recent_tail(
     (solution_dir / "kernel.py").write_text("def kernel():\n    pass\n", encoding="utf-8")
 
     stdout = "".join(f"metric_{i}\n" for i in range(1, 260))
-    if tool in (run_stage_validation, run_synthetic_check):
+    if tool is run_stage_validation:
+        stdout += "SYNTHETIC RESULTS: 1/1 cases passed\n"
+    elif tool is run_synthetic_check:
         stdout += "SYNTHETIC RESULTS: 2/2 cases passed\n"
     elif tool in (run_correctness_check, run_full_benchmark):
         stdout += "RESULTS: 3/3 workloads passed\nAverage speedup: 1.5x\n"
@@ -226,6 +228,34 @@ async def test_modal_tools_write_shell_dump_and_return_recent_tail(
     assert command_fragment in dump_text
     assert "This file is overwritten by the next shell-like tool call." in dump_text
     assert "metric_1" in dump_text
+
+
+@pytest.mark.asyncio
+async def test_run_stage_validation_invokes_single_case_stage_validation_mode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    invoked: list[tuple[Any, ...]] = []
+
+    async def _create_subprocess_exec(*args: Any, **kwargs: Any) -> FakeProcess:
+        del kwargs
+        invoked.append(args)
+        return FakeProcess(stdout="SYNTHETIC RESULTS: 1/1 cases passed\n", stderr="", returncode=0)
+
+    monkeypatch.setattr(
+        "kernel_agents.tools.asyncio.create_subprocess_exec",
+        _create_subprocess_exec,
+    )
+
+    await invoke_tool(run_stage_validation, tmp_path, stage_id="warp1::qk_mma")
+
+    assert invoked
+    command = list(invoked[0])
+    assert command[:2] == [".venv/bin/python", "scripts/bench_synthetic.py"]
+    assert "--stage-validation" in command
+    assert "kernel_0.py::prefix_validation_harness" in command
 
 
 @pytest.mark.asyncio
