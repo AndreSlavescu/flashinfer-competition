@@ -45,14 +45,6 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
    - **Synchronization**: barriers and fences at async pipeline, SMEM, TMEM boundaries
 3. For each stage of the plan, find ALL CuTeDSL abstractions and APIs that can help with the implementation (pipelining and synchronization, building tma/mma atoms, tiling, creating memory layouts/descriptors etc.)
 4. Derive the comprehensive staged implementation graph from kernel_0_plan.md
-
-## References
-
-- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
-- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
-- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
-- CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
-- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
 """
 
 
@@ -68,6 +60,7 @@ def make_kernel_designer(
     return Agent[SharedContext](
         name="kernel-designer",
         instructions=build_agent_instructions(
+            role="designer",
             body=DESIGNER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,

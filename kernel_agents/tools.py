@@ -449,6 +449,7 @@ web_search_tool = WebSearchTool()
 
 _CODEX_ASSIST_PRIMARY_DIRS: dict[str, str] = {
     "designer": "references",
+    "reviewer": "solution/dsa_attention",
     "coder": "solution/dsa_attention",
     "planner": "solution/dsa_attention",
     "optimizer": "solution/dsa_attention",
@@ -1155,7 +1156,7 @@ async def run_sass_analysis(
 # Collected tool list for agent registration
 # ---------------------------------------------------------------------------
 
-AgentRole = Literal["designer", "coder", "planner", "optimizer"]
+AgentRole = Literal["designer", "reviewer", "coder", "planner", "optimizer"]
 
 # -- Unscoped tool pools (used only by backward-compatible statics below) ---
 

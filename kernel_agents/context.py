@@ -140,6 +140,7 @@ class SharedContext:
     round0_stage_history: list[Round0StageResult] = field(default_factory=list)
     round0_review_history: list[StageReviewResult] = field(default_factory=list)
     round0_stage_coder_prompt_sections: dict[str, str] = field(default_factory=dict)
+    round0_stage_fixer_prompt_sections: dict[str, str] = field(default_factory=dict)
     round0_stage_reviewer_prompt_sections: dict[str, str] = field(default_factory=dict)
 
 
@@ -325,7 +326,7 @@ class Round0StageResult(StructuredResult):
 
 
 class StageReviewResult(StructuredResult):
-    """Returned by the designer acting as judge for a round-0 stage attempt."""
+    """Returned by the dedicated reviewer for a round-0 stage attempt."""
 
     stage_id: str = Field(description="Stage ID under review.")
     action: StageReviewAction = Field(

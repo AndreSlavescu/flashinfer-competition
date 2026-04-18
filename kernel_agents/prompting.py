@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from collections.abc import Sequence
 
+from kernel_agents.scoping import AGENT_SCOPES
 from kernel_agents.tools import tool_names
 
 B200_HARDWARE_SPEC_BLOCK = """
@@ -82,17 +83,6 @@ def _get_compiled_kernel(..., stream):
 ```
 """
 
-ROUND0_CODER_REFERENCES_BLOCK = """\
-## References
-
-- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
-- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
-- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
-- CuTeDSL guides: references/cutlass/examples/python/CuTeDSL/notebooks
-- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
-- Highly optimized CuTeDSL kernels: references/quack
-"""
-
 ROUND0_CODER_TOOL_POLICY_BLOCK = """\
 ## Tool policy
 - The repo's Modal-backed validation tools (`run_stage_validation`, `run_synthetic_check`,
@@ -118,7 +108,6 @@ def build_round0_coder_body(
         role_rules_block.strip(),
         ROUND0_CODER_SUPPORT_BLOCK.strip(),
         ROUND0_CODER_JIT_CACHE_BLOCK.strip(),
-        ROUND0_CODER_REFERENCES_BLOCK.strip(),
         ROUND0_CODER_TOOL_POLICY_BLOCK.strip(),
     ]
     parts.extend(section.strip() for section in extra_sections if section.strip())
@@ -164,8 +153,17 @@ def build_tools_section(tools: Sequence[object]) -> str:
     return "\n".join(lines)
 
 
+def build_scope_references_section(role: str) -> str:
+    """Render the role's readable path scope in allowlist order."""
+    lines = ["## References"]
+    for path in AGENT_SCOPES[role].read_allow:
+        lines.append(f"- `{path}`")
+    return "\n".join(lines)
+
+
 def build_agent_instructions(
     *,
+    role: str,
     body: str,
     tools: Sequence[object],
     extra_instructions: str = "",
@@ -175,11 +173,13 @@ def build_agent_instructions(
     """Compose a final agent prompt from role-specific and shared blocks.
 
     Assembly order: body (identity + instructions + workflow) -> hardware specs
-    (context) -> codex worker block -> tools section -> extra_instructions.
+    (context) -> scoped references -> codex worker block -> tools section ->
+    extra_instructions.
     """
     parts = [body.strip()]
     if include_hardware_spec:
         parts.append(B200_HARDWARE_SPEC_BLOCK.strip())
+    parts.append(build_scope_references_section(role))
     if codex_worker_block.strip():
         parts.append(codex_worker_block.strip())
     parts.append(build_tools_section(tools))

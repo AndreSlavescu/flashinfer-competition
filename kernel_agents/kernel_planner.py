@@ -64,17 +64,6 @@ entirely -- a previously failed approach may work with different parameters or o
 - The current best latency and history are provided in the caller input. \
 Your proposed optimization must aim to beat the current best.
 
-## References
-
-Architecture: see the B200 hardware specifications block above for measured
-properties and latencies. Do not attempt to read a separate architecture file.
-
-CuTeDSL:
-1. Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
-2. Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
-3. CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
-4. Highly optimized CuTeDSL kernels: references/quack
-
 ## Key Project Paths
 
 - Current kernel: solution/dsa_attention/kernel.py
@@ -120,6 +109,7 @@ history summary.
     return Agent[SharedContext](
         name="kernel-planner",
         instructions=build_agent_instructions(
+            role="planner",
             body=PLANNER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,

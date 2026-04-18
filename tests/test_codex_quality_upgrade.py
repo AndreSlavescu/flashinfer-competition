@@ -53,6 +53,12 @@ def _resolve_instructions(agent: Any, ctx: SharedContext) -> str:
     return instructions
 
 
+def _extract_markdown_section(prompt: str, heading: str) -> str:
+    start = prompt.index(heading)
+    tail = prompt[start:]
+    return tail.split("\n\n## ", 1)[0].strip()
+
+
 def _shared_context(
     project_root: Path,
     *,
@@ -557,6 +563,30 @@ def test_agent_instructions_list_actual_registered_tools(tmp_path: Path) -> None
             assert name in instructions
 
 
+@pytest.mark.parametrize(
+    ("role", "factory"),
+    [
+        ("designer", make_kernel_designer),
+        ("coder", make_kernel_coder),
+        ("planner", make_kernel_planner),
+        ("optimizer", make_kernel_optimizer),
+    ],
+)
+def test_agent_reference_sections_are_derived_from_scope(
+    tmp_path: Path,
+    role: str,
+    factory: Any,
+) -> None:
+    _write_kernel_plan_fixture(tmp_path)
+    ctx = _shared_context(tmp_path)
+    instructions = _resolve_instructions(factory(context=ctx), ctx)
+    references = _extract_markdown_section(instructions, "## References")
+    expected_lines = ["## References"] + [
+        f"- `{path}`" for path in AGENT_SCOPES[role].read_allow
+    ]
+    assert references.splitlines() == expected_lines
+
+
 def test_web_tools_are_removed_from_agent_tool_surfaces_and_prompt_lists(tmp_path: Path) -> None:
     _write_kernel_plan_fixture(tmp_path)
     ctx = _shared_context(tmp_path, codex_worker_mode="coder_optimizer")
@@ -603,23 +633,25 @@ def test_planner_and_optimizer_prompts_reference_shell_dump_guidance(tmp_path: P
 
 
 def test_narrowed_scopes_still_include_required_reference_paths() -> None:
-    expected_roles = ("designer", "coder", "planner")
+    expected_roles = ("designer", "reviewer", "coder", "planner")
 
     for role in expected_roles:
         read_allow = AGENT_SCOPES[role].read_allow
-        assert "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py" in read_allow
-        assert "references/quack/" in read_allow
+        assert "references/cutlass/python/CuTeDSL/cutlass/cute/" in read_allow
+        assert "references/cutlass/python/CuTeDSL/cutlass/pipeline/" in read_allow
+        assert "references/cutlass/python/CuTeDSL/cutlass/utils/" in read_allow
         assert "solution/dsa_attention/" in read_allow
 
 
 def test_shell_dump_file_is_exposed_to_roles_that_need_it() -> None:
-    for role in ("coder", "planner", "optimizer"):
+    for role in ("reviewer", "coder", "planner", "optimizer"):
         assert "last_shell_dump.txt" in AGENT_SCOPES[role].read_allow
 
 
 def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:
     expected_primary = {
         "designer": "references",
+        "reviewer": "solution/dsa_attention",
         "coder": "solution/dsa_attention",
         "planner": "solution/dsa_attention",
         "optimizer": "solution/dsa_attention",

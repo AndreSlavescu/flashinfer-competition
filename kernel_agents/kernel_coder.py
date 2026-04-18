@@ -118,6 +118,7 @@ def make_kernel_coder(
     ) -> str:
         body = _compose_coder_body_with_plan(run_ctx.context)
         return build_agent_instructions(
+            role="coder",
             body=body,
             tools=tools,
             extra_instructions=extra_instructions,

@@ -83,6 +83,7 @@ from kernel_agents.kernel_designer import make_kernel_designer
 from kernel_agents.kernel_optimizer import make_kernel_optimizer
 from kernel_agents.kernel_planner import make_kernel_planner
 from kernel_agents.kernel_stage_coder import make_round0_stage_coder
+from kernel_agents.kernel_stage_fixer import make_round0_stage_fixer
 from kernel_agents.kernel_stage_reviewer import make_round0_stage_reviewer
 from kernel_agents.stream_logging import consume_streamed_run
 
@@ -920,7 +921,7 @@ def _resolve_agent_instructions_text(agent: object, ctx: SharedContext) -> str:
 def _make_prompt_dump_config(output_dir: Path) -> PromptDumpConfig:
     """Build the prompt dump directory layout."""
     return PromptDumpConfig(
-        static_dir=output_dir,
+        static_dir=output_dir / "static",
         runtime_dir=output_dir / "round0_runtime",
     )
 
@@ -937,6 +938,7 @@ def _build_prompt_dump_agents(
     coder_verbosity: str,
     designer_reasoning_effort: str,
     designer_verbosity: str,
+    reviewer_verbosity: str,
     planner_reasoning_effort: str,
     optimizer_reasoning_effort: str,
 ) -> dict[str, object]:
@@ -964,11 +966,19 @@ def _build_prompt_dump_agents(
             codex_worker_model=codex_worker_model,
             codex_worker_reasoning_effort=codex_worker_reasoning_effort,
         ),
+        "kernel_stage_fixer": make_round0_stage_fixer(
+            context=ctx,
+            model=coder_model,
+            reasoning_effort=coder_reasoning_effort,  # type: ignore[arg-type]
+            verbosity=coder_verbosity,  # type: ignore[arg-type]
+            codex_worker_model=codex_worker_model,
+            codex_worker_reasoning_effort=codex_worker_reasoning_effort,
+        ),
         "kernel_stage_reviewer": make_round0_stage_reviewer(
             context=ctx,
             model=designer_model,
             reasoning_effort=designer_reasoning_effort,  # type: ignore[arg-type]
-            verbosity=designer_verbosity,  # type: ignore[arg-type]
+            verbosity=reviewer_verbosity,  # type: ignore[arg-type]
         ),
         "kernel_planner": make_kernel_planner(
             context=ctx,
@@ -999,14 +1009,15 @@ def dump_all_prompts(
     coder_verbosity: str,
     designer_reasoning_effort: str,
     designer_verbosity: str,
+    reviewer_verbosity: str,
     planner_reasoning_effort: str,
     optimizer_reasoning_effort: str,
 ) -> None:
-    """Resolve and write each agent's composed system prompt to `output_dir`.
+    """Resolve and write each agent's composed system prompt under `output_dir`.
 
     Builds a SharedContext identical to what `run_loop` would construct, wires
     up the round-0 and optimization agents with the same knobs, and writes each resolved prompt
-    (dynamic callables invoked) to `output_dir/<agent_name>.md`.
+    (dynamic callables invoked) to `output_dir/static/<agent_name>.md`.
     """
     prompt_dump = _make_prompt_dump_config(output_dir)
     prompt_dump.static_dir.mkdir(parents=True, exist_ok=True)
@@ -1032,6 +1043,7 @@ def dump_all_prompts(
         coder_verbosity=coder_verbosity,
         designer_reasoning_effort=designer_reasoning_effort,
         designer_verbosity=designer_verbosity,
+        reviewer_verbosity=reviewer_verbosity,
         planner_reasoning_effort=planner_reasoning_effort,
         optimizer_reasoning_effort=optimizer_reasoning_effort,
     )
@@ -1117,6 +1129,11 @@ def _write_round0_artifact(
     return out_path
 
 
+def _round0_stage_executor_role_name(stage_attempt: int) -> str:
+    """Return the staged executor role name for a 1-based attempt count."""
+    return "coder" if stage_attempt <= 1 else "fixer"
+
+
 def _render_json_section(title: str, payload: Any) -> str:
     """Render a markdown section containing JSON payload data."""
     return f"## {title}\n```json\n{json.dumps(payload, indent=2)}\n```"
@@ -1167,7 +1184,7 @@ def _trim_review_history(
 
 
 def _trim_last_review(review: StageReviewResult | None) -> dict[str, Any] | None:
-    """Project a single review into the payload form the coder/designer consume."""
+    """Project a single review into the payload form the fixer/designer consume."""
     if review is None:
         return None
     return {"action": review.action, "message": review.message}
@@ -1192,12 +1209,6 @@ def _apply_stage_coder_prompt_sections(
     payload: dict[str, Any],
 ) -> None:
     """Populate transient dynamic prompt sections for the stage coder."""
-    last_review_payload = payload.get("last_review")
-    last_review_section = (
-        _render_json_section("Last Reviewer Feedback", last_review_payload)
-        if last_review_payload is not None
-        else ""
-    )
     ctx.round0_stage_coder_prompt_sections = {
         "current_stage": _render_json_section(
             "Current Stage Specifications",
@@ -1207,7 +1218,31 @@ def _apply_stage_coder_prompt_sections(
             "Pre-requisite Stage Specifications",
             payload["prerequisite_stages"],
         ),
-        "last_review": last_review_section,
+        "attempt_metadata": _render_json_section(
+            "Attempt Metadata",
+            {"is_final_stage": payload["is_final_stage"]},
+        ),
+    }
+
+
+def _apply_stage_fixer_prompt_sections(
+    ctx: SharedContext,
+    payload: dict[str, Any],
+) -> None:
+    """Populate transient dynamic prompt sections for the stage fixer."""
+    ctx.round0_stage_fixer_prompt_sections = {
+        "current_stage": _render_json_section(
+            "Current Stage Specifications",
+            payload["current_stage"],
+        ),
+        "prerequisite_stages": _render_json_section(
+            "Pre-requisite Stage Specifications",
+            payload["prerequisite_stages"],
+        ),
+        "last_review": _render_json_section(
+            "Last Reviewer Feedback",
+            payload["last_review"],
+        ),
         "attempt_metadata": _render_json_section(
             "Attempt Metadata",
             {"is_final_stage": payload["is_final_stage"]},
@@ -1246,7 +1281,24 @@ def _build_stage_coder_payload(
     graph: ImplementationGraph,
     stage_id: str,
     is_final_stage: bool,
-    last_review: StageReviewResult | None,
+) -> dict[str, Any]:
+    stage = get_stage_spec(graph, stage_id)
+    return {
+        "current_stage": stage.model_dump(mode="json"),
+        "prerequisite_stages": [
+            get_stage_spec(graph, prerequisite_stage_id).model_dump(mode="json")
+            for prerequisite_stage_id in stage.prerequisites
+        ],
+        "is_final_stage": is_final_stage,
+    }
+
+
+def _build_stage_fixer_payload(
+    *,
+    graph: ImplementationGraph,
+    stage_id: str,
+    is_final_stage: bool,
+    last_review: StageReviewResult,
 ) -> dict[str, Any]:
     stage = get_stage_spec(graph, stage_id)
     return {
@@ -1258,6 +1310,29 @@ def _build_stage_coder_payload(
         "last_review": _trim_last_review(last_review),
         "is_final_stage": is_final_stage,
     }
+
+
+def _require_same_stage_retry_review(
+    *,
+    stage_id: str,
+    review: StageReviewResult | None,
+) -> StageReviewResult:
+    """Return the retry review required for a fixer attempt."""
+    if review is None:
+        raise ValueError(
+            f"fixer attempt for stage {stage_id!r} is missing reviewer feedback."
+        )
+    if review.stage_id != stage_id:
+        raise ValueError(
+            "fixer attempt expected reviewer feedback for the same stage: "
+            f"{review.stage_id!r} vs {stage_id!r}."
+        )
+    if review.action != "retry_same_stage":
+        raise ValueError(
+            "fixer attempt requires reviewer action 'retry_same_stage', got "
+            f"{review.action!r} for stage {stage_id!r}."
+        )
+    return review
 
 
 def _build_stage_review_payload(
@@ -1309,6 +1384,7 @@ async def _run_round0_staged(
     state_path: Path,
     designer: object,
     stage_coder: object,
+    stage_fixer: object,
     stage_reviewer: object,
     designer_max_turns: int,
     designer_verbose: bool,
@@ -1461,46 +1537,85 @@ async def _run_round0_staged(
                 )
                 sys.exit(1)
             print("  Reusing pending stage result from history and resuming at the review step.")
-            coder_payload = _build_stage_coder_payload(
-                graph=graph,
-                stage_id=current_stage_id,
-                is_final_stage=is_final_stage,
-                last_review=progress.latest_review,
-            )
-            _apply_stage_coder_prompt_sections(ctx, coder_payload)
+            executor_role_name = _round0_stage_executor_role_name(stage_attempt)
+            if executor_role_name == "coder":
+                executor_agent = stage_coder
+                executor_payload = _build_stage_coder_payload(
+                    graph=graph,
+                    stage_id=current_stage_id,
+                    is_final_stage=is_final_stage,
+                )
+                _apply_stage_coder_prompt_sections(ctx, executor_payload)
+            else:
+                try:
+                    retry_review = _require_same_stage_retry_review(
+                        stage_id=current_stage_id,
+                        review=progress.latest_review,
+                    )
+                except ValueError as exc:
+                    print(f"FATAL: {exc}")
+                    sys.exit(1)
+                executor_agent = stage_fixer
+                executor_payload = _build_stage_fixer_payload(
+                    graph=graph,
+                    stage_id=current_stage_id,
+                    is_final_stage=is_final_stage,
+                    last_review=retry_review,
+                )
+                _apply_stage_fixer_prompt_sections(ctx, executor_payload)
             _dump_stage_runtime_prompt_artifacts(
                 prompt_dump=prompt_dump,
-                agent=stage_coder,
+                agent=executor_agent,
                 ctx=ctx,
                 stage_id=current_stage_id,
                 attempt=stage_attempt,
-                role_name="coder",
-                payload=coder_payload,
+                role_name=executor_role_name,
+                payload=executor_payload,
                 reuse_if_present=True,
             )
         else:
             stage_attempt += 1
-            coder_payload = _build_stage_coder_payload(
-                graph=graph,
-                stage_id=current_stage_id,
-                is_final_stage=is_final_stage,
-                last_review=progress.latest_review,
-            )
-            _apply_stage_coder_prompt_sections(ctx, coder_payload)
+            executor_role_name = _round0_stage_executor_role_name(stage_attempt)
+            executor_display_name = f"kernel-stage-{executor_role_name}"
+            if executor_role_name == "coder":
+                executor_agent = stage_coder
+                executor_payload = _build_stage_coder_payload(
+                    graph=graph,
+                    stage_id=current_stage_id,
+                    is_final_stage=is_final_stage,
+                )
+                _apply_stage_coder_prompt_sections(ctx, executor_payload)
+            else:
+                try:
+                    retry_review = _require_same_stage_retry_review(
+                        stage_id=current_stage_id,
+                        review=progress.latest_review,
+                    )
+                except ValueError as exc:
+                    print(f"FATAL: {exc}")
+                    sys.exit(1)
+                executor_agent = stage_fixer
+                executor_payload = _build_stage_fixer_payload(
+                    graph=graph,
+                    stage_id=current_stage_id,
+                    is_final_stage=is_final_stage,
+                    last_review=retry_review,
+                )
+                _apply_stage_fixer_prompt_sections(ctx, executor_payload)
             _dump_stage_runtime_prompt_artifacts(
                 prompt_dump=prompt_dump,
-                agent=stage_coder,
+                agent=executor_agent,
                 ctx=ctx,
                 stage_id=current_stage_id,
                 attempt=stage_attempt,
-                role_name="coder",
-                payload=coder_payload,
+                role_name=executor_role_name,
+                payload=executor_payload,
             )
             ctx.current_agent_role = "coder"
             try:
                 stage_result_raw, stage_elapsed_s = await _run_agent(
-                    stage_label=f"kernel-stage-coder-{_slugify_stage_id(current_stage_id)}",
-                    starting_agent=stage_coder,
+                    stage_label=f"{executor_display_name}-{_slugify_stage_id(current_stage_id)}",
+                    starting_agent=executor_agent,
                     input="Implement the assigned staged round-0 kernel slice.",
                     context=ctx,
                     max_turns=coder_max_turns,
@@ -1508,21 +1623,28 @@ async def _run_round0_staged(
                 )
                 stage_out = require_structured_output(stage_result_raw, Round0StageResult)
             except MaxTurnsExceeded:
-                print(f"FATAL: staged kernel-coder hit max turns on stage {current_stage_id}.")
+                print(
+                    f"FATAL: staged {executor_display_name} hit max turns on stage "
+                    f"{current_stage_id}."
+                )
                 sys.exit(1)
             except Exception as exc:
                 if _is_rate_limit_error(exc):
                     print(
-                        "FATAL: staged kernel-coder exhausted stage-local rate-limit retries "
+                        f"FATAL: staged {executor_display_name} exhausted stage-local "
+                        "rate-limit retries "
                         f"while resuming saved context: {exc}"
                     )
                 else:
-                    print(f"FATAL: staged kernel-coder returned an invalid structured result: {exc}")
+                    print(
+                        f"FATAL: staged {executor_display_name} returned an invalid "
+                        f"structured result: {exc}"
+                    )
                 sys.exit(1)
 
             if stage_out.stage_id != current_stage_id:
                 print(
-                    f"FATAL: staged kernel-coder returned stage_id={stage_out.stage_id!r}, "
+                    f"FATAL: staged {executor_display_name} returned stage_id={stage_out.stage_id!r}, "
                     f"expected {current_stage_id!r}."
                 )
                 sys.exit(1)
@@ -1536,7 +1658,7 @@ async def _run_round0_staged(
             )
             ctx.round0_stage_history.append(stage_out)
             print(
-                f"  {format_run_telemetry('kernel-stage-coder', stage_elapsed_s, stage_result_raw)}"
+                f"  {format_run_telemetry(executor_display_name, stage_elapsed_s, stage_result_raw)}"
             )
             print(f"  Stage result: {stage_result_path.relative_to(PROJECT_ROOT)}")
             print(f"  {stage_out.message}")
@@ -1544,7 +1666,7 @@ async def _run_round0_staged(
 
             progress = _derive_round0_progress(ctx, graph)
 
-        ctx.current_agent_role = "designer"
+        ctx.current_agent_role = "reviewer"
         review_payload = _build_stage_review_payload(
             ctx=ctx,
             solution_dir=solution_dir,
@@ -1703,6 +1825,7 @@ async def run_loop(
     designer_max_turns: int = 80,
     designer_reasoning_effort: str = "high",
     designer_verbosity: str = "low",
+    reviewer_verbosity: str = "low",
     planner_reasoning_effort: str = "high",
     optimizer_reasoning_effort: str = "high",
     coder_extra: str = "",
@@ -1750,11 +1873,20 @@ async def run_loop(
         codex_worker_model=codex_worker_model,
         codex_worker_reasoning_effort=codex_worker_reasoning_effort,
     )
+    stage_fixer = make_round0_stage_fixer(
+        context=ctx,
+        model=coder_model,
+        reasoning_effort=coder_reasoning_effort,
+        verbosity=coder_verbosity,
+        extra_instructions=coder_extra,
+        codex_worker_model=codex_worker_model,
+        codex_worker_reasoning_effort=codex_worker_reasoning_effort,
+    )
     stage_reviewer = make_round0_stage_reviewer(
         context=ctx,
         model=designer_model,
         reasoning_effort=designer_reasoning_effort,
-        verbosity=designer_verbosity,
+        verbosity=reviewer_verbosity,
         extra_instructions=designer_extra,
     )
     coder = make_kernel_coder(
@@ -1826,6 +1958,7 @@ async def run_loop(
                 state_path=state_path,
                 designer=designer,
                 stage_coder=stage_coder,
+                stage_fixer=stage_fixer,
                 stage_reviewer=stage_reviewer,
                 designer_max_turns=designer_max_turns,
                 designer_verbose=verbose,
@@ -2197,15 +2330,15 @@ def main():
     parser.add_argument(
         "--dump-prompts", action="store_true",
         help=(
-            "Resolve and write the static agent prompts to prompts/, then continue "
-            "running and capture fully materialized staged round-0 coder/reviewer "
+            "Resolve and write the static agent prompts to prompts/static/, then continue "
+            "running and capture fully materialized staged round-0 coder/fixer/reviewer "
             "system prompts and caller payloads under prompts/round0_runtime/."
         ),
     )
     parser.add_argument(
         "--dump-prompts-only", action="store_true",
         help=(
-            "Resolve and write the static agent prompts to prompts/ and exit without "
+            "Resolve and write the static agent prompts to prompts/static/ and exit without "
             "running any agent."
         ),
     )
@@ -2246,6 +2379,12 @@ def main():
         help="Verbosity for the round-0 kernel-designer agent (default: low)",
     )
     parser.add_argument(
+        "--reviewer-verbosity",
+        choices=VERBOSITY_CHOICES,
+        default="low",
+        help="Verbosity for the round-0 kernel-stage-reviewer agent (default: low)",
+    )
+    parser.add_argument(
         "--planner-reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
         default="high",
@@ -2279,6 +2418,7 @@ def main():
             coder_verbosity=args.coder_verbosity,
             designer_reasoning_effort=args.designer_reasoning_effort,
             designer_verbosity=args.designer_verbosity,
+            reviewer_verbosity=args.reviewer_verbosity,
             planner_reasoning_effort=args.planner_reasoning_effort,
             optimizer_reasoning_effort=args.optimizer_reasoning_effort,
         )
@@ -2306,6 +2446,7 @@ def main():
         designer_max_turns=args.designer_max_turns,
         designer_reasoning_effort=args.designer_reasoning_effort,
         designer_verbosity=args.designer_verbosity,
+        reviewer_verbosity=args.reviewer_verbosity,
         planner_reasoning_effort=args.planner_reasoning_effort,
         optimizer_reasoning_effort=args.optimizer_reasoning_effort,
         prompt_dump=prompt_dump,

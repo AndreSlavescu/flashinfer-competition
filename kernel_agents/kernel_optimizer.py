@@ -69,16 +69,6 @@ Check dtype casts, reduction order, masking, LSE base.
 6. **Return**: Report result with correctness status. Include a reflection on what worked, \
 what didn't, and what the next round should consider.
 
-## Key References
-
-- CuTeDSL runtime: references/cutlass/python/CuTeDSL/cutlass/cute/
-- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline/
-- Utility helpers: references/cutlass/python/CuTeDSL/cutlass/utils/
-- Blackwell examples: references/cutlass/examples/python/CuTeDSL/blackwell/
-- Quack kernels: references/quack/
-- Prior kernel versions: solution/dsa_attention/kernel_*.py
-- Current kernel: solution/dsa_attention/kernel.py
-
 ## Kernel Interface
 
 The kernel MUST export:
@@ -141,6 +131,7 @@ def make_kernel_optimizer(
     return Agent[SharedContext](
         name="kernel-optimizer",
         instructions=build_agent_instructions(
+            role="optimizer",
             body=OPTIMIZER_BODY,
             tools=tools,
             extra_instructions=extra_instructions,

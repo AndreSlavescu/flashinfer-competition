@@ -1,4 +1,4 @@
-"""Designer-as-judge agent for staged round-0 kernel bootstrap."""
+"""Dedicated reviewer agent for staged round-0 kernel bootstrap."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention ke
 
 ## Workflow
 1. Read through 'kernel_0_plan.md' and the current stage of 'kernel_0_impl_graph.json' to understand the kernel design
-2. Analyze the implementation of the current stage from kernel-stage-coder in kernel_0.py
+2. Analyze the implementation of the current stage from the latest staged implementation attempt in kernel_0.py
 3. Analyze all error messages in 'last_shell_dump.txt', the trimmed stage-result history, and the trimmed review history to identify persistent failure patterns
 4. Report at most ONE critical correctness issue in the last stage, including any deviations from the plan and issues with the stage output validation harness. Be precise.
 5. Report at most ONE critical correctness issue with the design 'kernel_0_plan.md' and 'kernel_0_impl_graph.json'
@@ -35,14 +35,6 @@ You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention ke
 {..## File Diffs..}
 {..## Trimmed Round0StageResult history..}
 {..## Trimmed StageReviewResult history..}
-
-
-## References
-
-- Core library + tma/tcgen05/warp helpers: references/cutlass/python/CuTeDSL/cutlass/cute
-- Pipeline helpers: references/cutlass/python/CuTeDSL/cutlass/pipeline
-- Aux helpers: references/cutlass/python/CuTeDSL/cutlass/utils
-- CuTeDSL Blackwell Kernels: references/cutlass/examples/python/CuTeDSL/blackwell
 """
 
 STAGE_REVIEWER_OUTPUT_REMINDER = """\
@@ -87,9 +79,9 @@ def make_round0_stage_reviewer(
     verbosity: Verbosity = "low",
     extra_instructions: str = "",
 ) -> Agent[SharedContext]:
-    """Create the staged round-0 design reviewer."""
+    """Create the staged round-0 kernel reviewer."""
 
-    tools = build_tools_for_role("designer", codex_worker_mode=context.codex_worker_mode)
+    tools = build_tools_for_role("reviewer", codex_worker_mode=context.codex_worker_mode)
 
     def dynamic_instructions(
         run_ctx: RunContextWrapper[SharedContext],
@@ -98,6 +90,7 @@ def make_round0_stage_reviewer(
         del agent
         body = _compose_stage_reviewer_body(run_ctx.context)
         return build_agent_instructions(
+            role="reviewer",
             body=body,
             tools=tools,
             extra_instructions=extra_instructions,

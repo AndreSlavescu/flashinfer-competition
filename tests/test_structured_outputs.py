@@ -26,6 +26,13 @@ from kernel_agents.context import (
 from kernel_agents.kernel_coder import make_kernel_coder
 from kernel_agents.kernel_stage_coder import make_round0_stage_coder
 from kernel_agents.kernel_stage_reviewer import make_round0_stage_reviewer
+from kernel_agents.scoping import AGENT_SCOPES
+
+
+def _extract_markdown_section(prompt: str, heading: str) -> str:
+    start = prompt.index(heading)
+    tail = prompt[start:]
+    return tail.split("\n\n## ", 1)[0].strip()
 
 
 def _sample_impl_graph() -> ImplementationGraph:
@@ -610,6 +617,11 @@ def test_stage_coder_prompt_uses_new_body_and_dynamic_sections(tmp_path: Path) -
     assert "`run_stage_validation` always executes `kernel_0.py::prefix_validation_harness`" in stage_prompt
     assert "The prefix validation helpers are cumulative." in stage_prompt
     assert "references/cutlass/examples/python/CuTeDSL/blackwell" in stage_prompt
+    stage_references = _extract_markdown_section(stage_prompt, "## References")
+    expected_stage_reference_lines = ["## References"] + [
+        f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow
+    ]
+    assert stage_references.splitlines() == expected_stage_reference_lines
     assert '"is_final_stage": false' in stage_prompt
     assert "approved_frontier_summaries" not in stage_prompt
     assert "## Caller payload contract" not in stage_prompt
@@ -677,6 +689,11 @@ def test_stage_reviewer_prompt_uses_new_body_and_dynamic_sections(
     assert "`prefix_validation_outputs_torch`" in reviewer_prompt
     assert "`prefix_validation_harness`" in reviewer_prompt
     assert "completed prefix stages plus the current stage" in reviewer_prompt
+    reviewer_references = _extract_markdown_section(reviewer_prompt, "## References")
+    expected_reviewer_reference_lines = ["## References"] + [
+        f"- `{path}`" for path in AGENT_SCOPES["reviewer"].read_allow
+    ]
+    assert reviewer_references.splitlines() == expected_reviewer_reference_lines
     assert "validation_entry_point" not in reviewer_prompt
     assert "Keep `message` terse and precise." not in reviewer_prompt
     assert "## Action gates" not in reviewer_prompt

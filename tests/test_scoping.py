@@ -158,6 +158,15 @@ class TestScopedWorkspaceEditor:
         inner.create_file.assert_not_called()
         assert result.status == "failed"
 
+    def test_reviewer_cannot_write_plan(self, project_root: Path) -> None:
+        inner = MagicMock()
+        editor = ScopedWorkspaceEditor(inner, "reviewer")
+        op = _make_operation(project_root, "solution/dsa_attention/kernel_0_plan.md")
+        result = editor.update_file(op)
+        inner.update_file.assert_not_called()
+        assert result.status == "failed"
+        assert "Allowed write paths: (none)" in result.output
+
     def test_delete_checked(self, project_root: Path) -> None:
         inner = MagicMock()
         editor = ScopedWorkspaceEditor(inner, "designer")
@@ -257,6 +266,17 @@ class TestScopeGuardrail:
         result = guardrail.guardrail_function(data)
         assert result.behavior["type"] == "allow"
 
+    def test_reviewer_can_read_shell_dump(self, project_root: Path) -> None:
+        guardrail = make_scope_guardrail("reviewer")
+        data = _make_guardrail_data(
+            project_root,
+            "read_file",
+            {"file_path": "last_shell_dump.txt"},
+            agent_name="kernel-stage-reviewer",
+        )
+        result = guardrail.guardrail_function(data)
+        assert result.behavior["type"] == "allow"
+
     def test_diff_both_paths_checked(self, project_root: Path) -> None:
         guardrail = make_scope_guardrail("designer")
         # file_a in scope, file_b out of scope
@@ -289,15 +309,21 @@ class TestScopeGuardrail:
 
 class TestAgentScopesSanity:
     def test_all_roles_defined(self) -> None:
-        assert set(AGENT_SCOPES.keys()) == {"designer", "coder", "planner", "optimizer"}
+        assert set(AGENT_SCOPES.keys()) == {
+            "designer",
+            "reviewer",
+            "coder",
+            "planner",
+            "optimizer",
+        }
 
-    @pytest.mark.parametrize("role", ["designer", "coder", "planner", "optimizer"])
+    @pytest.mark.parametrize("role", ["designer", "reviewer", "coder", "planner", "optimizer"])
     def test_references_readable(self, role: str) -> None:
         """All agents should be able to read the references directory."""
         scope = AGENT_SCOPES[role]
         assert any(p.startswith("references/") for p in scope.read_allow)
 
-    @pytest.mark.parametrize("role", ["designer", "coder", "planner", "optimizer"])
+    @pytest.mark.parametrize("role", ["designer", "reviewer", "coder", "planner", "optimizer"])
     def test_solution_dir_readable(self, role: str) -> None:
         """All agents should be able to read the solution directory."""
         scope = AGENT_SCOPES[role]

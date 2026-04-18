@@ -43,27 +43,35 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
     "designer": AgentFileScope(
         read_allow=(
             "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py",
+            "references/cutlass/examples/python/CuTeDSL/blackwell/mla/",
             "references/cutlass/python/CuTeDSL/cutlass/cute/",
             "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
             "references/cutlass/python/CuTeDSL/cutlass/utils/",
-            "references/cutlass/examples/python/CuTeDSL/blackwell/",
-            "references/cutlass/examples/python/CuTeDSL/notebooks/",
-            "references/quack/",
             "solution/dsa_attention/",
         ),
         write_allow=(
             "solution/dsa_attention/kernel_0_plan.md",
         ),
     ),
-    "coder": AgentFileScope(
+    "reviewer": AgentFileScope(
         read_allow=(
-            "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py",
+            "references/cutlass/examples/python/CuTeDSL/blackwell/mla/",
+            "references/CuTeGen_guidelines.md",
             "references/cutlass/python/CuTeDSL/cutlass/cute/",
             "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
             "references/cutlass/python/CuTeDSL/cutlass/utils/",
-            "references/cutlass/examples/python/CuTeDSL/blackwell/",
-            "references/cutlass/examples/python/CuTeDSL/notebooks/",
-            "references/quack/",
+            "solution/dsa_attention/",
+            "last_shell_dump.txt",
+        ),
+        write_allow=(),
+    ),
+    "coder": AgentFileScope(
+        read_allow=(
+            "references/cutlass/examples/python/CuTeDSL/blackwell/mla/",
+            "references/CuTeGen_guidelines.md",
+            "references/cutlass/python/CuTeDSL/cutlass/cute/",
+            "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
+            "references/cutlass/python/CuTeDSL/cutlass/utils/",
             "solution/dsa_attention/",
             "last_shell_dump.txt",
         ),
@@ -74,12 +82,10 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
     "planner": AgentFileScope(
         read_allow=(
             "references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py",
+            "references/cutlass/examples/python/CuTeDSL/blackwell/mla/",
             "references/cutlass/python/CuTeDSL/cutlass/cute/",
             "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
             "references/cutlass/python/CuTeDSL/cutlass/utils/",
-            "references/cutlass/examples/python/CuTeDSL/blackwell/",
-            "references/cutlass/examples/python/CuTeDSL/notebooks/",
-            "references/quack/",
             "solution/dsa_attention/",
             "notes/dsa_attention/",
             "last_shell_dump.txt",
@@ -183,9 +189,10 @@ class ScopedWorkspaceEditor:
             resolved, project_root, self._scope.write_allow
         )
         if not allowed:
+            allowed_writes = ", ".join(self._scope.write_allow) or "(none)"
             return (
                 f"BLOCKED: {self._role} agent cannot write to '{rel_path}'. "
-                f"Allowed write paths: {', '.join(self._scope.write_allow)}"
+                f"Allowed write paths: {allowed_writes}"
             )
         return None
 
