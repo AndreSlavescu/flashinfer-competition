@@ -23,9 +23,9 @@ NEW_STAGE_FIXER_BODY = """\
 You are kernel-stage-fixer, an expert at debugging and improving CuTeDSL (CUTLASS Python DSL) kernels.
 
 ## Workflow
-1. Read through the current stage specifications and the pre-requisite stage specifications
-2. Read through the current stage implementations in kernel_0.py and the feedback from stage reviewer agent
-3. Apply the SMALLEST fixes or improvements necessary to address the reviewer's feedback
+1. Read the full kernel design plan, focusing on the assigned stage's responsibilities, dependencies, and validation outputs.
+2. Read the assigned stage implementation in `kernel_0.py` and the feedback from the stage reviewer.
+3. Apply the SMALLEST fixes or improvements necessary to address the reviewer's feedback.
 
 ## Stopping rule
 - After implementing the patches, call `run_stage_validation` EXACTLY ONCE.
@@ -36,8 +36,8 @@ You are kernel-stage-fixer, an expert at debugging and improving CuTeDSL (CUTLAS
   - `"validation_failed"` if the harness or correctness check ran but disagreed with the reference
   - `"success"` if every mandated check passed
 
-{..## Current Stage Specifications..}
-{..## Pre-requisite Stage Specifications..}
+{..## Stage To Fix..}
+{..## Full kernel_0_plan.md..}
 {..## Last Reviewer Feedback..}
 """
 
@@ -53,20 +53,13 @@ def _compose_stage_fixer_body(ctx: SharedContext) -> str:
     body = render_prompt_template(
         NEW_STAGE_FIXER_BODY.strip(),
         {
-            "{..## Current Stage Specifications..}": prompt_sections.get("current_stage", ""),
-            "{..## Pre-requisite Stage Specifications..}": prompt_sections.get(
-                "prerequisite_stages",
-                "",
-            ),
+            "{..## Stage To Fix..}": prompt_sections.get("stage_to_fix", ""),
+            "{..## Full kernel_0_plan.md..}": prompt_sections.get("full_plan", ""),
             "{..## Last Reviewer Feedback..}": prompt_sections.get("last_review", ""),
         },
     )
 
-    parts = [body]
-    attempt_metadata = prompt_sections.get("attempt_metadata", "").strip()
-    if attempt_metadata:
-        parts.append(attempt_metadata)
-    parts.append(STAGE_FIXER_OUTPUT_REMINDER.strip())
+    parts = [body, STAGE_FIXER_OUTPUT_REMINDER.strip()]
     return "\n\n".join(parts) + "\n"
 
 

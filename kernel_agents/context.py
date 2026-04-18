@@ -23,16 +23,6 @@ StageReviewAction = Literal[
     "retry_same_stage",
     "revise_design_then_retry",
 ]
-AsyncPipelineType = Literal[
-    "PipelineAsync",
-    "PipelineCpAsync",
-    "PipelineTmaAsync",
-    "PipelineTmaUmma",
-    "PipelineAsyncUmma",
-    "PipelineUmmaAsync",
-    "PipelineClcFetchAsync",
-]
-
 REASONING_EFFORT_CHOICES: tuple[ReasoningEffort, ...] = (
     "none",
     "low",
@@ -136,7 +126,6 @@ class SharedContext:
     codex_thread_id_optimizer_engineer: str | None = None
     current_agent_role: str = ""
     round0_mode: Round0Mode = "staged"
-    round0_impl_graph_file: str = ""
     round0_stage_history: list[Round0StageResult] = field(default_factory=list)
     round0_review_history: list[StageReviewResult] = field(default_factory=list)
     round0_stage_coder_prompt_sections: dict[str, str] = field(default_factory=dict)
@@ -156,143 +145,11 @@ class StructuredResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class AsyncPipelineSpec(BaseModel):
-    """Machine-readable structural view of an async pipeline from the design plan."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    pipeline_id: str = Field(description="Stable identifier such as P0/P1.")
-    type: AsyncPipelineType = Field(
-        description=(
-            "Exact single-producer/single-consumer pipeline class name exported by "
-            "references/cutlass/python/CuTeDSL/cutlass/pipeline/__init__.py."
-        ),
-    )
-    producer_warp: str = Field(
-        description="Single producer warp/group name responsible for the pipeline payload.",
-    )
-    consumer_warp: str = Field(
-        description="Single consumer warp/group name responsible for the pipeline payload.",
-    )
-    num_stages: int = Field(description="Pipeline depth.")
-    payload: str = Field(description="Short description of the payload being handed off.")
-
-    @model_validator(mode="after")
-    def _validate_non_empty_pipeline_strings(self) -> "AsyncPipelineSpec":
-        scalar_fields = {
-            "pipeline_id": self.pipeline_id,
-            "type": self.type,
-            "producer_warp": self.producer_warp,
-            "consumer_warp": self.consumer_warp,
-            "payload": self.payload,
-        }
-        for field_name, value in scalar_fields.items():
-            if not value.strip():
-                raise ValueError(f"{field_name} must not be blank.")
-        return self
-
-
-StageOutputScope = Literal["gmem", "rmem", "smem", "host"]
-
-
-class StageOutput(BaseModel):
-    """Single validated output from a stage, paired with its CuTe memory scope."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    name: str = Field(
-        description=(
-            "Output tensor identifier. Used verbatim as the <field> token in "
-            "'[PyTorch Val] <field>: BEGIN' / '[CuTe Val] <field>: BEGIN' tags "
-            "or '[CuTe Host] <field>: BEGIN' for host-scope outputs."
-        ),
-    )
-    scope: StageOutputScope = Field(
-        description=(
-            "Validation scope metadata for the output. 'gmem', 'rmem', and 'smem' are "
-            "runtime compared through matching [PyTorch Val] / [CuTe Val] blocks with "
-            "comma-separated numeric bodies; 'host' is CuTe inspection-only and uses "
-            "a [CuTe Host] block."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate_non_empty_name(self) -> "StageOutput":
-        if not self.name.strip():
-            raise ValueError("name must not be blank.")
-        return self
-
-
-class StageSpec(BaseModel):
-    """Single implementation stage derived from the design plan."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    stage_id: str = Field(description="Stable stage identifier.")
-    prerequisites: list[str] = Field(
-        default_factory=list,
-        description="Stage IDs that must be completed and validated before this stage runs.",
-    )
-    outputs: list[StageOutput] = Field(
-        min_length=1,
-        description=(
-            "Stage outputs that MUST be logged for validation or inspection. Each entry provides the output name and its validation scope metadata."
-        ),
-    )
-    relevant_helpers: list[str] = Field(
-        min_length=1,
-        description=(
-            "CuTeDSL APIs, abstractions, snippets, or examples that are especially "
-            "relevant when implementing this stage."
-        ),
-    )
-    plan_excerpt: str = Field(
-        description=(
-            "Exact markdown excerpt copied from kernel_0_plan.md that describes "
-            "this stage's intended design."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def _validate_non_empty_required_strings(self) -> "StageSpec":
-        scalar_fields = {
-            "stage_id": self.stage_id,
-            "plan_excerpt": self.plan_excerpt,
-        }
-        for field_name, value in scalar_fields.items():
-            if not value.strip():
-                raise ValueError(f"{field_name} must not be blank.")
-
-        if any(not value.strip() for value in self.relevant_helpers):
-            raise ValueError("relevant_helpers must not contain blank entries.")
-
-        names = [output.name for output in self.outputs]
-        if len(names) != len(set(names)):
-            raise ValueError("outputs entries must have unique names.")
-
-        return self
-
-class ImplementationGraph(BaseModel):
-    """Machine contract for staged round-0 implementation."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    async_pipelines: list[AsyncPipelineSpec] = Field(
-        description="Architectural async pipeline definitions derived from the plan.",
-    )
-    stages: list[StageSpec] = Field(
-        description="Ordered stage DAG used by the staged round-0 coder loop.",
-    )
-
-
 class DesignerResult(StructuredResult):
     """Returned by kernel-designer after producing the design plan."""
 
     plan_file: str = Field(
         description="Path to the design plan file written by the agent.",
-    )
-    impl_graph: ImplementationGraph = Field(
-        description="Staged implementation graph derived from the plan.",
     )
     status: Literal["success", "error"] = Field(
         description="Whether the designer successfully produced the design plan.",
@@ -362,9 +219,23 @@ class StageReviewResult(StructuredResult):
     action: StageReviewAction = Field(
         description="Judge action for the next orchestrator step.",
     )
+    next_stage: str | None = Field(
+        description=(
+            "Stage ID for the next executor to run. Must equal `stage_id` for "
+            "`retry_same_stage`, and must be null for `revise_design_then_retry`."
+        ),
+    )
     message: str = Field(
         description="Brief explanation for the selected action.",
     )
+
+    @model_validator(mode="after")
+    def _validate_action_specific_next_stage(self) -> "StageReviewResult":
+        if self.action == "retry_same_stage" and self.next_stage != self.stage_id:
+            raise ValueError("retry_same_stage requires next_stage == stage_id.")
+        if self.action == "revise_design_then_retry" and self.next_stage is not None:
+            raise ValueError("revise_design_then_retry requires next_stage == null.")
+        return self
 
 
 class NCUMetrics(BaseModel):

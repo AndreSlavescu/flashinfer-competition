@@ -33,7 +33,6 @@ load_repo_dotenv()
 
 import argparse
 import asyncio
-import difflib
 import json
 import logging
 import re
@@ -67,7 +66,6 @@ from kernel_agents.context import (
     CodexWorkerMode,
     CodexWorkerReasoningEffort,
     DesignerResult,
-    ImplementationGraph,
     OptimizerResult,
     PlannerResult,
     QualityProfile,
@@ -96,7 +94,7 @@ STAGE_RATE_LIMIT_MAX_CUMULATIVE_WAIT_S = 600.0
 RATE_LIMIT_RETRY_SAFETY_BUFFER_S = 0.5
 RATE_LIMIT_RETRY_BACKOFF_INITIAL_S = 2.0
 RATE_LIMIT_RETRY_BACKOFF_MAX_S = 30.0
-INVALID_IMPL_GRAPH_MAX_REPAIRS = 5
+DEFAULT_ROUND0_ENTRY_STAGE = "S0"
 _RATE_LIMIT_RETRY_AFTER_RE = re.compile(
     r"please try again in\s+([0-9]+(?:\.[0-9]+)?)s",
     re.IGNORECASE,
@@ -145,33 +143,23 @@ def save_state(ctx: SharedContext, path: Path) -> None:
         "codex_thread_id_optimizer_engineer": ctx.codex_thread_id_optimizer_engineer,
         "history": [asdict(r) for r in ctx.history],
         "round0_mode": ctx.round0_mode,
-        "round0_impl_graph_file": ctx.round0_impl_graph_file,
         "round0_stage_history": _dump_round0_stage_history(ctx.round0_stage_history),
         "round0_review_history": _dump_round0_review_history(ctx.round0_review_history),
     }
     path.write_text(json.dumps(state, indent=2))
     logger.info("State saved to %s", path)
 
-
-def _round_record_from_dict(d: dict) -> RoundRecord:
-    """Build a RoundRecord from a JSON dict, tolerating old/missing fields."""
-    known = {f.name for f in RoundRecord.__dataclass_fields__.values()}
-    filtered = {k: v for k, v in d.items() if k in known}
-    return RoundRecord(**filtered)
-
-
 def load_state(ctx: SharedContext, path: Path) -> int:
     """Load loop state from JSON. Returns the last completed round number."""
     state = json.loads(path.read_text())
     ctx.best_latency_ms = state["best_latency_ms"]
     ctx.best_round = state["best_round"]
-    ctx.history = [_round_record_from_dict(r) for r in state["history"]]
-    ctx.codex_thread_id_coder_engineer = state.get("codex_thread_id_coder_engineer")
-    ctx.codex_thread_id_optimizer_engineer = state.get("codex_thread_id_optimizer_engineer")
-    ctx.round0_mode = state.get("round0_mode", ctx.round0_mode)
-    ctx.round0_impl_graph_file = state.get("round0_impl_graph_file", "")
-    ctx.round0_stage_history = _load_round0_stage_history(state.get("round0_stage_history", []))
-    ctx.round0_review_history = _load_round0_review_history(state.get("round0_review_history", []))
+    ctx.history = [RoundRecord(**record) for record in state["history"]]
+    ctx.codex_thread_id_coder_engineer = state["codex_thread_id_coder_engineer"]
+    ctx.codex_thread_id_optimizer_engineer = state["codex_thread_id_optimizer_engineer"]
+    ctx.round0_mode = state["round0_mode"]
+    ctx.round0_stage_history = _load_round0_stage_history(state["round0_stage_history"])
+    ctx.round0_review_history = _load_round0_review_history(state["round0_review_history"])
     last_round = state["current_round"]
     logger.info("Resumed from round %d (best=%.3fms @ round %d)",
                 last_round, ctx.best_latency_ms, ctx.best_round)
@@ -225,20 +213,6 @@ def find_last_correct_kernel(ctx: SharedContext, solution_dir: Path) -> Path:
 def round0_artifacts_dir(solution_dir: Path) -> Path:
     """Return the staged round-0 artifact directory."""
     return solution_dir / "round0"
-
-
-def round0_impl_graph_path(solution_dir: Path) -> Path:
-    """Return the canonical path for the staged round-0 implementation graph."""
-    return round0_artifacts_dir(solution_dir) / "kernel_0_impl_graph.json"
-
-
-def round0_invalid_impl_graph_path(solution_dir: Path, attempt: int) -> Path:
-    """Return the artifact path for an invalid staged round-0 implementation graph."""
-    return (
-        round0_artifacts_dir(solution_dir)
-        / f"kernel_0_impl_graph.invalid.attempt_{attempt:02d}.json"
-    )
-
 
 def round0_plan_path(solution_dir: Path) -> Path:
     """Return the canonical path for the staged round-0 human plan."""
@@ -309,122 +283,12 @@ def _previous_round0_kernel_snapshot_path(
     )
 
 
-def _build_round0_kernel_diff_payload(
-    *,
-    ctx: SharedContext,
-    solution_dir: Path,
-    stage_id: str,
-    attempt: int,
-) -> dict[str, str | None]:
-    """Build reviewer diff context from staged kernel snapshots."""
-    project_root = Path(ctx.project_root)
-    current_snapshot = _ensure_round0_kernel_snapshot(
-        solution_dir,
-        stage_id=stage_id,
-        attempt=attempt,
-    )
-    previous_snapshot = _previous_round0_kernel_snapshot_path(ctx, solution_dir)
-    current_display = _project_relative_path(current_snapshot, project_root=project_root)
-    previous_display = (
-        _project_relative_path(previous_snapshot, project_root=project_root)
-        if previous_snapshot is not None
-        else None
-    )
-
-    if previous_snapshot is None:
-        return {
-            "current_kernel_snapshot": current_display,
-            "previous_kernel_snapshot": None,
-            "diff_status": "no_prior_snapshot",
-            "unified_diff": (
-                "NO PRIOR SNAPSHOT: this is the first staged kernel snapshot, so there is "
-                "no earlier kernel_0.py attempt to diff against."
-            ),
-        }
-
-    if not previous_snapshot.exists():
-        return {
-            "current_kernel_snapshot": current_display,
-            "previous_kernel_snapshot": previous_display,
-            "diff_status": "missing_previous_snapshot",
-            "unified_diff": (
-                "MISSING PREVIOUS SNAPSHOT: expected the immediately previous staged kernel "
-                f"snapshot at {previous_display}, but it does not exist."
-            ),
-        }
-
-    previous_text = previous_snapshot.read_text(encoding="utf-8").splitlines(keepends=True)
-    current_text = current_snapshot.read_text(encoding="utf-8").splitlines(keepends=True)
-    diff_text = "".join(
-        difflib.unified_diff(
-            previous_text,
-            current_text,
-            fromfile=previous_display,
-            tofile=current_display,
-        )
-    )
-    if not diff_text.strip():
-        diff_text = (
-            "The current staged kernel snapshot matches the immediately previous snapshot exactly."
-        )
-        diff_status = "no_textual_changes"
-    else:
-        diff_status = "available"
-
-    return {
-        "current_kernel_snapshot": current_display,
-        "previous_kernel_snapshot": previous_display,
-        "diff_status": diff_status,
-        "unified_diff": diff_text,
-    }
-
-
-def validate_impl_graph(graph: ImplementationGraph) -> None:
-    """Validate basic graph invariants needed by the staged round-0 loop."""
-    stage_ids = [stage.stage_id for stage in graph.stages]
-    if not stage_ids:
-        raise ValueError("Implementation graph must define at least one stage.")
-    if len(stage_ids) != len(set(stage_ids)):
-        raise ValueError("Implementation graph contains duplicate stage IDs.")
-
-    stage_index = {stage_id: index for index, stage_id in enumerate(stage_ids)}
-    stage_id_set = set(stage_ids)
-
-    for stage in graph.stages:
-        missing = [dep for dep in stage.prerequisites if dep not in stage_id_set]
-        if missing:
-            raise ValueError(
-                f"Stage '{stage.stage_id}' references unknown prerequisites: {missing}"
-            )
-        late = [
-            dep for dep in stage.prerequisites if stage_index[dep] >= stage_index[stage.stage_id]
-        ]
-        if late:
-            raise ValueError(
-                f"Stage '{stage.stage_id}' prerequisites must appear earlier in declared order: {late}"
-            )
-
-def iter_stage_order(graph: ImplementationGraph) -> list[str]:
-    """Return the canonical stage order from the graph."""
-    validate_impl_graph(graph)
-    return [stage.stage_id for stage in graph.stages]
-
-
-def get_stage_spec(graph: ImplementationGraph, stage_id: str):
-    """Return the stage spec for *stage_id* or raise KeyError."""
-    for stage in graph.stages:
-        if stage.stage_id == stage_id:
-            return stage
-    raise KeyError(stage_id)
-
-
 @dataclass
 class Round0DerivedProgress:
     """Derived staged round-0 progress reconstructed from append-only histories."""
 
-    completed_stage_ids: list[str]
-    latest_stage_results: dict[str, Round0StageResult]
     attempt_counts: dict[str, int]
+    latest_stage_result: Round0StageResult | None
     pending_stage_result: Round0StageResult | None
     pending_review: bool
     next_stage_id: str | None
@@ -432,56 +296,83 @@ class Round0DerivedProgress:
     complete: bool
 
 
-def _derive_round0_progress(ctx: SharedContext, graph: ImplementationGraph) -> Round0DerivedProgress:
-    order = iter_stage_order(graph)
-    order_index = {stage_id: index for index, stage_id in enumerate(order)}
+def validate_stage_review_result(
+    *,
+    stage_result: Round0StageResult,
+    review: StageReviewResult,
+) -> None:
+    """Validate reviewer routing against the latest stage outcome."""
+    if review.stage_id != stage_result.stage_id:
+        raise ValueError(
+            "round0 stage/review history is out of sync: "
+            f"stage result is {stage_result.stage_id!r}, review is {review.stage_id!r}."
+        )
 
+    if review.action == "retry_same_stage":
+        if review.next_stage != stage_result.stage_id:
+            raise ValueError(
+                f"retry_same_stage for {stage_result.stage_id!r} requires next_stage to match."
+            )
+        return
+
+    if review.action == "revise_design_then_retry":
+        if review.next_stage is not None:
+            raise ValueError("revise_design_then_retry requires next_stage to be null.")
+        return
+
+    if review.action != "continue_next_stage":
+        raise ValueError(f"Unknown round0 review action {review.action!r}")
+
+    if stage_result.status != "success":
+        raise ValueError(
+            f"Reviewer approved stage {stage_result.stage_id!r} even though "
+            f"status={stage_result.status!r}."
+        )
+    if not stage_result.stage_output_verified:
+        raise ValueError(
+            f"Reviewer approved stage {stage_result.stage_id!r} without passing stage validation."
+        )
+
+    if review.next_stage is None:
+        if not stage_result.final_correctness_verified:
+            raise ValueError(
+                f"Stage {stage_result.stage_id!r} cannot terminate round-0 without correctness."
+            )
+
+
+def _derive_round0_progress(ctx: SharedContext) -> Round0DerivedProgress:
     if len(ctx.round0_review_history) > len(ctx.round0_stage_history):
         raise ValueError("round0 review history cannot be longer than stage history.")
     if len(ctx.round0_stage_history) > len(ctx.round0_review_history) + 1:
         raise ValueError("round0 stage history can have at most one unreviewed stage attempt.")
 
-    completed_stage_ids: list[str] = []
-    latest_stage_results: dict[str, Round0StageResult] = {}
     attempt_counts: dict[str, int] = {}
+    latest_stage_result: Round0StageResult | None = None
     latest_review: StageReviewResult | None = None
     complete = False
 
     for stage_result in ctx.round0_stage_history:
-        latest_stage_results[stage_result.stage_id] = stage_result
+        latest_stage_result = stage_result
         attempt_counts[stage_result.stage_id] = attempt_counts.get(stage_result.stage_id, 0) + 1
 
     reviewed_attempt_count = len(ctx.round0_review_history)
     for index in range(reviewed_attempt_count):
         stage_result = ctx.round0_stage_history[index]
         review = ctx.round0_review_history[index]
-        if review.stage_id != stage_result.stage_id:
-            raise ValueError(
-                "round0 stage/review history is out of sync: "
-                f"stage attempt {index} is {stage_result.stage_id!r}, "
-                f"review is {review.stage_id!r}."
-            )
+        validate_stage_review_result(stage_result=stage_result, review=review)
         latest_review = review
 
         if review.action == "continue_next_stage":
-            if stage_result.stage_id in order_index and stage_result.stage_id not in completed_stage_ids:
-                completed_stage_ids.append(stage_result.stage_id)
-            if (
-                stage_result.stage_id == order[-1]
-                and stage_result.final_correctness_verified
-            ):
+            if review.next_stage is None:
                 complete = True
         elif review.action == "retry_same_stage":
             continue
         elif review.action == "revise_design_then_retry":
             # Histories are cleared after a revision, so this branch is only reached
             # defensively (e.g., a corrupted state file). Treat as a full reset.
-            completed_stage_ids = []
-            latest_stage_results = {}
+            latest_stage_result = None
             attempt_counts = {}
             complete = False
-        else:
-            raise ValueError(f"Unknown round0 review action {review.action!r}")
 
     pending_stage_result = None
     pending_review = False
@@ -493,13 +384,14 @@ def _derive_round0_progress(ctx: SharedContext, graph: ImplementationGraph) -> R
     if not complete:
         if pending_stage_result is not None:
             next_stage_id = pending_stage_result.stage_id
-        else:
-            next_stage_id = _next_incomplete_stage_id(order, completed_stage_ids)
+        elif latest_review is None:
+            next_stage_id = DEFAULT_ROUND0_ENTRY_STAGE
+        elif latest_review.action in {"continue_next_stage", "retry_same_stage"}:
+            next_stage_id = latest_review.next_stage
 
     return Round0DerivedProgress(
-        completed_stage_ids=completed_stage_ids,
-        latest_stage_results=latest_stage_results,
         attempt_counts=attempt_counts,
+        latest_stage_result=latest_stage_result,
         pending_stage_result=pending_stage_result,
         pending_review=pending_review,
         next_stage_id=next_stage_id,
@@ -519,13 +411,6 @@ def _display_path(path: Path) -> str:
         return str(path.relative_to(PROJECT_ROOT))
     except ValueError:
         return str(path)
-
-
-def load_impl_graph(path: Path) -> ImplementationGraph:
-    """Load and validate an implementation graph from disk."""
-    graph = ImplementationGraph.model_validate(json.loads(path.read_text()))
-    validate_impl_graph(graph)
-    return graph
 
 
 TStructuredOutput = TypeVar("TStructuredOutput")
@@ -793,27 +678,7 @@ async def _run_agent(
             cumulative_wait_s += wait_s
 
 
-def _build_invalid_impl_graph_feedback(error: ValueError, invalid_path: Path) -> str:
-    """Build the repair message for a semantically invalid staged impl graph."""
-    return (
-        "Your previous `DesignerResult.impl_graph` is invalid for the staged round-0 runner.\n\n"
-        f"Validation error: {error}\n\n"
-        "Revise the existing plan and implementation graph in place and return a full corrected "
-        "`DesignerResult`. Do not restart from scratch. Preserve the current plan and stable "
-        "stage IDs where possible.\n\n"
-        "Hard requirements for every stage:\n"
-        "- `outputs` and `relevant_helpers` must both be non-empty.\n"
-        "- Each `outputs` entry is a `StageOutput` object with a unique `name` and a `scope` "
-        "of `gmem`, `rmem`, `smem`, or `host`. The first 3 are runtime-compared outputs, while `host` is inspection-only.\n"
-        "- `plan_excerpt` must remain concrete.\n\n"
-        "Hard requirements for every async pipeline:\n"
-        "- `type` must be an allowed single-producer/single-consumer pipeline class exported by cutlass.pipeline.\n"
-        "- `producer_warp` and `consumer_warp` must both be single non-empty strings.\n\n"
-        f"The invalid graph was dumped to {_display_path(invalid_path)} for debugging."
-    )
-
-
-async def _run_staged_designer_with_graph_validation(
+async def _run_staged_designer(
     *,
     starting_agent: object,
     initial_input: str,
@@ -823,15 +688,13 @@ async def _run_staged_designer_with_graph_validation(
     solution_dir: Path,
     stage_label: str = "kernel-designer-staged",
     max_rate_limit_retries: int = STAGE_RATE_LIMIT_MAX_RETRIES,
-    max_graph_repairs: int = INVALID_IMPL_GRAPH_MAX_REPAIRS,
 ) -> tuple[object, DesignerResult, float]:
-    """Run the staged designer, retrying rate limits and repairing invalid graphs."""
+    """Run the staged designer with stage-local rate-limit recovery."""
     started_at = time.perf_counter()
     session = SQLiteSession(f"{stage_label}-{time.time_ns()}")
     current_input: str | list[dict[str, Any]] = initial_input
     rate_limit_retries = 0
     cumulative_wait_s = 0.0
-    graph_repair_attempts = 0
 
     while True:
         try:
@@ -871,27 +734,12 @@ async def _run_staged_designer_with_graph_validation(
         if designer_out.status != "success":
             return result, designer_out, time.perf_counter() - started_at
 
-        try:
-            validate_impl_graph(designer_out.impl_graph)
-        except ValueError as exc:
-            graph_repair_attempts += 1
-            invalid_path = round0_invalid_impl_graph_path(solution_dir, graph_repair_attempts)
-            _write_json(invalid_path, designer_out.impl_graph.model_dump(mode="json"))
-
-            if graph_repair_attempts > max_graph_repairs:
-                raise ValueError(
-                    "staged kernel-designer returned an invalid implementation graph after "
-                    f"{graph_repair_attempts} attempts: {exc}. "
-                    f"Last invalid artifact: {_display_path(invalid_path)}"
-                ) from exc
-
-            print(
-                "WARNING: staged kernel-designer returned an invalid implementation graph "
-                f"({exc}). Saved invalid graph to {_display_path(invalid_path)}. "
-                f"Asking for repair {graph_repair_attempts}/{max_graph_repairs}."
+        plan_path = round0_plan_path(solution_dir)
+        if not plan_path.exists():
+            raise ValueError(
+                "staged kernel-designer reported success but did not write "
+                f"{_display_path(plan_path)}."
             )
-            current_input = _build_invalid_impl_graph_feedback(exc, invalid_path)
-            continue
 
         return result, designer_out, time.perf_counter() - started_at
 
@@ -1107,14 +955,6 @@ def _dump_stage_runtime_prompt_artifacts(
 # ---------------------------------------------------------------------------
 
 
-def _next_incomplete_stage_id(order: list[str], completed_stage_ids: list[str]) -> str | None:
-    completed = set(completed_stage_ids)
-    for stage_id in order:
-        if stage_id not in completed:
-            return stage_id
-    return None
-
-
 def _write_round0_artifact(
     solution_dir: Path,
     stage_id: str,
@@ -1140,23 +980,12 @@ def _render_json_section(title: str, payload: Any) -> str:
     return f"## {title}\n```json\n{json.dumps(payload, indent=2)}\n```"
 
 
-def _render_file_diffs_section(file_diffs: dict[str, Any]) -> str:
-    """Render the staged reviewer file-diff context."""
-    current_snapshot = file_diffs["current_kernel_snapshot"]
-    previous_snapshot = file_diffs["previous_kernel_snapshot"] or "(none)"
-    diff_status = file_diffs["diff_status"]
-    unified_diff = str(file_diffs["unified_diff"]).rstrip()
-    return "\n".join(
-        (
-            "## File Diffs",
-            f"Current kernel snapshot: {current_snapshot}",
-            f"Previous kernel snapshot: {previous_snapshot}",
-            f"Diff status: {diff_status}",
-            "```diff",
-            unified_diff,
-            "```",
-        )
-    )
+def _render_markdown_section(title: str, markdown_text: str) -> str:
+    """Render a markdown section that preserves embedded markdown content."""
+    body = markdown_text.strip()
+    if not body:
+        return f"## {title}\n"
+    return f"## {title}\n\n{body}"
 
 
 def _trim_stage_history(
@@ -1179,7 +1008,11 @@ def _trim_review_history(
 ) -> list[dict[str, Any]]:
     """Project prior reviews down to the fields the reviewer needs."""
     return [
-        {"action": record.action, "message": record.message}
+        {
+            "action": record.action,
+            "next_stage": record.next_stage,
+            "message": record.message,
+        }
         for record in history
     ]
 
@@ -1188,7 +1021,11 @@ def _trim_last_review(review: StageReviewResult | None) -> dict[str, Any] | None
     """Project a single review into the payload form the fixer/designer consume."""
     if review is None:
         return None
-    return {"action": review.action, "message": review.message}
+    return {
+        "action": review.action,
+        "next_stage": review.next_stage,
+        "message": review.message,
+    }
 
 
 def _build_designer_revision_input(review: StageReviewResult) -> str:
@@ -1199,7 +1036,7 @@ def _build_designer_revision_input(review: StageReviewResult) -> str:
         "The staged round-0 reviewer flagged the current design as unworkable and "
         "requested a revised plan. Produce a fresh `DesignerResult` that addresses "
         "the reviewer's critique below. Rewrite solution/dsa_attention/kernel_0_plan.md "
-        "in place and return a compact staged implementation graph for kernel_0.py.\n\n"
+        "in place and return a corrected design result.\n\n"
         "## Trimmed Last Reviewer Feedback\n"
         f"```json\n{feedback_json}\n```"
     )
@@ -1211,17 +1048,13 @@ def _apply_stage_coder_prompt_sections(
 ) -> None:
     """Populate transient dynamic prompt sections for the stage coder."""
     ctx.round0_stage_coder_prompt_sections = {
-        "current_stage": _render_json_section(
-            "Current Stage Specifications",
-            payload["current_stage"],
+        "assigned_stage": _render_markdown_section(
+            "Assigned Stage",
+            f"`{payload['assigned_stage']}`",
         ),
-        "prerequisite_stages": _render_json_section(
-            "Pre-requisite Stage Specifications",
-            payload["prerequisite_stages"],
-        ),
-        "attempt_metadata": _render_json_section(
-            "Attempt Metadata",
-            {"is_final_stage": payload["is_final_stage"]},
+        "full_plan": _render_markdown_section(
+            "Full kernel_0_plan.md",
+            payload["full_plan"],
         ),
     }
 
@@ -1232,21 +1065,17 @@ def _apply_stage_fixer_prompt_sections(
 ) -> None:
     """Populate transient dynamic prompt sections for the stage fixer."""
     ctx.round0_stage_fixer_prompt_sections = {
-        "current_stage": _render_json_section(
-            "Current Stage Specifications",
-            payload["current_stage"],
+        "stage_to_fix": _render_markdown_section(
+            "Stage To Fix",
+            f"`{payload['stage_to_fix']}`",
         ),
-        "prerequisite_stages": _render_json_section(
-            "Pre-requisite Stage Specifications",
-            payload["prerequisite_stages"],
+        "full_plan": _render_markdown_section(
+            "Full kernel_0_plan.md",
+            payload["full_plan"],
         ),
         "last_review": _render_json_section(
             "Last Reviewer Feedback",
             payload["last_review"],
-        ),
-        "attempt_metadata": _render_json_section(
-            "Attempt Metadata",
-            {"is_final_stage": payload["is_final_stage"]},
         ),
     }
 
@@ -1257,11 +1086,14 @@ def _apply_stage_reviewer_prompt_sections(
 ) -> None:
     """Populate transient dynamic prompt sections for the stage reviewer."""
     ctx.round0_stage_reviewer_prompt_sections = {
-        "current_stage": _render_json_section(
-            "Current Stage Specifications",
-            payload["current_stage"],
+        "stage_under_review": _render_markdown_section(
+            "Stage Under Review",
+            f"`{payload['stage_under_review']}`",
         ),
-        "file_diffs": _render_file_diffs_section(payload["file_diffs"]),
+        "full_plan": _render_markdown_section(
+            "Full kernel_0_plan.md",
+            payload["full_plan"],
+        ),
         "stage_results_history": _render_json_section(
             "Trimmed Round0StageResult history",
             payload["stage_results_history"],
@@ -1270,46 +1102,34 @@ def _apply_stage_reviewer_prompt_sections(
             "Trimmed StageReviewResult history",
             payload["review_history"],
         ),
-        "attempt_metadata": _render_json_section(
-            "Attempt Metadata",
-            {"is_final_stage": payload["is_final_stage"]},
+        "recovery_context": _render_markdown_section(
+            "Recovery Task",
+            payload["recovery_context"],
         ),
     }
 
 
 def _build_stage_coder_payload(
     *,
-    graph: ImplementationGraph,
+    plan_text: str,
     stage_id: str,
-    is_final_stage: bool,
 ) -> dict[str, Any]:
-    stage = get_stage_spec(graph, stage_id)
     return {
-        "current_stage": stage.model_dump(mode="json"),
-        "prerequisite_stages": [
-            get_stage_spec(graph, prerequisite_stage_id).model_dump(mode="json")
-            for prerequisite_stage_id in stage.prerequisites
-        ],
-        "is_final_stage": is_final_stage,
+        "assigned_stage": stage_id,
+        "full_plan": plan_text,
     }
 
 
 def _build_stage_fixer_payload(
     *,
-    graph: ImplementationGraph,
+    plan_text: str,
     stage_id: str,
-    is_final_stage: bool,
     last_review: StageReviewResult,
 ) -> dict[str, Any]:
-    stage = get_stage_spec(graph, stage_id)
     return {
-        "current_stage": stage.model_dump(mode="json"),
-        "prerequisite_stages": [
-            get_stage_spec(graph, prerequisite_stage_id).model_dump(mode="json")
-            for prerequisite_stage_id in stage.prerequisites
-        ],
+        "stage_to_fix": stage_id,
+        "full_plan": plan_text,
         "last_review": _trim_last_review(last_review),
-        "is_final_stage": is_final_stage,
     }
 
 
@@ -1340,35 +1160,91 @@ def _build_stage_review_payload(
     *,
     ctx: SharedContext,
     solution_dir: Path,
-    graph: ImplementationGraph,
+    plan_text: str,
     stage_result: Round0StageResult,
     stage_attempt: int,
-    is_final_stage: bool,
 ) -> dict[str, Any]:
-    stage = get_stage_spec(graph, stage_result.stage_id)
+    _ensure_round0_kernel_snapshot(
+        solution_dir,
+        stage_id=stage_result.stage_id,
+        attempt=stage_attempt,
+    )
     return {
-        "current_stage": stage.model_dump(mode="json"),
+        "stage_under_review": stage_result.stage_id,
+        "full_plan": plan_text,
         "stage_results_history": _trim_stage_history(ctx.round0_stage_history),
         "review_history": _trim_review_history(ctx.round0_review_history),
-        "file_diffs": _build_round0_kernel_diff_payload(
-            ctx=ctx,
-            solution_dir=solution_dir,
-            stage_id=stage_result.stage_id,
-            attempt=stage_attempt,
-        ),
-        "is_final_stage": is_final_stage,
+        "recovery_context": "",
     }
+
+
+def _build_stage_recovery_payload(
+    *,
+    ctx: SharedContext,
+    plan_text: str,
+) -> dict[str, Any]:
+    return {
+        "stage_under_review": "Recovery",
+        "full_plan": plan_text,
+        "stage_results_history": _trim_stage_history(ctx.round0_stage_history),
+        "review_history": _trim_review_history(ctx.round0_review_history),
+        "recovery_context": (
+            "There is no fresh stage result to review. Inspect the current `kernel_0.py`, "
+            "the full plan, and the trimmed histories, then choose the stage the next "
+            "coder pass should execute. Return `action=\"continue_next_stage\"` and set "
+            "`next_stage` to that concrete stage ID. Do not return null in recovery mode."
+        ),
+    }
+
+
+async def _recover_round0_next_stage_with_reviewer(
+    *,
+    ctx: SharedContext,
+    plan_text: str,
+    stage_reviewer: object,
+    reviewer_max_turns: int,
+    reviewer_verbose: bool,
+    prompt_dump: PromptDumpConfig | None,
+) -> StageReviewResult:
+    """Ask the reviewer to infer the next coder stage from the current kernel and histories."""
+    recovery_payload = _build_stage_recovery_payload(ctx=ctx, plan_text=plan_text)
+    _apply_stage_reviewer_prompt_sections(ctx, recovery_payload)
+    _dump_stage_runtime_prompt_artifacts(
+        prompt_dump=prompt_dump,
+        agent=stage_reviewer,
+        ctx=ctx,
+        stage_id="recovery",
+        attempt=0,
+        role_name="reviewer",
+        payload=recovery_payload,
+    )
+    ctx.current_agent_role = "reviewer"
+    recovery_result_raw, _ = await _run_agent(
+        stage_label="kernel-stage-reviewer-recovery",
+        starting_agent=stage_reviewer,
+        input=(
+            "Recover staged round-0 progress from the current kernel implementation and "
+            "choose the next stage the coder should execute."
+        ),
+        context=ctx,
+        max_turns=reviewer_max_turns,
+        verbose=reviewer_verbose,
+    )
+    recovery_out = require_structured_output(recovery_result_raw, StageReviewResult)
+    if recovery_out.action != "continue_next_stage" or recovery_out.next_stage is None:
+        raise ValueError(
+            "stage recovery reviewer must return action='continue_next_stage' with a "
+            "concrete next_stage."
+        )
+    return recovery_out
 
 
 def _final_round0_result(
     *,
     solution_dir: Path,
     stage_result: Round0StageResult,
-    impl_graph_file: str,
 ) -> CoderResult:
     generated = [str((solution_dir / "kernel_0.py").relative_to(PROJECT_ROOT))]
-    if impl_graph_file:
-        generated.append(impl_graph_file)
     return CoderResult(
         generated=generated,
         correctness_verified=stage_result.final_correctness_verified,
@@ -1398,22 +1274,17 @@ async def _run_round0_staged(
     round0_dir = round0_artifacts_dir(solution_dir)
     round0_dir.mkdir(parents=True, exist_ok=True)
     plan_path = round0_plan_path(solution_dir)
-    if ctx.round0_impl_graph_file:
-        impl_graph_file = Path(ctx.round0_impl_graph_file)
-        if not impl_graph_file.is_absolute():
-            impl_graph_file = PROJECT_ROOT / impl_graph_file
-    else:
-        impl_graph_file = round0_impl_graph_path(solution_dir)
-    graph: ImplementationGraph
 
-    if resume and ctx.round0_impl_graph_file:
-        if not impl_graph_file.exists():
+    plan_text: str
+
+    if resume:
+        if not plan_path.exists():
             print(
                 "FATAL: --resume was set but "
-                f"{impl_graph_file.relative_to(PROJECT_ROOT)} does not exist."
+                f"{plan_path.relative_to(PROJECT_ROOT)} does not exist."
             )
             sys.exit(1)
-        graph = load_impl_graph(impl_graph_file)
+        plan_text = plan_path.read_text(encoding="utf-8")
     elif skip_designer:
         if not plan_path.exists():
             print(
@@ -1422,34 +1293,25 @@ async def _run_round0_staged(
                 "Run kernel-designer first, or drop --skip-designer."
             )
             sys.exit(1)
-        if not impl_graph_file.exists():
-            print(
-                "FATAL: --skip-designer was set but "
-                f"{impl_graph_file.relative_to(PROJECT_ROOT)} does not exist. "
-                "Run staged kernel-designer first, or drop --skip-designer."
-            )
-            sys.exit(1)
-        graph = load_impl_graph(impl_graph_file)
-        ctx.round0_impl_graph_file = str(impl_graph_file.relative_to(PROJECT_ROOT))
+        plan_text = plan_path.read_text(encoding="utf-8")
         print("=" * 60)
-        print("ROUND 0a: SKIPPED — reusing existing staged plan + graph")
+        print("ROUND 0a: SKIPPED — reusing existing staged plan")
         print("=" * 60)
-        print(f"  Design plan: {(solution_dir / 'kernel_0_plan.md').relative_to(PROJECT_ROOT)}")
-        print(f"  Impl graph: {impl_graph_file.relative_to(PROJECT_ROOT)}")
+        print(f"  Design plan: {plan_path.relative_to(PROJECT_ROOT)}")
     else:
         print("=" * 60)
-        print("ROUND 0a: Design kernel_0_plan.md + implementation graph")
+        print("ROUND 0a: Design kernel_0_plan.md")
         print("=" * 60)
         ctx.current_agent_role = "designer"
         try:
             designer_result, designer_out, designer_elapsed_s = (
-                await _run_staged_designer_with_graph_validation(
+                await _run_staged_designer(
                     stage_label="kernel-designer-staged",
                     starting_agent=designer,
                     initial_input=(
-                    "Design the staged round-0 kernel architecture. Read the CuTeDSL references and "
-                    "Blackwell kernel examples, then write solution/dsa_attention/kernel_0_plan.md "
-                    "and return a compact staged implementation graph for kernel_0.py."
+                        "Design the staged round-0 kernel architecture. Read the CuTeDSL "
+                        "references and Blackwell kernel examples, then write "
+                        "solution/dsa_attention/kernel_0_plan.md."
                     ),
                     context=ctx,
                     max_turns=designer_max_turns,
@@ -1476,26 +1338,19 @@ async def _run_round0_staged(
                 print(f"  Design plan: {designer_out.plan_file}")
             sys.exit(1)
 
-        validate_impl_graph(designer_out.impl_graph)
-        _write_json(impl_graph_file, designer_out.impl_graph.model_dump(mode="json"))
-        graph = designer_out.impl_graph
-        ctx.round0_impl_graph_file = str(impl_graph_file.relative_to(PROJECT_ROOT))
+        plan_text = plan_path.read_text(encoding="utf-8")
         print(
             f"  {format_run_telemetry('kernel-designer', designer_elapsed_s, designer_result)}"
         )
         print(f"  Design plan: {designer_out.plan_file}")
-        print(f"  Impl graph: {impl_graph_file.relative_to(PROJECT_ROOT)}")
 
-    validate_impl_graph(graph)
     save_state(ctx, state_path)
 
     while True:
-        order = iter_stage_order(graph)
-        progress = _derive_round0_progress(ctx, graph)
+        progress = _derive_round0_progress(ctx)
 
         if progress.complete:
-            final_stage_id = order[-1]
-            final_stage_result = progress.latest_stage_results.get(final_stage_id)
+            final_stage_result = progress.latest_stage_result
             if final_stage_result is None or not final_stage_result.final_correctness_verified:
                 print(
                     "FATAL: staged round-0 reached completion without a final correctness result."
@@ -1506,15 +1361,42 @@ async def _run_round0_staged(
             return _final_round0_result(
                 solution_dir=solution_dir,
                 stage_result=final_stage_result,
-                impl_graph_file=ctx.round0_impl_graph_file,
             )
 
         current_stage_id = progress.next_stage_id
+        recovered_stage_id = None
         if current_stage_id is None:
-            print("FATAL: staged round-0 has no remaining stage to execute.")
-            sys.exit(1)
+            if resume and not progress.pending_review:
+                try:
+                    recovery_review = await _recover_round0_next_stage_with_reviewer(
+                        ctx=ctx,
+                        plan_text=plan_text,
+                        stage_reviewer=stage_reviewer,
+                        reviewer_max_turns=designer_max_turns,
+                        reviewer_verbose=designer_verbose,
+                        prompt_dump=prompt_dump,
+                    )
+                except MaxTurnsExceeded:
+                    print("FATAL: staged kernel-stage-reviewer recovery hit max turns.")
+                    sys.exit(1)
+                except Exception as exc:
+                    if _is_rate_limit_error(exc):
+                        print(
+                            "FATAL: staged kernel-stage-reviewer recovery exhausted "
+                            f"stage-local rate-limit retries while resuming saved context: {exc}"
+                        )
+                    else:
+                        print(
+                            "FATAL: staged kernel-stage-reviewer recovery returned an invalid "
+                            f"structured result: {exc}"
+                        )
+                    sys.exit(1)
+                current_stage_id = recovery_review.next_stage
+                recovered_stage_id = current_stage_id
+            else:
+                print("FATAL: staged round-0 has no remaining stage to execute.")
+                sys.exit(1)
 
-        is_final_stage = current_stage_id == order[-1]
         stage_out: Round0StageResult
         stage_attempt = progress.attempt_counts.get(current_stage_id, 0)
 
@@ -1542,9 +1424,8 @@ async def _run_round0_staged(
             if executor_role_name == "coder":
                 executor_agent = stage_coder
                 executor_payload = _build_stage_coder_payload(
-                    graph=graph,
+                    plan_text=plan_text,
                     stage_id=current_stage_id,
-                    is_final_stage=is_final_stage,
                 )
                 _apply_stage_coder_prompt_sections(ctx, executor_payload)
             else:
@@ -1558,9 +1439,8 @@ async def _run_round0_staged(
                     sys.exit(1)
                 executor_agent = stage_fixer
                 executor_payload = _build_stage_fixer_payload(
-                    graph=graph,
+                    plan_text=plan_text,
                     stage_id=current_stage_id,
-                    is_final_stage=is_final_stage,
                     last_review=retry_review,
                 )
                 _apply_stage_fixer_prompt_sections(ctx, executor_payload)
@@ -1576,14 +1456,17 @@ async def _run_round0_staged(
             )
         else:
             stage_attempt += 1
-            executor_role_name = _round0_stage_executor_role_name(stage_attempt)
+            executor_role_name = (
+                "coder"
+                if recovered_stage_id == current_stage_id
+                else _round0_stage_executor_role_name(stage_attempt)
+            )
             executor_display_name = f"kernel-stage-{executor_role_name}"
             if executor_role_name == "coder":
                 executor_agent = stage_coder
                 executor_payload = _build_stage_coder_payload(
-                    graph=graph,
+                    plan_text=plan_text,
                     stage_id=current_stage_id,
-                    is_final_stage=is_final_stage,
                 )
                 _apply_stage_coder_prompt_sections(ctx, executor_payload)
             else:
@@ -1597,9 +1480,8 @@ async def _run_round0_staged(
                     sys.exit(1)
                 executor_agent = stage_fixer
                 executor_payload = _build_stage_fixer_payload(
-                    graph=graph,
+                    plan_text=plan_text,
                     stage_id=current_stage_id,
-                    is_final_stage=is_final_stage,
                     last_review=retry_review,
                 )
                 _apply_stage_fixer_prompt_sections(ctx, executor_payload)
@@ -1665,16 +1547,13 @@ async def _run_round0_staged(
             print(f"  {stage_out.message}")
             save_state(ctx, state_path)
 
-            progress = _derive_round0_progress(ctx, graph)
-
         ctx.current_agent_role = "reviewer"
         review_payload = _build_stage_review_payload(
             ctx=ctx,
             solution_dir=solution_dir,
-            graph=graph,
+            plan_text=plan_text,
             stage_result=stage_out,
             stage_attempt=stage_attempt,
-            is_final_stage=is_final_stage,
         )
         _apply_stage_reviewer_prompt_sections(ctx, review_payload)
         _dump_stage_runtime_prompt_artifacts(
@@ -1697,8 +1576,12 @@ async def _run_round0_staged(
                 context=ctx,
                 max_turns=designer_max_turns,
                 verbose=designer_verbose,
-            )
+                )
             review_out = require_structured_output(review_result_raw, StageReviewResult)
+            validate_stage_review_result(
+                stage_result=stage_out,
+                review=review_out,
+            )
         except MaxTurnsExceeded:
             print(f"FATAL: staged kernel-stage-reviewer hit max turns on stage {current_stage_id}.")
             sys.exit(1)
@@ -1725,26 +1608,11 @@ async def _run_round0_staged(
         )
         print(f"  Stage review: {review_path.relative_to(PROJECT_ROOT)}")
         print(f"  Review action: {review_out.action}")
+        print(f"  Review next stage: {review_out.next_stage}")
         print(f"  {review_out.message}")
 
         if review_out.action == "continue_next_stage":
-            if stage_out.status != "success":
-                print(
-                    f"FATAL: reviewer approved stage {current_stage_id} even though coder "
-                    f"returned status={stage_out.status}."
-                )
-                sys.exit(1)
-            if not stage_out.stage_output_verified:
-                print(
-                    f"FATAL: reviewer approved stage {current_stage_id} without passing stage output validation."
-                )
-                sys.exit(1)
-            if is_final_stage and not stage_out.final_correctness_verified:
-                print(
-                    "FATAL: staged round-0 reached the final stage without passing "
-                    "the final correctness gate."
-                )
-                sys.exit(1)
+            pass
         elif review_out.action == "retry_same_stage":
             pass
         elif review_out.action == "revise_design_then_retry":
@@ -1752,7 +1620,7 @@ async def _run_round0_staged(
             revision_input = _build_designer_revision_input(review_out)
             try:
                 designer_result, designer_out, designer_elapsed_s = (
-                    await _run_staged_designer_with_graph_validation(
+                    await _run_staged_designer(
                         stage_label="kernel-designer-staged-revise",
                         starting_agent=designer,
                         initial_input=revision_input,
@@ -1784,17 +1652,13 @@ async def _run_round0_staged(
                     print(f"  Design plan: {designer_out.plan_file}")
                 sys.exit(1)
 
-            validate_impl_graph(designer_out.impl_graph)
-            _write_json(impl_graph_file, designer_out.impl_graph.model_dump(mode="json"))
-            graph = designer_out.impl_graph
-            ctx.round0_impl_graph_file = str(impl_graph_file.relative_to(PROJECT_ROOT))
+            plan_text = plan_path.read_text(encoding="utf-8")
             ctx.round0_stage_history.clear()
             ctx.round0_review_history.clear()
             print(
                 f"  {format_run_telemetry('kernel-designer', designer_elapsed_s, designer_result)}"
             )
             print(f"  Revised design plan: {designer_out.plan_file}")
-            print(f"  Revised impl graph: {impl_graph_file.relative_to(PROJECT_ROOT)}")
             print("  Round-0 stage/review histories cleared for fresh restart.")
         else:
             print(f"FATAL: unknown review action {review_out.action!r}")
@@ -1917,23 +1781,26 @@ async def run_loop(
     # Resume handling
     start_round = 0
     if resume and state_path.exists():
-        last_round = load_state(ctx, state_path)
+        try:
+            last_round = load_state(ctx, state_path)
+        except ValueError as exc:
+            print(f"FATAL: {exc}")
+            sys.exit(1)
         round0_mode = ctx.round0_mode
         if round0_mode == "staged" and last_round == 0:
-            graph_path = None
-            if ctx.round0_impl_graph_file:
-                graph_path = Path(ctx.round0_impl_graph_file)
-                if not graph_path.is_absolute():
-                    graph_path = PROJECT_ROOT / graph_path
-
-            if graph_path is not None and graph_path.exists():
-                progress = _derive_round0_progress(ctx, load_impl_graph(graph_path))
+            plan_path = round0_plan_path(solution_dir)
+            if plan_path.exists():
+                try:
+                    progress = _derive_round0_progress(ctx)
+                except ValueError as exc:
+                    print(f"FATAL: resume found invalid staged round-0 state: {exc}")
+                    sys.exit(1)
                 if progress.complete:
                     start_round = 1
                     print(f"Resuming from round {start_round}")
                 else:
                     start_round = 0
-                    current_stage = progress.next_stage_id or "(pending stage)"
+                    current_stage = progress.next_stage_id or "(reviewer recovery)"
                     if progress.pending_review:
                         print(f"Resuming staged round 0 at review for {current_stage}")
                     else:
@@ -1947,7 +1814,6 @@ async def run_loop(
     else:
         ctx.current_round = 0
         ctx.round0_mode = round0_mode
-        ctx.round0_impl_graph_file = ""
         ctx.round0_stage_history = []
         ctx.round0_review_history = []
 
@@ -2323,8 +2189,8 @@ def main():
         "--skip-designer", action="store_true",
         help=(
             "Skip round 0a (kernel-designer). In staged mode this reuses both "
-            "solution/dsa_attention/kernel_0_plan.md and the persisted round0 "
-            "implementation graph; in legacy mode it reuses only the plan. "
+            "solution/dsa_attention/kernel_0_plan.md and its parsed markdown stage schema; "
+            "in legacy mode it reuses only the plan. "
             "Ignored when --resume successfully loads saved state."
         ),
     )

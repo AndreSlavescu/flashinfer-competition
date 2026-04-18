@@ -23,11 +23,11 @@ NEW_STAGE_CODER_BODY = """\
 You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programming.
 
 ## Workflow
-1. Read through the current stage specifications and the pre-requisite stage specifications
-2. Read through the pre-requisite stage implementations in kernel_0.py to find areas the current stage and validations should extend upon
-3. Find kernel snippets that use the CuTeDSL abstractions and APIs under 'relevant_helpers'. Plan out how to adapt them for the current stage.
-4. Implement the kernel stage in CuTeDSL, including all pipeline, handoff, barrier, and buffer logic with pre-requisite stages
-5. Add stage validation prints to each field of `StageSpec.outputs`.
+1. Read the full kernel design plan, focusing on the assigned stage's responsibilities, dependencies, validation outputs, and helper APIs 
+2. Read the existing implementation in `kernel_0.py` to identify the pre-requisite code paths this stage should extend.
+3. Find kernel snippets that use the CuTeDSL abstractions and APIs under the `Key CuTeDSL helpers` section. Plan out how to adapt them for this stage.
+4. Implement the assigned kernel stage in CuTeDSL, including all required pipeline, handoff, barrier, and buffer logic with pre-requisite stages
+5. Add stage validation prints to each field listed under the `Validation outputs` section.
    - For each non-`host` output, emit one matching `[PyTorch Val] <name>: BEGIN/END` block and one matching `[CuTe Val] <name>: BEGIN/END` block.
    - Numeric validation block bodies must be comma-separated numeric values. Signed ints, decimals, and scientific notation are all allowed.
    - For each `host` output, emit one `[CuTe Host] <name>: BEGIN/END` block.
@@ -38,8 +38,8 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
 - Run tests only on Modal B200 via `run_stage_validation` / `run_synthetic_check` / `run_correctness_check`
 - Implement a JIT compile cache if it doesn't exist yet
 - `run_stage_validation` always executes `kernel_0.py::prefix_validation_harness` in dedicated single-case stage-validation mode and appends a `=== Stage Validation Summary ===` block with per-field PASS/FAIL to stdout. Raw logs remain in `last_shell_dump.txt`.
-- Every `StageSpec.outputs` entry with scope `gmem`/`rmem`/`smem` must produce exactly one `[PyTorch Val] <name>: BEGIN/END` block AND one `[CuTe Val] <name>: BEGIN/END` block with matching `<name>`, and both numeric bodies must be comma-separated values. Missing-pair fields fail validation.
-- Every `StageSpec.outputs` entry with scope `host` must produce exactly one `[CuTe Host] <name>: BEGIN/END` block. Host blocks surface as `[INFO]` rows in the summary and do not gate PASS/FAIL.
+- Every assigned-stage validation output with scope `gmem`/`rmem`/`smem` must produce exactly one `[PyTorch Val] <name>: BEGIN/END` block AND one `[CuTe Val] <name>: BEGIN/END` block with matching `<name>`, and both numeric bodies must be comma-separated values. Missing-pair fields fail validation.
+- Every assigned-stage validation output with scope `host` must produce exactly one `[CuTe Host] <name>: BEGIN/END` block. Host blocks surface as `[INFO]` rows in the summary and do not gate PASS/FAIL.
 
 ## Stopping rule
 - After implementing the stage and prefix validations, call `run_stage_validation` EXACTLY ONCE.
@@ -50,8 +50,8 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
   - `"validation_failed"` if the harness or correctness check ran but disagreed with the reference
   - `"success"` if every mandated check passed
 
-{..## Current Stage Specifications..}
-{..## Pre-requisite Stage Specifications..}
+{..## Assigned Stage..}
+{..## Full kernel_0_plan.md..}
 """
 
 STAGE_CODER_OUTPUT_REMINDER = """\
@@ -66,19 +66,12 @@ def _compose_stage_coder_body(ctx: SharedContext) -> str:
     body = render_prompt_template(
         NEW_STAGE_CODER_BODY.strip(),
         {
-            "{..## Current Stage Specifications..}": prompt_sections.get("current_stage", ""),
-            "{..## Pre-requisite Stage Specifications..}": prompt_sections.get(
-                "prerequisite_stages",
-                "",
-            ),
+            "{..## Assigned Stage..}": prompt_sections.get("assigned_stage", ""),
+            "{..## Full kernel_0_plan.md..}": prompt_sections.get("full_plan", ""),
         },
     )
 
-    parts = [body]
-    attempt_metadata = prompt_sections.get("attempt_metadata", "").strip()
-    if attempt_metadata:
-        parts.append(attempt_metadata)
-    parts.append(STAGE_CODER_OUTPUT_REMINDER.strip())
+    parts = [body, STAGE_CODER_OUTPUT_REMINDER.strip()]
     return "\n\n".join(parts) + "\n"
 
 

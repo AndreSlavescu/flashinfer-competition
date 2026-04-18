@@ -12,94 +12,113 @@ from agents import AgentOutputSchema
 
 import main
 from kernel_agents.context import (
-    AsyncPipelineSpec,
     DesignerResult,
-    ImplementationGraph,
     PlannerResult,
     Round0StageResult,
     RoundRecord,
     SharedContext,
-    StageOutput,
     StageReviewResult,
-    StageSpec,
 )
 from kernel_agents.kernel_stage_coder import make_round0_stage_coder
 from kernel_agents.kernel_stage_fixer import make_round0_stage_fixer
 from kernel_agents.kernel_stage_reviewer import make_round0_stage_reviewer
 from kernel_agents.scoping import AGENT_SCOPES
-from tests.support import extract_markdown_section
+from tests.support import extract_markdown_section, write_round0_stage_plan_fixture
 
 
-def _sample_impl_graph() -> ImplementationGraph:
-    return ImplementationGraph(
-        async_pipelines=[
-            AsyncPipelineSpec(
-                pipeline_id="P0",
-                type="PipelineTmaUmma",
-                producer_warp="warp0",
-                consumer_warp="warp1",
-                num_stages=1,
-                payload="Q tile",
-            )
-        ],
-        stages=[
-            StageSpec(
-                stage_id="warp0::load_q",
-                prerequisites=[],
-                outputs=[StageOutput(name="q_tile_debug", scope="gmem")],
-                relevant_helpers=["cute.make_tensor", "blackwell load example"],
-                plan_excerpt="## Load Q\nload q details",
-            ),
-            StageSpec(
-                stage_id="warp1::qk_mma",
-                prerequisites=["warp0::load_q"],
-                outputs=[StageOutput(name="score_tile_debug", scope="rmem")],
-                relevant_helpers=["tcgen05.mma", "pipeline example"],
-                plan_excerpt="## QK Mainloop\nqk details",
-            ),
-        ],
-    )
+def _sample_stage_plan() -> str:
+    return """# Kernel 0 Round-0 Plan
+
+## 1. Problem specification
+
+Placeholder.
+
+## 6. Round-0 implementation stages
+
+### S0 — Load Q
+
+Load query tiles and expose a debug output.
+
+Depends on: none
+
+Validation outputs:
+- `q_tile_debug` [gmem]
+
+Key CuTeDSL helpers:
+- `cute.make_tensor`
+- `cute.copy`
+
+### S1 — QK Mainloop
+
+Consume the staged query tile and produce a score tile.
+
+Depends on: S0
+
+Validation outputs:
+- `score_tile_debug` [rmem]
+
+Key CuTeDSL helpers:
+- `tcgen05.mma`
+- `pipeline.PipelineUmmaAsync.create`
+"""
 
 
-def _single_stage_impl_graph() -> ImplementationGraph:
-    return ImplementationGraph(
-        async_pipelines=[],
-        stages=[
-            StageSpec(
-                stage_id="warp0::load_q",
-                prerequisites=[],
-                outputs=[StageOutput(name="q_tile_debug", scope="gmem")],
-                relevant_helpers=["cute.make_tensor", "blackwell load example"],
-                plan_excerpt="## Load Q\nload q details",
-            ),
-        ],
-    )
+def _single_stage_plan() -> str:
+    return """# Kernel 0 Round-0 Plan
+
+## 6. Round-0 implementation stages
+
+### S0 — Final Stage
+
+Produce the final output.
+
+Depends on: none
+
+Validation outputs:
+- `output` [gmem]
+
+Key CuTeDSL helpers:
+- `cute.copy`
+"""
 
 
 def _stage_result(
     stage_id: str,
     *,
+    stage_output_verified: bool = True,
     final_correctness_verified: bool = False,
+    status: str = "success",
 ) -> Round0StageResult:
     return Round0StageResult(
         stage_id=stage_id,
         stage_output_validation_report="stage output ok",
-        stage_output_verified=True,
+        stage_output_verified=stage_output_verified,
         final_correctness_verified=final_correctness_verified,
         correctness_check_report="correct",
-        status="success",
+        status=status,  # type: ignore[arg-type]
         message=f"{stage_id} ok",
     )
 
 
-def _review(stage_id: str, action: str) -> StageReviewResult:
-    return StageReviewResult(stage_id=stage_id, action=action, message=action)
+def _review(
+    stage_id: str,
+    action: str,
+    *,
+    next_stage: str | None,
+    message: str | None = None,
+) -> StageReviewResult:
+    return StageReviewResult(
+        stage_id=stage_id,
+        action=action,  # type: ignore[arg-type]
+        next_stage=next_stage,
+        message=message or action,
+    )
 
 
 @pytest.mark.parametrize(
     ("result_type", "expected_fields"),
     [
-        (DesignerResult, {"plan_file", "impl_graph", "status"}),
+        (DesignerResult, {"plan_file", "status"}),
         (
             Round0StageResult,
             {
@@ -112,7 +131,7 @@ def _review(stage_id: str, action: str) -> StageReviewResult:
                 "message",
             },
         ),
-        (StageReviewResult, {"stage_id", "action", "message"}),
+        (StageReviewResult, {"stage_id", "action", "next_stage", "message"}),
         (
             PlannerResult,
             {
@@ -157,51 +176,17 @@ class _FakeTypedRunResult:
         return self._typed_output
 
 
-def test_stage_spec_requires_stage_output_objects() -> None:
-    import pydantic
+def test_stage_review_result_requires_action_specific_next_stage() -> None:
+    with pytest.raises(Exception, match="retry_same_stage requires next_stage == stage_id"):
+        _review("S0", "retry_same_stage", next_stage="S1")
 
-    with pytest.raises(pydantic.ValidationError):
-        StageSpec(
-            stage_id="warp0::load_q",
-            prerequisites=[],
-            outputs=["stringy output"],  # type: ignore[list-item]
-            relevant_helpers=["cute.make_tensor"],
-            plan_excerpt="## Load Q\nload q details",
-        )
-
-    with pytest.raises(pydantic.ValidationError, match="must have unique names"):
-        StageSpec(
-            stage_id="warp0::load_q",
-            prerequisites=[],
-            outputs=[
-                StageOutput(name="dup", scope="gmem"),
-                StageOutput(name="dup", scope="rmem"),
-            ],
-            relevant_helpers=["cute.make_tensor"],
-            plan_excerpt="## Load Q\nload q details",
-        )
-
-    with pytest.raises(pydantic.ValidationError):
-        StageOutput(name="x", scope="hbm")  # type: ignore[arg-type]
-
-    spec = StageSpec(
-        stage_id="warp0::load_q",
-        prerequisites=[],
-        outputs=[
-            StageOutput(name="q_tile", scope="gmem"),
-            StageOutput(name="q_tile_frag", scope="rmem"),
-        ],
-        relevant_helpers=["cute.make_tensor"],
-        plan_excerpt="## Load Q\nload q details",
-    )
-    assert spec.outputs[0].scope == "gmem"
-    assert spec.outputs[1].scope == "rmem"
+    with pytest.raises(Exception, match="revise_design_then_retry requires next_stage == null"):
+        _review("S0", "revise_design_then_retry", next_stage="S0")
 
 
 def test_require_structured_output_uses_sdk_typed_accessor() -> None:
     typed_output = DesignerResult(
         plan_file="solution/dsa_attention/kernel_0_plan.md",
-        impl_graph=_single_stage_impl_graph(),
         status="success",
     )
     result = _FakeTypedRunResult(typed_output)
@@ -239,12 +224,12 @@ def test_state_round_trip_preserves_round0_fields(tmp_path: Path) -> None:
         )
     ]
     ctx.round0_mode = "staged"
-    ctx.round0_impl_graph_file = "solution/dsa_attention/round0/kernel_0_impl_graph.json"
-    ctx.round0_stage_history = [_stage_result("warp0::load_q")]
-    ctx.round0_review_history = [_review("warp0::load_q", "continue_next_stage")]
+    ctx.round0_stage_history = [_stage_result("S0")]
+    ctx.round0_review_history = [_review("S0", "continue_next_stage", next_stage="S1")]
 
     state_path = tmp_path / "loop_state.json"
     main.save_state(ctx, state_path)
+    saved_state = json.loads(state_path.read_text(encoding="utf-8"))
 
     restored = SharedContext(
         project_root=str(tmp_path),
@@ -254,14 +239,12 @@ def test_state_round_trip_preserves_round0_fields(tmp_path: Path) -> None:
     last_round = main.load_state(restored, state_path)
 
     assert last_round == 0
-    assert restored.round0_impl_graph_file == ctx.round0_impl_graph_file
-    assert [item.stage_id for item in restored.round0_stage_history] == ["warp0::load_q"]
-    assert [item.action for item in restored.round0_review_history] == [
-        "continue_next_stage"
-    ]
+    assert "round0_driver_schema_version" not in saved_state
+    assert [item.stage_id for item in restored.round0_stage_history] == ["S0"]
+    assert [item.next_stage for item in restored.round0_review_history] == ["S1"]
 
 
-def test_load_state_tolerates_missing_round0_fields(tmp_path: Path) -> None:
+def test_load_state_requires_current_round0_fields(tmp_path: Path) -> None:
     state_path = tmp_path / "loop_state.json"
     state_path.write_text(
         json.dumps(
@@ -272,6 +255,8 @@ def test_load_state_tolerates_missing_round0_fields(tmp_path: Path) -> None:
                 "model_name": "gpt-5.4",
                 "quality_profile": "public_codex",
                 "codex_worker_mode": "off",
+                "codex_thread_id_coder_engineer": None,
+                "codex_thread_id_optimizer_engineer": None,
                 "history": [],
             }
         ),
@@ -283,19 +268,280 @@ def test_load_state_tolerates_missing_round0_fields(tmp_path: Path) -> None:
         solution_dir="solution/dsa_attention",
         notes_dir="notes/dsa_attention",
     )
-    last_round = main.load_state(restored, state_path)
-
-    assert last_round == 2
-    assert restored.round0_impl_graph_file == ""
-    assert restored.round0_stage_history == []
-    assert restored.round0_review_history == []
+    with pytest.raises(KeyError, match="round0_mode"):
+        main.load_state(restored, state_path)
 
 
-def test_stage_payload_builders_keep_only_runtime_fields(tmp_path: Path) -> None:
+def test_load_state_rejects_round0_stage_history_with_extra_fields(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "loop_state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "current_round": 0,
+                "best_latency_ms": 1.0,
+                "best_round": -1,
+                "model_name": "gpt-5.4",
+                "quality_profile": "public_codex",
+                "codex_worker_mode": "off",
+                "codex_thread_id_coder_engineer": None,
+                "codex_thread_id_optimizer_engineer": None,
+                "history": [],
+                "round0_mode": "staged",
+                "round0_stage_history": [
+                    {
+                        "stage_id": "S0",
+                        "generated": ["solution/dsa_attention/kernel_0.py"],
+                        "stage_output_validation_report": "ok",
+                        "stage_output_verified": True,
+                        "final_correctness_verified": False,
+                        "correctness_check_report": "",
+                        "status": "success",
+                        "message": "ok",
+                    }
+                ],
+                "round0_review_history": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    restored = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+
+    with pytest.raises(Exception):
+        main.load_state(restored, state_path)
+
+
+def test_validate_stage_review_result_accepts_reviewer_directed_next_stage() -> None:
+    main.validate_stage_review_result(
+        stage_result=_stage_result("S0"),
+        review=_review("S0", "continue_next_stage", next_stage="S42"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage_result", "review", "message"),
+    [
+        (
+            _stage_result("S0", status="validation_failed"),
+            _review("S0", "continue_next_stage", next_stage="S1"),
+            "status='validation_failed'",
+        ),
+        (
+            _stage_result("S0", stage_output_verified=False),
+            _review("S0", "continue_next_stage", next_stage="S1"),
+            "without passing stage validation",
+        ),
+        (
+            _stage_result("S0", final_correctness_verified=False),
+            _review("S0", "continue_next_stage", next_stage=None),
+            "cannot terminate round-0 without correctness",
+        ),
+    ],
+)
+def test_validate_stage_review_result_rejects_invalid_continue_actions(
+    stage_result: Round0StageResult,
+    review: StageReviewResult,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        main.validate_stage_review_result(stage_result=stage_result, review=review)
+
+
+@pytest.mark.parametrize(
+    (
+        "stage_history",
+        "review_history",
+        "expected_attempt_counts",
+        "expected_next_stage",
+        "expected_pending_review",
+        "expected_complete",
+        "expected_latest_stage",
+    ),
+    [
+        ([], [], {}, "S0", False, False, None),
+        (
+            [_stage_result("S0")],
+            [_review("S0", "continue_next_stage", next_stage="S1")],
+            {"S0": 1},
+            "S1",
+            False,
+            False,
+            "S0",
+        ),
+        (
+            [_stage_result("S0")],
+            [_review("S0", "retry_same_stage", next_stage="S0")],
+            {"S0": 1},
+            "S0",
+            False,
+            False,
+            "S0",
+        ),
+        (
+            [_stage_result("S0"), _stage_result("S1")],
+            [_review("S0", "continue_next_stage", next_stage="S1")],
+            {"S0": 1, "S1": 1},
+            "S1",
+            True,
+            False,
+            "S1",
+        ),
+        (
+            [
+                _stage_result("S0"),
+                _stage_result("S1", final_correctness_verified=True),
+            ],
+            [
+                _review("S0", "continue_next_stage", next_stage="S1"),
+                _review("S1", "continue_next_stage", next_stage=None),
+            ],
+            {"S0": 1, "S1": 1},
+            None,
+            False,
+            True,
+            "S1",
+        ),
+        (
+            [_stage_result("S0")],
+            [_review("S0", "revise_design_then_retry", next_stage=None)],
+            {},
+            None,
+            False,
+            False,
+            None,
+        ),
+    ],
+)
+def test_derive_round0_progress_tracks_history_only(
+    tmp_path: Path,
+    stage_history: list[Round0StageResult],
+    review_history: list[StageReviewResult],
+    expected_attempt_counts: dict[str, int],
+    expected_next_stage: str | None,
+    expected_pending_review: bool,
+    expected_complete: bool,
+    expected_latest_stage: str | None,
+) -> None:
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    ctx.round0_stage_history = stage_history
+    ctx.round0_review_history = review_history
+
+    progress = main._derive_round0_progress(ctx)
+
+    assert progress.attempt_counts == expected_attempt_counts
+    assert progress.next_stage_id == expected_next_stage
+    assert progress.pending_review is expected_pending_review
+    assert progress.complete is expected_complete
+    assert (
+        progress.latest_stage_result.stage_id if progress.latest_stage_result else None
+    ) == expected_latest_stage
+
+
+def test_stage_payload_builders_keep_only_runtime_fields_and_create_snapshots(
+    tmp_path: Path,
+) -> None:
     solution_dir = tmp_path / "solution" / "dsa_attention"
     notes_dir = tmp_path / "notes" / "dsa_attention"
     solution_dir.mkdir(parents=True)
     notes_dir.mkdir(parents=True)
+    (solution_dir / "kernel_0.py").write_text(
+        "def kernel():\n    return 'current'\n",
+        encoding="utf-8",
+    )
+
+    plan_text = _sample_stage_plan()
+    write_round0_stage_plan_fixture(tmp_path, plan_text)
+
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    stage_result = _stage_result("S1")
+    ctx.round0_stage_history = [_stage_result("S0"), stage_result]
+    ctx.round0_review_history = [_review("S0", "continue_next_stage", next_stage="S1")]
+
+    coder_payload = main._build_stage_coder_payload(
+        plan_text=plan_text,
+        stage_id="S1",
+    )
+    fixer_payload = main._build_stage_fixer_payload(
+        plan_text=plan_text,
+        stage_id="S1",
+        last_review=_review("S1", "retry_same_stage", next_stage="S1"),
+    )
+    review_payload = main._build_stage_review_payload(
+        ctx=ctx,
+        solution_dir=solution_dir,
+        plan_text=plan_text,
+        stage_result=stage_result,
+        stage_attempt=1,
+    )
+    recovery_payload = main._build_stage_recovery_payload(ctx=ctx, plan_text=plan_text)
+
+    assert coder_payload == {
+        "assigned_stage": "S1",
+        "full_plan": plan_text,
+    }
+    assert fixer_payload == {
+        "stage_to_fix": "S1",
+        "full_plan": plan_text,
+        "last_review": {
+            "action": "retry_same_stage",
+            "next_stage": "S1",
+            "message": "retry_same_stage",
+        },
+    }
+    assert review_payload == {
+        "stage_under_review": "S1",
+        "full_plan": plan_text,
+        "stage_results_history": [
+            {
+                "stage_id": "S0",
+                "stage_output_validation_report": "stage output ok",
+                "correctness_check_report": "correct",
+                "message": "S0 ok",
+            },
+            {
+                "stage_id": "S1",
+                "stage_output_validation_report": "stage output ok",
+                "correctness_check_report": "correct",
+                "message": "S1 ok",
+            },
+        ],
+        "review_history": [
+            {
+                "action": "continue_next_stage",
+                "next_stage": "S1",
+                "message": "continue_next_stage",
+            }
+        ],
+        "recovery_context": "",
+    }
+    assert "Do not return null in recovery mode." in recovery_payload["recovery_context"]
+
+    snapshot_path = main.round0_stage_kernel_snapshot_path(solution_dir, "S1", 1)
+    assert snapshot_path.exists()
+
+
+def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
+    tmp_path: Path,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    notes_dir = tmp_path / "notes" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    notes_dir.mkdir(parents=True)
+    plan_text = write_round0_stage_plan_fixture(tmp_path, _sample_stage_plan())
     (solution_dir / "kernel_0.py").write_text(
         "def kernel():\n    return 'current'\n",
         encoding="utf-8",
@@ -306,106 +552,26 @@ def test_stage_payload_builders_keep_only_runtime_fields(tmp_path: Path) -> None
         solution_dir="solution/dsa_attention",
         notes_dir="notes/dsa_attention",
     )
-    previous_result = _stage_result("warp0::load_q")
-    current_result = _stage_result("warp1::qk_mma")
-    ctx.round0_stage_history = [previous_result, current_result]
-    ctx.round0_review_history = [_review("warp0::load_q", "continue_next_stage")]
-
-    previous_snapshot = main.round0_stage_kernel_snapshot_path(
-        solution_dir,
-        "warp0::load_q",
-        1,
-    )
-    previous_snapshot.parent.mkdir(parents=True, exist_ok=True)
-    previous_snapshot.write_text(
-        "def kernel():\n    return 'previous'\n",
-        encoding="utf-8",
-    )
-
-    coder_payload = main._build_stage_coder_payload(
-        graph=_sample_impl_graph(),
-        stage_id="warp1::qk_mma",
-        is_final_stage=False,
-    )
-    fixer_payload = main._build_stage_fixer_payload(
-        graph=_sample_impl_graph(),
-        stage_id="warp1::qk_mma",
-        is_final_stage=False,
-        last_review=_review("warp1::qk_mma", "retry_same_stage"),
-    )
-    review_payload = main._build_stage_review_payload(
-        ctx=ctx,
-        solution_dir=solution_dir,
-        graph=_sample_impl_graph(),
-        stage_result=current_result,
-        stage_attempt=1,
-        is_final_stage=True,
-    )
-
-    assert set(coder_payload) == {
-        "current_stage",
-        "prerequisite_stages",
-        "is_final_stage",
-    }
-    assert fixer_payload["last_review"] == {
-        "action": "retry_same_stage",
-        "message": "retry_same_stage",
-    }
-    assert set(review_payload) == {
-        "current_stage",
-        "stage_results_history",
-        "review_history",
-        "file_diffs",
-        "is_final_stage",
-    }
-    assert review_payload["file_diffs"]["diff_status"] == "available"
-    assert review_payload["file_diffs"]["previous_kernel_snapshot"] == (
-        "solution/dsa_attention/round0/warp0_load_q.attempt_01.kernel_0.py"
-    )
-    assert "-    return 'previous'" in review_payload["file_diffs"]["unified_diff"]
-    assert "+    return 'current'" in review_payload["file_diffs"]["unified_diff"]
-
-
-def test_stage_agent_prompts_render_dynamic_sections_and_scope_references(
-    tmp_path: Path,
-) -> None:
-    solution_dir = tmp_path / "solution" / "dsa_attention"
-    notes_dir = tmp_path / "notes" / "dsa_attention"
-    solution_dir.mkdir(parents=True)
-    notes_dir.mkdir(parents=True)
-    (solution_dir / "kernel_0_plan.md").write_text("# Plan\nplan body\n", encoding="utf-8")
-    (solution_dir / "kernel_0.py").write_text("def kernel():\n    return 'current'\n", encoding="utf-8")
-
-    ctx = SharedContext(
-        project_root=str(tmp_path),
-        solution_dir="solution/dsa_attention",
-        notes_dir="notes/dsa_attention",
-    )
 
     stage_coder = make_round0_stage_coder(context=ctx)
     coder_static = main._resolve_agent_instructions_text(stage_coder, ctx)
-    assert "{..## Current Stage Specifications..}" in coder_static
+    assert "{..## Assigned Stage..}" in coder_static
     main._apply_stage_coder_prompt_sections(
         ctx,
         main._build_stage_coder_payload(
-            graph=_sample_impl_graph(),
-            stage_id="warp1::qk_mma",
-            is_final_stage=False,
+            plan_text=plan_text,
+            stage_id="S1",
         ),
     )
     coder_prompt = main._resolve_agent_instructions_text(stage_coder, ctx)
-    assert "{..## Current Stage Specifications..}" not in coder_prompt
-    assert "## Current Stage Specifications" in coder_prompt
+    assert "{..## Assigned Stage..}" not in coder_prompt
+    assert "## Assigned Stage" in coder_prompt
+    assert "## Full kernel_0_plan.md" in coder_prompt
+    assert plan_text.strip() in coder_prompt
     assert "Return structured output matching `Round0StageResult`." in coder_prompt
-    assert "parser-compatible" in coder_prompt
     assert "[PyTorch Val] <name>: BEGIN" in coder_prompt
     assert "[CuTe Val] <name>" in coder_prompt
-    assert "comma-separated numeric values" in coder_prompt
-    assert "[PyTorch Host] <name>: BEGIN/END" in coder_prompt
-    assert "shape=... dtype=... scope=..." not in coder_prompt
-    assert "data=[...]" not in coder_prompt
-    assert "thread 0 of block 0" not in coder_prompt
-    assert "if tidx == 0 and bidx == 0" not in coder_prompt
+    assert "[CuTe Host] <name>: BEGIN/END" in coder_prompt
     assert extract_markdown_section(coder_prompt, "## References").splitlines() == [
         "## References",
         *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],
@@ -415,34 +581,37 @@ def test_stage_agent_prompts_render_dynamic_sections_and_scope_references(
     main._apply_stage_fixer_prompt_sections(
         ctx,
         main._build_stage_fixer_payload(
-            graph=_sample_impl_graph(),
-            stage_id="warp1::qk_mma",
-            is_final_stage=True,
-            last_review=_review("warp1::qk_mma", "retry_same_stage"),
+            plan_text=plan_text,
+            stage_id="S1",
+            last_review=_review("S1", "retry_same_stage", next_stage="S1"),
         ),
     )
     fixer_prompt = main._resolve_agent_instructions_text(stage_fixer, ctx)
-    assert "## Last Reviewer Feedback" in fixer_prompt
-    assert '"action": "retry_same_stage"' in fixer_prompt
+    assert "## Stage To Fix" in fixer_prompt
+    assert "## Full kernel_0_plan.md" in fixer_prompt
+    assert '"next_stage": "S1"' in fixer_prompt
+    assert extract_markdown_section(fixer_prompt, "## References").splitlines() == [
+        "## References",
+        *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],
+    ]
 
     reviewer = make_round0_stage_reviewer(context=ctx)
-    stage_result = _stage_result("warp1::qk_mma")
+    stage_result = _stage_result("S1")
     ctx.round0_stage_history = [stage_result]
-    ctx.round0_review_history = [_review("warp0::load_q", "continue_next_stage")]
+    ctx.round0_review_history = [_review("S0", "continue_next_stage", next_stage="S1")]
     reviewer_payload = main._build_stage_review_payload(
         ctx=ctx,
         solution_dir=solution_dir,
-        graph=_sample_impl_graph(),
+        plan_text=plan_text,
         stage_result=stage_result,
         stage_attempt=1,
-        is_final_stage=False,
     )
     main._apply_stage_reviewer_prompt_sections(ctx, reviewer_payload)
     reviewer_prompt = main._resolve_agent_instructions_text(reviewer, ctx)
-    assert "## File Diffs" in reviewer_prompt
-    assert 'action="retry_same_stage"' in reviewer_prompt
-    assert 'action="revise_design_then_retry"' in reviewer_prompt
-    assert 'action="continue_next_stage"' in reviewer_prompt
+    assert "## Stage Under Review" in reviewer_prompt
+    assert "## Full kernel_0_plan.md" in reviewer_prompt
+    assert "## File Diffs" not in reviewer_prompt
+    assert "the concrete stage the next executor should run" in reviewer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
     assert extract_markdown_section(reviewer_prompt, "## References").splitlines() == [
         "## References",
@@ -459,7 +628,7 @@ def _prepare_staged_round0_workspace(
     *,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    graph: ImplementationGraph,
+    plan_text: str,
 ) -> tuple[SharedContext, Path, Path]:
     monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
 
@@ -467,13 +636,9 @@ def _prepare_staged_round0_workspace(
     notes_dir = tmp_path / "notes" / "dsa_attention"
     solution_dir.mkdir(parents=True)
     notes_dir.mkdir(parents=True)
-    (solution_dir / "kernel_0_plan.md").write_text("# Plan\nplan body\n", encoding="utf-8")
-    (solution_dir / "kernel_0.py").write_text("def kernel():\n    return 'current'\n", encoding="utf-8")
-
-    graph_path = solution_dir / "round0" / "kernel_0_impl_graph.json"
-    graph_path.parent.mkdir(parents=True, exist_ok=True)
-    graph_path.write_text(
-        json.dumps(graph.model_dump(mode="json"), indent=2),
+    write_round0_stage_plan_fixture(tmp_path, plan_text)
+    (solution_dir / "kernel_0.py").write_text(
+        "def kernel():\n    return 'current'\n",
         encoding="utf-8",
     )
 
@@ -482,7 +647,6 @@ def _prepare_staged_round0_workspace(
         solution_dir="solution/dsa_attention",
         notes_dir="notes/dsa_attention",
     )
-    ctx.round0_impl_graph_file = str(graph_path.relative_to(tmp_path))
     return ctx, solution_dir, tmp_path / "loop_state.json"
 
 
@@ -565,14 +729,14 @@ def test_dump_stage_runtime_prompt_artifacts_writes_and_reuses_files(
         prompt_dump=prompt_dump,
         agent=agent,
         ctx=ctx,
-        stage_id="warp1::qk_mma",
+        stage_id="S1",
         attempt=2,
         role_name="coder",
         payload={"step": "coder"},
     )
 
-    coder_system = prompt_dump.runtime_dir / "stage_warp1_qk_mma.attempt_02.coder.system.md"
-    coder_input = prompt_dump.runtime_dir / "stage_warp1_qk_mma.attempt_02.coder.input.json"
+    coder_system = prompt_dump.runtime_dir / "stage_S1.attempt_02.coder.system.md"
+    coder_input = prompt_dump.runtime_dir / "stage_S1.attempt_02.coder.input.json"
     assert coder_system.read_text(encoding="utf-8") == "runtime prompt"
     assert json.loads(coder_input.read_text(encoding="utf-8")) == {"step": "coder"}
 
@@ -581,7 +745,7 @@ def test_dump_stage_runtime_prompt_artifacts_writes_and_reuses_files(
         prompt_dump=prompt_dump,
         agent=agent,
         ctx=ctx,
-        stage_id="warp1::qk_mma",
+        stage_id="S1",
         attempt=2,
         role_name="coder",
         payload={"step": "new"},
@@ -590,14 +754,121 @@ def test_dump_stage_runtime_prompt_artifacts_writes_and_reuses_files(
     assert json.loads(coder_input.read_text(encoding="utf-8")) == {"step": "old"}
 
 
-def test_run_round0_staged_first_attempt_uses_coder(
+def test_runtime_prompt_dump_contains_full_plan_and_no_file_diffs(
+    tmp_path: Path,
+) -> None:
+    plan_text = write_round0_stage_plan_fixture(tmp_path, _sample_stage_plan())
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    reviewer = make_round0_stage_reviewer(context=ctx)
+    main._apply_stage_reviewer_prompt_sections(
+        ctx,
+        {
+            "stage_under_review": "S1",
+            "full_plan": plan_text,
+            "stage_results_history": [],
+            "review_history": [],
+            "recovery_context": "",
+        },
+    )
+    prompt_dump = main._make_prompt_dump_config(tmp_path / "prompts")
+
+    main._dump_stage_runtime_prompt_artifacts(
+        prompt_dump=prompt_dump,
+        agent=reviewer,
+        ctx=ctx,
+        stage_id="S1",
+        attempt=1,
+        role_name="reviewer",
+        payload={
+            "stage_under_review": "S1",
+            "full_plan": plan_text,
+            "stage_results_history": [],
+            "review_history": [],
+            "recovery_context": "",
+        },
+    )
+
+    system_path = prompt_dump.runtime_dir / "stage_S1.attempt_01.reviewer.system.md"
+    input_path = prompt_dump.runtime_dir / "stage_S1.attempt_01.reviewer.input.json"
+    assert "## Full kernel_0_plan.md" in system_path.read_text(encoding="utf-8")
+    assert plan_text.strip() in system_path.read_text(encoding="utf-8")
+    assert "File Diffs" not in system_path.read_text(encoding="utf-8")
+    assert "file_diffs" not in input_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_recover_round0_next_stage_with_reviewer_returns_concrete_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plan_text = write_round0_stage_plan_fixture(tmp_path, _sample_stage_plan())
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+
+    async def _fake_run_agent(**_: Any) -> tuple[_FakeStageRunResult, float]:
+        return _FakeStageRunResult(
+            _review("Recovery", "continue_next_stage", next_stage="S1")
+        ), 0.1
+
+    monkeypatch.setattr(main, "_run_agent", _fake_run_agent)
+
+    review = await main._recover_round0_next_stage_with_reviewer(
+        ctx=ctx,
+        plan_text=plan_text,
+        stage_reviewer=_FakeAgent("reviewer"),
+        reviewer_max_turns=1,
+        reviewer_verbose=False,
+        prompt_dump=None,
+    )
+
+    assert review.next_stage == "S1"
+
+
+@pytest.mark.asyncio
+async def test_recover_round0_next_stage_with_reviewer_rejects_null_next_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plan_text = write_round0_stage_plan_fixture(tmp_path, _sample_stage_plan())
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+
+    async def _fake_run_agent(**_: Any) -> tuple[_FakeStageRunResult, float]:
+        return _FakeStageRunResult(
+            _review("Recovery", "continue_next_stage", next_stage=None)
+        ), 0.1
+
+    monkeypatch.setattr(main, "_run_agent", _fake_run_agent)
+
+    with pytest.raises(ValueError, match="concrete next_stage"):
+        await main._recover_round0_next_stage_with_reviewer(
+            ctx=ctx,
+            plan_text=plan_text,
+            stage_reviewer=_FakeAgent("reviewer"),
+            reviewer_max_turns=1,
+            reviewer_verbose=False,
+            prompt_dump=None,
+        )
+
+
+def test_run_round0_staged_first_attempt_uses_coder_and_copies_kernel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx, solution_dir, state_path = _prepare_staged_round0_workspace(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
-        graph=_single_stage_impl_graph(),
+        plan_text=_single_stage_plan(),
     )
     stage_labels: list[str] = []
 
@@ -605,11 +876,11 @@ def test_run_round0_staged_first_attempt_uses_coder(
         stage_labels.append(kwargs["stage_label"])
         if kwargs["stage_label"].startswith("kernel-stage-coder-"):
             return _FakeStageRunResult(
-                _stage_result("warp0::load_q", final_correctness_verified=True)
+                _stage_result("S0", final_correctness_verified=True)
             ), 0.1
         if kwargs["stage_label"].startswith("kernel-stage-reviewer-"):
             return _FakeStageRunResult(
-                _review("warp0::load_q", "continue_next_stage")
+                _review("S0", "continue_next_stage", next_stage=None)
             ), 0.1
         raise AssertionError(f"Unexpected stage label: {kwargs['stage_label']}")
 
@@ -637,6 +908,9 @@ def test_run_round0_staged_first_attempt_uses_coder(
     assert stage_labels[0].startswith("kernel-stage-coder-")
     assert all("kernel-stage-fixer-" not in label for label in stage_labels)
     assert result.status == "success"
+    assert (solution_dir / "kernel.py").read_text(encoding="utf-8") == (
+        solution_dir / "kernel_0.py"
+    ).read_text(encoding="utf-8")
 
 
 def test_run_round0_staged_retry_uses_fixer(
@@ -646,21 +920,21 @@ def test_run_round0_staged_retry_uses_fixer(
     ctx, solution_dir, state_path = _prepare_staged_round0_workspace(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
-        graph=_single_stage_impl_graph(),
+        plan_text=_single_stage_plan(),
     )
-    ctx.round0_stage_history = [_stage_result("warp0::load_q")]
-    ctx.round0_review_history = [_review("warp0::load_q", "retry_same_stage")]
+    ctx.round0_stage_history = [_stage_result("S0")]
+    ctx.round0_review_history = [_review("S0", "retry_same_stage", next_stage="S0")]
     stage_labels: list[str] = []
 
     async def _fake_run_agent(**kwargs: Any) -> tuple[_FakeStageRunResult, float]:
         stage_labels.append(kwargs["stage_label"])
         if kwargs["stage_label"].startswith("kernel-stage-fixer-"):
             return _FakeStageRunResult(
-                _stage_result("warp0::load_q", final_correctness_verified=True)
+                _stage_result("S0", final_correctness_verified=True)
             ), 0.1
         if kwargs["stage_label"].startswith("kernel-stage-reviewer-"):
             return _FakeStageRunResult(
-                _review("warp0::load_q", "continue_next_stage")
+                _review("S0", "continue_next_stage", next_stage=None)
             ), 0.1
         raise AssertionError(f"Unexpected stage label: {kwargs['stage_label']}")
 
@@ -694,17 +968,17 @@ def test_run_round0_staged_retry_uses_fixer(
     ("stage_history", "review_history", "expected_role", "expected_attempt"),
     [
         (
-            [_stage_result("warp0::load_q", final_correctness_verified=True)],
+            [_stage_result("S0", final_correctness_verified=True)],
             [],
             "coder",
             1,
         ),
         (
             [
-                _stage_result("warp0::load_q"),
-                _stage_result("warp0::load_q", final_correctness_verified=True),
+                _stage_result("S0"),
+                _stage_result("S0", final_correctness_verified=True),
             ],
-            [_review("warp0::load_q", "retry_same_stage")],
+            [_review("S0", "retry_same_stage", next_stage="S0")],
             "fixer",
             2,
         ),
@@ -721,7 +995,7 @@ def test_run_round0_staged_resume_pending_review_reuses_latest_executor_prompt_a
     ctx, solution_dir, state_path = _prepare_staged_round0_workspace(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
-        graph=_single_stage_impl_graph(),
+        plan_text=_single_stage_plan(),
     )
     ctx.round0_stage_history = stage_history
     ctx.round0_review_history = review_history
@@ -729,7 +1003,9 @@ def test_run_round0_staged_resume_pending_review_reuses_latest_executor_prompt_a
 
     async def _fake_run_agent(**kwargs: Any) -> tuple[_FakeStageRunResult, float]:
         assert kwargs["stage_label"].startswith("kernel-stage-reviewer-")
-        return _FakeStageRunResult(_review("warp0::load_q", "continue_next_stage")), 0.1
+        return _FakeStageRunResult(
+            _review("S0", "continue_next_stage", next_stage=None)
+        ), 0.1
 
     monkeypatch.setattr(main, "_run_agent", _fake_run_agent)
 
@@ -754,12 +1030,12 @@ def test_run_round0_staged_resume_pending_review_reuses_latest_executor_prompt_a
 
     expected_path = (
         prompt_dump.runtime_dir
-        / f"stage_warp0_load_q.attempt_{expected_attempt:02d}.{expected_role}.system.md"
+        / f"stage_S0.attempt_{expected_attempt:02d}.{expected_role}.system.md"
     )
     unexpected_role = "fixer" if expected_role == "coder" else "coder"
     unexpected_path = (
         prompt_dump.runtime_dir
-        / f"stage_warp0_load_q.attempt_{expected_attempt:02d}.{unexpected_role}.system.md"
+        / f"stage_S0.attempt_{expected_attempt:02d}.{unexpected_role}.system.md"
     )
 
     assert expected_path.read_text(encoding="utf-8") == f"{expected_role} prompt"
@@ -808,163 +1084,3 @@ def test_main_dump_prompts_runs_loop_with_prompt_dump_enabled(
     assert len(dump_calls) == 1
     assert len(run_loop_calls) == 1
     assert run_loop_calls[0]["prompt_dump"] is not None
-
-
-@pytest.mark.parametrize(
-    (
-        "stage_history",
-        "review_history",
-        "expected_completed",
-        "expected_next_stage",
-        "expected_pending_review",
-        "expected_complete",
-    ),
-    [
-        (
-            [_stage_result("warp0::load_q")],
-            [_review("warp0::load_q", "continue_next_stage")],
-            ["warp0::load_q"],
-            "warp1::qk_mma",
-            False,
-            False,
-        ),
-        (
-            [_stage_result("warp0::load_q"), _stage_result("warp1::qk_mma")],
-            [
-                _review("warp0::load_q", "continue_next_stage"),
-                _review("warp1::qk_mma", "retry_same_stage"),
-            ],
-            ["warp0::load_q"],
-            "warp1::qk_mma",
-            False,
-            False,
-        ),
-        (
-            [_stage_result("warp0::load_q"), _stage_result("warp1::qk_mma")],
-            [
-                _review("warp0::load_q", "continue_next_stage"),
-                _review("warp1::qk_mma", "revise_design_then_retry"),
-            ],
-            [],
-            "warp0::load_q",
-            False,
-            False,
-        ),
-        (
-            [_stage_result("warp0::load_q"), _stage_result("warp1::qk_mma")],
-            [_review("warp0::load_q", "continue_next_stage")],
-            ["warp0::load_q"],
-            "warp1::qk_mma",
-            True,
-            False,
-        ),
-        (
-            [
-                _stage_result("warp0::load_q"),
-                _stage_result("warp1::qk_mma", final_correctness_verified=True),
-            ],
-            [
-                _review("warp0::load_q", "continue_next_stage"),
-                _review("warp1::qk_mma", "continue_next_stage"),
-            ],
-            ["warp0::load_q", "warp1::qk_mma"],
-            None,
-            False,
-            True,
-        ),
-    ],
-)
-def test_derive_round0_progress_tracks_stage_and_review_state(
-    tmp_path: Path,
-    stage_history: list[Round0StageResult],
-    review_history: list[StageReviewResult],
-    expected_completed: list[str],
-    expected_next_stage: str | None,
-    expected_pending_review: bool,
-    expected_complete: bool,
-) -> None:
-    ctx = SharedContext(
-        project_root=str(tmp_path),
-        solution_dir="solution/dsa_attention",
-        notes_dir="notes/dsa_attention",
-    )
-    ctx.round0_stage_history = stage_history
-    ctx.round0_review_history = review_history
-
-    progress = main._derive_round0_progress(ctx, _sample_impl_graph())
-
-    assert progress.completed_stage_ids == expected_completed
-    assert progress.next_stage_id == expected_next_stage
-    assert progress.pending_review is expected_pending_review
-    assert progress.complete is expected_complete
-
-
-def test_load_impl_graph_rejects_legacy_stage_schema(tmp_path: Path) -> None:
-    graph_path = tmp_path / "impl_graph.json"
-    graph_path.write_text(
-        json.dumps(
-            {
-                "async_pipelines": [],
-                "stages": [
-                    {
-                        "stage_id": "warp0::load_q",
-                        "title": "Load Q",
-                        "description": "Load query tiles.",
-                        "owner_warps": ["warp0"],
-                        "prerequisites": [],
-                        "outputs": ["q_tile_debug"],
-                        "checks": ["q tile matches eager reference"],
-                        "validation_entry_point": "kernel_0.py::validate_stage__warp0_load_q",
-                        "plan_excerpt": "## Load Q\nload q details",
-                        "target_areas": ["load_q"],
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(Exception):
-        main.load_impl_graph(graph_path)
-
-
-def test_load_state_rejects_legacy_round0_stage_history_generated_field(
-    tmp_path: Path,
-) -> None:
-    state_path = tmp_path / "loop_state.json"
-    state_path.write_text(
-        json.dumps(
-            {
-                "current_round": 0,
-                "best_latency_ms": 1.0,
-                "best_round": -1,
-                "model_name": "gpt-5.4",
-                "quality_profile": "public_codex",
-                "codex_worker_mode": "off",
-                "history": [],
-                "round0_stage_history": [
-                    {
-                        "stage_id": "warp0::load_q",
-                        "generated": ["solution/dsa_attention/kernel_0.py"],
-                        "stage_output_validation_report": "ok",
-                        "stage_output_verified": True,
-                        "final_correctness_verified": False,
-                        "correctness_check_report": "",
-                        "status": "success",
-                        "message": "ok",
-                    }
-                ],
-                "round0_review_history": [],
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    restored = SharedContext(
-        project_root=str(tmp_path),
-        solution_dir="solution/dsa_attention",
-        notes_dir="notes/dsa_attention",
-    )
-
-    with pytest.raises(Exception):
-        main.load_state(restored, state_path)

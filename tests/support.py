@@ -59,6 +59,43 @@ def write_kernel_plan_fixture(
     plan_path.write_text(content, encoding="utf-8")
 
 
+def write_round0_stage_plan_fixture(
+    project_root: Path,
+    content: str | None = None,
+) -> str:
+    """Create a minimal staged round-0 plan fixture."""
+    resolved_content = content or """# Kernel 0 Round-0 Plan
+
+## 6. Round-0 implementation stages
+
+### S0 — Load Q
+
+Load query tiles and expose a debug output.
+
+Depends on: none
+
+Validation outputs:
+- `q_tile_debug` [gmem]
+
+Key CuTeDSL helpers:
+- `cute.make_tensor`
+
+### S1 — QK Mainloop
+
+Consume the staged query tile and produce a score tile.
+
+Depends on: S0
+
+Validation outputs:
+- `score_tile_debug` [rmem]
+
+Key CuTeDSL helpers:
+- `tcgen05.mma`
+"""
+    write_kernel_plan_fixture(project_root, resolved_content)
+    return resolved_content
+
+
 async def invoke_tool(
     tool: Any,
     project_root: Path,
@@ -113,4 +150,3 @@ class FakeProcess:
 
     def kill(self) -> None:
         self.killed = True
-

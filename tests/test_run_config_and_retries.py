@@ -12,10 +12,7 @@ from agents.run_config import CallModelData, ModelInputData
 import main
 from kernel_agents.context import (
     DesignerResult,
-    ImplementationGraph,
     SharedContext,
-    StageOutput,
-    StageSpec,
 )
 from kernel_agents.kernel_designer import make_kernel_designer
 from tests.support import shared_context
@@ -219,7 +216,7 @@ class _FakeRunResult:
 
 
 @pytest.mark.asyncio
-async def test_run_staged_designer_repairs_invalid_impl_graph(
+async def test_run_staged_designer_requires_written_plan_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -227,50 +224,6 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
     solution_dir = tmp_path / "solution" / "dsa_attention"
     solution_dir.mkdir(parents=True, exist_ok=True)
     calls: list[dict[str, Any]] = []
-
-    valid_graph = ImplementationGraph(
-        async_pipelines=[],
-        stages=[
-            StageSpec(
-                stage_id="warp0::load_q",
-                prerequisites=[],
-                outputs=[StageOutput(name="q_tile_debug", scope="gmem")],
-                relevant_helpers=["cute.make_tensor"],
-                plan_excerpt="## Load Q\nload q details",
-            ),
-            StageSpec(
-                stage_id="warp1::qk_mma",
-                prerequisites=["warp0::load_q"],
-                outputs=[StageOutput(name="score_tile_debug", scope="rmem")],
-                relevant_helpers=["tcgen05.mma"],
-                plan_excerpt="## QK Mainloop\nqk details",
-            ),
-        ],
-    )
-    invalid_graph = valid_graph.model_copy(
-        update={
-            "stages": [
-                valid_graph.stages[0],
-                valid_graph.stages[1].model_copy(update={"stage_id": "warp0::load_q"}),
-            ]
-        }
-    )
-    results = [
-        _FakeRunResult(
-            DesignerResult(
-                plan_file="solution/dsa_attention/kernel_0_plan.md",
-                impl_graph=invalid_graph,
-                status="success",
-            )
-        ),
-        _FakeRunResult(
-            DesignerResult(
-                plan_file="solution/dsa_attention/kernel_0_plan.md",
-                impl_graph=valid_graph,
-                status="success",
-            )
-        ),
-    ]
 
     async def _fake_run_agent_once(
         *,
@@ -282,28 +235,28 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
         session: SQLiteSession | None = None,
     ) -> tuple[object, float]:
         calls.append({"input": input, "session": session, "context": context})
-        return results.pop(0), 0.25
+        return _FakeRunResult(
+            DesignerResult(
+                plan_file="solution/dsa_attention/kernel_0_plan.md",
+                status="success",
+            )
+        ), 0.25
 
     monkeypatch.setattr(main, "_run_agent_once", _fake_run_agent_once)
 
-    _, designer_out, _ = await main._run_staged_designer_with_graph_validation(
-        starting_agent=object(),
-        initial_input="design the staged graph",
-        context=ctx,
-        max_turns=80,
-        verbose=False,
-        solution_dir=solution_dir,
-        max_graph_repairs=2,
-    )
+    with pytest.raises(ValueError, match="did not write"):
+        await main._run_staged_designer(
+            starting_agent=object(),
+            initial_input="design the staged plan",
+            context=ctx,
+            max_turns=80,
+            verbose=False,
+            solution_dir=solution_dir,
+        )
 
-    invalid_path = main.round0_invalid_impl_graph_path(solution_dir, 1)
-    assert designer_out.impl_graph == valid_graph
-    assert len(calls) == 2
-    assert calls[0]["input"] == "design the staged graph"
-    assert "duplicate stage IDs" in calls[1]["input"]
+    assert len(calls) == 1
+    assert calls[0]["input"] == "design the staged plan"
     assert isinstance(calls[0]["session"], SQLiteSession)
-    assert calls[0]["session"] is calls[1]["session"]
-    assert json.loads(invalid_path.read_text(encoding="utf-8"))["stages"][1]["stage_id"] == "warp0::load_q"
 
 
 def test_public_codex_input_filter_keeps_latest_compaction_tail() -> None:
