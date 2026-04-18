@@ -9,6 +9,7 @@ from kernel_agents.kernel_coder import make_kernel_coder
 from kernel_agents.kernel_designer import make_kernel_designer
 from kernel_agents.kernel_optimizer import make_kernel_optimizer
 from kernel_agents.kernel_planner import make_kernel_planner
+from kernel_agents.kernel_stage_reviewer import make_round0_stage_reviewer
 from kernel_agents.scoping import AGENT_SCOPES
 from kernel_agents.tools import PROJECT_ROOT, build_tools_for_role, tool_names
 from tests.support import (
@@ -20,7 +21,13 @@ from tests.support import (
 )
 
 
-def test_codex_write_workers_and_benchmark_tools_are_role_gated() -> None:
+def test_role_tool_surfaces_and_codex_workers_are_role_gated() -> None:
+    designer_tools = tool_names(
+        build_tools_for_role("designer", codex_worker_mode="coder_optimizer")
+    )
+    reviewer_tools = tool_names(
+        build_tools_for_role("reviewer", codex_worker_mode="coder_optimizer")
+    )
     coder_tools = tool_names(
         build_tools_for_role("coder", codex_worker_mode="coder_optimizer")
     )
@@ -30,22 +37,29 @@ def test_codex_write_workers_and_benchmark_tools_are_role_gated() -> None:
     planner_tools = tool_names(
         build_tools_for_role("planner", codex_worker_mode="coder_optimizer")
     )
-    designer_tools = tool_names(
-        build_tools_for_role("designer", codex_worker_mode="coder_optimizer")
-    )
-
+    assert "diff_files" in designer_tools
+    assert "diff_files" in reviewer_tools
+    assert "diff_files" in coder_tools
+    assert "diff_files" in planner_tools
+    assert "diff_files" in optimizer_tools
     assert "codex_coder_engineer" in coder_tools
     assert "codex_optimizer_engineer" in optimizer_tools
     assert "codex_coder_engineer" not in designer_tools
+    assert "codex_coder_engineer" not in reviewer_tools
     assert "codex_optimizer_engineer" not in planner_tools
+    assert "run_stage_validation" not in designer_tools
+    assert "run_stage_validation" not in reviewer_tools
+    assert "run_stage_validation" in coder_tools
     assert "run_full_benchmark" in planner_tools
     assert "run_full_benchmark" not in designer_tools
+    assert "run_full_benchmark" not in reviewer_tools
 
 
 @pytest.mark.parametrize(
     ("role", "factory"),
     [
         ("designer", make_kernel_designer),
+        ("reviewer", make_round0_stage_reviewer),
         ("coder", make_kernel_coder),
         ("planner", make_kernel_planner),
         ("optimizer", make_kernel_optimizer),

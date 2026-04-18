@@ -1094,6 +1094,10 @@ def _apply_stage_reviewer_prompt_sections(
             "Full kernel_0_plan.md",
             payload["full_plan"],
         ),
+        "kernel_snapshots": _render_json_section(
+            "Kernel Snapshots",
+            payload["kernel_snapshots"],
+        ),
         "stage_results_history": _render_json_section(
             "Trimmed Round0StageResult history",
             payload["stage_results_history"],
@@ -1164,14 +1168,31 @@ def _build_stage_review_payload(
     stage_result: Round0StageResult,
     stage_attempt: int,
 ) -> dict[str, Any]:
-    _ensure_round0_kernel_snapshot(
+    project_root = Path(ctx.project_root)
+
+    def _payload_path(path: Path) -> str:
+        return _project_relative_path(path, project_root=project_root)
+
+    current_snapshot = _ensure_round0_kernel_snapshot(
         solution_dir,
         stage_id=stage_result.stage_id,
         attempt=stage_attempt,
     )
+    previous_snapshot = _previous_round0_kernel_snapshot_path(ctx, solution_dir)
+    if previous_snapshot is not None and not previous_snapshot.exists():
+        previous_snapshot = None
     return {
         "stage_under_review": stage_result.stage_id,
         "full_plan": plan_text,
+        "kernel_snapshots": {
+            "current_kernel_path": _payload_path(solution_dir / "kernel_0.py"),
+            "current_attempt_snapshot": _payload_path(current_snapshot),
+            "previous_attempt_snapshot": (
+                _payload_path(previous_snapshot)
+                if previous_snapshot is not None
+                else None
+            ),
+        },
         "stage_results_history": _trim_stage_history(ctx.round0_stage_history),
         "review_history": _trim_review_history(ctx.round0_review_history),
         "recovery_context": "",
@@ -1183,9 +1204,20 @@ def _build_stage_recovery_payload(
     ctx: SharedContext,
     plan_text: str,
 ) -> dict[str, Any]:
+    project_root = Path(ctx.project_root)
+    solution_dir = Path(ctx.solution_dir)
+    if not solution_dir.is_absolute():
+        solution_dir = project_root / solution_dir
+
     return {
         "stage_under_review": "Recovery",
         "full_plan": plan_text,
+        "kernel_snapshots": {
+            "current_kernel_path": _project_relative_path(
+                solution_dir / "kernel_0.py",
+                project_root=project_root,
+            ),
+        },
         "stage_results_history": _trim_stage_history(ctx.round0_stage_history),
         "review_history": _trim_review_history(ctx.round0_review_history),
         "recovery_context": (
@@ -2189,7 +2221,7 @@ def main():
         "--skip-designer", action="store_true",
         help=(
             "Skip round 0a (kernel-designer). In staged mode this reuses both "
-            "solution/dsa_attention/kernel_0_plan.md and its parsed markdown stage schema; "
+            "solution/dsa_attention/kernel_0_plan.md and its staged implementation outline; "
             "in legacy mode it reuses only the plan. "
             "Ignored when --resume successfully loads saved state."
         ),

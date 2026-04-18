@@ -1,8 +1,7 @@
 """Shared tool definitions for all kernel generation agents.
 
-Uses SDK built-in tools where available (ApplyPatchTool, WebSearchTool,
-codex_tool). Repo inspection, benchmark, and profiling wrappers are custom
-function tools.
+Uses SDK built-in tools where available (ApplyPatchTool, codex_tool). Repo
+inspection, benchmark, and profiling wrappers are custom function tools.
 """
 
 from __future__ import annotations
@@ -17,13 +16,7 @@ from dataclasses import replace as dataclass_replace
 from pathlib import Path
 from typing import Literal
 
-from agents import (
-    ApplyPatchTool,
-    RunContextWrapper,
-    WebSearchTool,
-    apply_diff,
-    function_tool,
-)
+from agents import ApplyPatchTool, RunContextWrapper, apply_diff, function_tool
 from agents.editor import ApplyPatchOperation, ApplyPatchResult
 from agents.extensions.experimental.codex import ThreadOptions, TurnOptions, codex_tool
 from agents.tool import ShellCallOutcome, ShellCommandOutput
@@ -441,12 +434,6 @@ class WorkspaceEditor:
 apply_patch_tool = ApplyPatchTool(editor=WorkspaceEditor())
 
 
-# ---------------------------------------------------------------------------
-# Built-in: WebSearchTool + Codex helper
-# ---------------------------------------------------------------------------
-
-web_search_tool = WebSearchTool()
-
 _CODEX_ASSIST_PRIMARY_DIRS: dict[str, str] = {
     "designer": "references",
     "reviewer": "solution/dsa_attention",
@@ -792,7 +779,7 @@ async def run_stage_validation(
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
 ) -> str:
-    """Run the single-case synthetic stage validation entry point and return recent raw shell context."""
+    """Run the single-case stage-validation entry point and return raw inspection context."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)
@@ -1243,8 +1230,9 @@ def build_tools_for_role(
     ]
     tools.extend(_scoped_file_tools(scope_guardrail))
 
+    tools.append(_scoped_diff(scope_guardrail))
+
     if role in {"coder", "optimizer", "planner"}:
-        tools.append(_scoped_diff(scope_guardrail))
         tools.extend([run_synthetic_check, run_correctness_check])
         if role == "coder":
             tools.append(run_stage_validation)

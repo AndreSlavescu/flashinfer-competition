@@ -75,7 +75,7 @@ Load query tiles and expose a debug output.
 Depends on: none
 
 Validation outputs:
-- `q_tile_debug` [gmem]
+- `q_tile_debug` [sources: PyTorch, CuTeDSL]
 
 Key CuTeDSL helpers:
 - `cute.make_tensor`
@@ -87,7 +87,7 @@ Consume the staged query tile and produce a score tile.
 Depends on: S0
 
 Validation outputs:
-- `score_tile_debug` [rmem]
+- `score_tile_debug` [sources: CuTeDSL]
 
 Key CuTeDSL helpers:
 - `tcgen05.mma`

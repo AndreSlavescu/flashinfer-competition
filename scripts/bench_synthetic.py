@@ -34,9 +34,9 @@ from bench_synthetic_common import (
     STAGE_VALIDATION_NUM_TOKENS,
     TRACK,
     parse_entry_point,
+    print_stage_validation_footer,
     print_synthetic_results,
 )
-from stage_validation_parser import compare_tagged_outputs
 
 def resolve_solution_dir(solution_dir: str) -> Path:
     solution_path = Path(solution_dir)
@@ -227,7 +227,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Run the entry point in dedicated single-case stage-validation mode. "
-            "This is intended for parser-backed prefix_validation_harness runs."
+            "This is intended for inspection-oriented prefix_validation_harness runs."
         ),
     )
     args = parser.parse_args()
@@ -314,16 +314,9 @@ def main() -> None:
     )
     results = result.get("results", [])
     print_synthetic_results(results)
-
-    transcript = "\n".join(
-        r.get("log", "") for r in results if r.get("log")
-    )
-    report = compare_tagged_outputs(transcript)
-    if args.stage_validation or report.fields:
+    if args.stage_validation:
         print()
-        print(report.format_summary())
-        if not report.overall_pass:
-            sys.exit(1)
+        print_stage_validation_footer()
 
 
 if __name__ == "__main__":

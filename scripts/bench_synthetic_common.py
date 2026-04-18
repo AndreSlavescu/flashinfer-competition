@@ -25,6 +25,12 @@ SYNTHETIC_CKV_DIM = 512
 SYNTHETIC_KPE_DIM = 64
 SYNTHETIC_SM_SCALE = 0.1352337788608801
 
+STAGE_VALIDATION_INSPECTION_FOOTER = (
+    "Inspect tagged `[PyTorch]` / `[CuTeDSL]` BEGIN/END blocks in this transcript.\n"
+    "When invoked through the repo tools, use `grep_search` or `read_file` on "
+    "`last_shell_dump.txt` for shell-driven review."
+)
+
 
 def parse_entry_point(entry_point: str) -> tuple[str, str]:
     """Parse an entry point string of the form '<file>::<function>'."""
@@ -120,6 +126,11 @@ def print_synthetic_results(results: list[dict]) -> None:
                     print("        --- last 60 lines ---")
                     for line in log_lines[-60:]:
                         print(f"        {line}")
+
+
+def print_stage_validation_footer() -> None:
+    """Print the shell-oriented footer for inspection-only stage validation."""
+    print(STAGE_VALIDATION_INSPECTION_FOOTER)
 
 
 def write_raw_files(target_dir: Path, raw_files: dict[str, str]) -> None:

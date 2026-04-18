@@ -179,30 +179,21 @@ class CoderResult(StructuredResult):
     )
 
 
-class StageValidationReport(BaseModel):
-    """Validation report for a completed round-0 stage."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    stage_id: str = Field(description="Stage ID that was validated.")
-    report: str = Field(description="Concise report returned by the validation workflow.")
-
-
 class Round0StageResult(StructuredResult):
     """Returned by the staged round-0 coder after a single stage attempt."""
 
     stage_id: str = Field(description="Stage ID that was implemented.")
     stage_output_validation_report: str = Field(
-        description="Parsed report for the stage output validation of this stage.",
+        description="Report of the stage-validation inspection for this stage.",
     )
     stage_output_verified: bool = Field(
-        description="Whether the stage output validation of this stage passed.",
+        description="Whether the stage-validation inspection of this stage passed.",
     )
     final_correctness_verified: bool = Field(
         description="Whether the final round-0 correctness validation for this stage passed.",
     )
     correctness_check_report: str = Field(
-        description="Parsed correctness-only report for the final stage.",
+        description="Report of the correctness-only check for the final stage.",
     )
     status: Round0StageStatus = Field(
         description="Final outcome for the stage attempt.",

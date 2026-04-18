@@ -43,7 +43,9 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
 3. Break down the plan into small implementation stages, each centering around ONE section and ONE instruction/operation (ex. define MMA atoms and layouts, implement TMA warp role etc.) 
 4. For each stage in section 6, include:
    - A stable IDs such as `S0`, `S1`...
-   - the exact validation outputs the stage should print, including their scope (`gmem`, `rmem`, `smem`, or `host`)
+   - dependencies on other stages and how they are connected (ex. QK mma consumes initial TMA loads)
+   - the exact validation outputs the stage should print, using source tags such as `[sources: PyTorch]`, `[sources: CuTeDSL]`, or `[sources: PyTorch, CuTeDSL]`
+   - for each validation output, note whether the harness should print the full value or a preview (for example, first 100 flattened elements for larger tensors)
    - the key CuTeDSL helpers or APIs the stage coder agent should consult
 5. Keep the plan detailed and easy for later agents to navigate. The full markdown will be embedded directly into their prompts.
 """

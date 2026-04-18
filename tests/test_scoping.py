@@ -143,6 +143,24 @@ def _make_guardrail_data(
             {"file_path": "last_shell_dump.txt"},
             "kernel-stage-reviewer",
         ),
+        (
+            "designer",
+            "diff_files",
+            {
+                "file_a": "references/cutlass/python/CuTeDSL/cutlass/cute/example.py",
+                "file_b": "solution/dsa_attention/kernel_0_plan.md",
+            },
+            "kernel-designer",
+        ),
+        (
+            "reviewer",
+            "diff_files",
+            {
+                "file_a": "solution/dsa_attention/kernel_0.py",
+                "file_b": "solution/dsa_attention/round0/S0.attempt_01.kernel_0.py",
+            },
+            "kernel-stage-reviewer",
+        ),
     ],
 )
 def test_scope_guardrail_allows_in_scope_reads(

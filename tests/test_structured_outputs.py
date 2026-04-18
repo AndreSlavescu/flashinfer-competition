@@ -42,7 +42,7 @@ Load query tiles and expose a debug output.
 Depends on: none
 
 Validation outputs:
-- `q_tile_debug` [gmem]
+- `q_tile_debug` [sources: PyTorch, CuTeDSL]
 
 Key CuTeDSL helpers:
 - `cute.make_tensor`
@@ -55,7 +55,7 @@ Consume the staged query tile and produce a score tile.
 Depends on: S0
 
 Validation outputs:
-- `score_tile_debug` [rmem]
+- `score_tile_debug` [sources: CuTeDSL]
 
 Key CuTeDSL helpers:
 - `tcgen05.mma`
@@ -75,7 +75,7 @@ Produce the final output.
 Depends on: none
 
 Validation outputs:
-- `output` [gmem]
+- `output` [sources: PyTorch, CuTeDSL]
 
 Key CuTeDSL helpers:
 - `cute.copy`
@@ -470,6 +470,9 @@ def test_stage_payload_builders_keep_only_runtime_fields_and_create_snapshots(
     stage_result = _stage_result("S1")
     ctx.round0_stage_history = [_stage_result("S0"), stage_result]
     ctx.round0_review_history = [_review("S0", "continue_next_stage", next_stage="S1")]
+    previous_snapshot = main.round0_stage_kernel_snapshot_path(solution_dir, "S0", 1)
+    previous_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    previous_snapshot.write_text("def kernel():\n    return 'previous'\n", encoding="utf-8")
 
     coder_payload = main._build_stage_coder_payload(
         plan_text=plan_text,
@@ -505,6 +508,11 @@ def test_stage_payload_builders_keep_only_runtime_fields_and_create_snapshots(
     assert review_payload == {
         "stage_under_review": "S1",
         "full_plan": plan_text,
+        "kernel_snapshots": {
+            "current_kernel_path": "solution/dsa_attention/kernel_0.py",
+            "current_attempt_snapshot": "solution/dsa_attention/round0/S1.attempt_01.kernel_0.py",
+            "previous_attempt_snapshot": "solution/dsa_attention/round0/S0.attempt_01.kernel_0.py",
+        },
         "stage_results_history": [
             {
                 "stage_id": "S0",
@@ -569,9 +577,9 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     assert "## Full kernel_0_plan.md" in coder_prompt
     assert plan_text.strip() in coder_prompt
     assert "Return structured output matching `Round0StageResult`." in coder_prompt
-    assert "[PyTorch Val] <name>: BEGIN" in coder_prompt
-    assert "[CuTe Val] <name>" in coder_prompt
-    assert "[CuTe Host] <name>: BEGIN/END" in coder_prompt
+    assert "[PyTorch] <name>: BEGIN" in coder_prompt
+    assert "[CuTeDSL] <name>: BEGIN" in coder_prompt
+    assert "shell-friendly plain text" in coder_prompt
     assert extract_markdown_section(coder_prompt, "## References").splitlines() == [
         "## References",
         *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],
@@ -610,8 +618,9 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     reviewer_prompt = main._resolve_agent_instructions_text(reviewer, ctx)
     assert "## Stage Under Review" in reviewer_prompt
     assert "## Full kernel_0_plan.md" in reviewer_prompt
-    assert "## File Diffs" not in reviewer_prompt
-    assert "the concrete stage the next executor should run" in reviewer_prompt
+    assert "## Kernel Snapshots" in reviewer_prompt
+    assert "Use `diff_files` with the kernel snapshot paths" in reviewer_prompt
+    assert "Use `grep_search` and `read_file` on `last_shell_dump.txt`" in reviewer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
     assert extract_markdown_section(reviewer_prompt, "## References").splitlines() == [
         "## References",
@@ -769,6 +778,11 @@ def test_runtime_prompt_dump_contains_full_plan_and_no_file_diffs(
         {
             "stage_under_review": "S1",
             "full_plan": plan_text,
+            "kernel_snapshots": {
+                "current_kernel_path": "solution/dsa_attention/kernel_0.py",
+                "current_attempt_snapshot": "solution/dsa_attention/round0/S1.attempt_01.kernel_0.py",
+                "previous_attempt_snapshot": None,
+            },
             "stage_results_history": [],
             "review_history": [],
             "recovery_context": "",
@@ -786,6 +800,11 @@ def test_runtime_prompt_dump_contains_full_plan_and_no_file_diffs(
         payload={
             "stage_under_review": "S1",
             "full_plan": plan_text,
+            "kernel_snapshots": {
+                "current_kernel_path": "solution/dsa_attention/kernel_0.py",
+                "current_attempt_snapshot": "solution/dsa_attention/round0/S1.attempt_01.kernel_0.py",
+                "previous_attempt_snapshot": None,
+            },
             "stage_results_history": [],
             "review_history": [],
             "recovery_context": "",
@@ -795,9 +814,10 @@ def test_runtime_prompt_dump_contains_full_plan_and_no_file_diffs(
     system_path = prompt_dump.runtime_dir / "stage_S1.attempt_01.reviewer.system.md"
     input_path = prompt_dump.runtime_dir / "stage_S1.attempt_01.reviewer.input.json"
     assert "## Full kernel_0_plan.md" in system_path.read_text(encoding="utf-8")
+    assert "## Kernel Snapshots" in system_path.read_text(encoding="utf-8")
     assert plan_text.strip() in system_path.read_text(encoding="utf-8")
     assert "File Diffs" not in system_path.read_text(encoding="utf-8")
-    assert "file_diffs" not in input_path.read_text(encoding="utf-8")
+    assert "kernel_snapshots" in input_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio

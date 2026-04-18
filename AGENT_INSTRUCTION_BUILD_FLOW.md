@@ -2,12 +2,16 @@
 
 ## Purpose
 
-This document explains how the repo builds each SDK agent's initial `instructions` string and how runtime configuration changes the tool surface available to that agent.
+This document explains how the repo builds each SDK agent's `instructions`
+string and how runtime configuration changes the actual tool surface exposed to
+that agent.
 
 The important distinction is:
 
-- The SDK agent instruction string is assembled inside `kernel_agents/`.
-- Repo-root [AGENTS.md](/home/mark123/projects/word2kernel/AGENTS.md) is ambient guidance for Codex-style tooling and humans, but it is not concatenated directly into `Agent.instructions` for the four main SDK agents.
+- The SDK agent instruction strings are assembled inside `kernel_agents/`.
+- Repo-root [AGENTS.md](/home/mark123/projects/word2kernel/AGENTS.md) is ambient
+  guidance for Codex and humans, but it is not concatenated directly into
+  `Agent.instructions`.
 
 ## Build Flow
 
@@ -25,7 +29,6 @@ Relevant knobs:
 - `--coder-model`
 - `--designer-model`
 - per-role reasoning and verbosity flags
-- per-role `*_extra` prompt suffixes
 
 Current defaults:
 
@@ -42,35 +45,44 @@ Current defaults:
 - `tool_limits=tool_limits_for_profile(quality_profile)`
 - `codex_worker_mode`
 - persisted Codex thread ID slots for coder and optimizer workers
+- transient prompt sections for staged round-0 coder, fixer, and reviewer runs
 
-This happens before any agent is instantiated, so the factories can use the same context.
+### 3. Agent factories choose a role body
 
-### 3. Each agent factory chooses a role body
+The repo has both primary round agents and staged round-0 agents.
 
-Each role has a fixed role-specific body:
+Primary bodies:
 
 - `kernel_designer.DESIGNER_BODY`
-- `kernel_coder.CODER_BODY`
+- `kernel_coder.CODER_*`
 - `kernel_planner.PLANNER_BODY`
 - `kernel_optimizer.OPTIMIZER_BODY`
 
-These bodies contain the role’s mission, constraints, and workflow guidance.
+Staged round-0 bodies:
+
+- `kernel_stage_coder.NEW_STAGE_CODER_BODY`
+- `kernel_stage_fixer.NEW_STAGE_FIXER_BODY`
+- `kernel_stage_reviewer.NEW_STAGE_REVIEWER_BODY`
+
+These bodies hold the role mission, constraints, workflow guidance, and any
+runtime placeholders that `main.py` later fills in.
 
 ### 4. Each factory builds the actual tool list
 
-Each factory calls `build_tools_for_role(...)` in [kernel_agents/tools.py](/home/mark123/projects/word2kernel/kernel_agents/tools.py#L1232).
+Each factory calls `build_tools_for_role(...)` in
+[kernel_agents/tools.py](/home/mark123/projects/word2kernel/kernel_agents/tools.py).
 
 Inputs that affect the tool list:
 
-- role: `designer`, `coder`, `planner`, `optimizer`
+- role: `designer`, `reviewer`, `coder`, `planner`, `optimizer`
 - `codex_worker_mode`
 - `codex_worker_model`
 - `codex_worker_reasoning_effort`
 
-Inputs that do not change the tool list:
+Inputs that do not change tool membership:
 
 - `quality_profile`
-- main agent model name such as `gpt-5.4`
+- main agent model such as `gpt-5.4`
 - main agent reasoning effort / verbosity
 - retry settings
 
@@ -78,24 +90,33 @@ Inputs that do not change the tool list:
 
 ### 5. Prompt assembly happens in prompting.py
 
-Each factory calls `build_agent_instructions(...)` from [kernel_agents/prompting.py](/home/mark123/projects/word2kernel/kernel_agents/prompting.py#L73).
+Each factory calls `build_agent_instructions(...)` from
+[kernel_agents/prompting.py](/home/mark123/projects/word2kernel/kernel_agents/prompting.py).
 
 The final instruction string is assembled in this order:
 
 1. role-specific body
-2. shared Codex-style quality block
-3. shared tool-policy block
-4. optional Codex-worker block
-5. generated "Tools You Have" section based on the real registered tools
+2. optional hardware-spec block
+3. role-scoped references section
+4. optional Codex-worker guidance block
+5. generated `## Tools You Have` section based on the real registered tools
 6. optional caller-provided extra instructions
 
-The "Tools You Have" section is generated from the actual tool objects via `tool_names(tools)`, so the prompt stays aligned with the runtime tool surface.
+The tools section is generated from the real tool objects via `tool_names(tools)`,
+so prompt text stays aligned with runtime tool registration.
 
-### 6. Optional Codex-worker guidance is injected only when relevant
+### 6. Dynamic staged prompts are resolved at runtime
 
-- `kernel_coder` includes the Codex-worker guidance block only if `codex_coder_engineer` is present.
-- `kernel_optimizer` includes the Codex-worker guidance block only if `codex_optimizer_engineer` is present.
-- `kernel_designer` and `kernel_planner` never receive a write-capable Codex-worker block in the current implementation.
+The staged round-0 agents use placeholders that `main.py` resolves right before
+execution:
+
+- stage coder gets the assigned stage and full plan
+- stage fixer gets the stage, full plan, and last reviewer feedback
+- stage reviewer gets the stage under review, full plan, kernel snapshot paths,
+  trimmed histories, and any recovery context
+
+Those fully materialized prompts can optionally be dumped under `prompts/` via
+`--dump-prompts`.
 
 ### 7. Model settings are attached separately
 
@@ -107,79 +128,96 @@ After the prompt string is built, the factory creates the `Agent(...)` with:
 - `model_settings=<reasoning/verbosity for that agent, where applicable>`
 - `output_type=<structured result model>`
 
-This means:
+Swapping `gpt-5.4` for another main model does not automatically change tool
+access. Tool access is driven by role plus `codex_worker_mode`.
 
-- the instruction text and the model choice are configured separately
-- swapping `gpt-5.4` for another main model does not automatically change tool access
-- tool access is driven by role plus Codex-worker mode
+## Live Tool Access Matrix
 
-## Tool Access Matrix
+### Shared inspection tools
 
-### Base repo tools
-
-All roles start from this base set:
+Every role currently receives:
 
 - `apply_patch`
-- `web_search`
-- `web_fetch`
 - `codex_kernel_assist`
 - `read_file`
 - `glob_files`
 - `grep_search`
 - `list_directory`
-
-### Performance tools
-
-Coder and optimizer receive:
-
 - `diff_files`
+
+The repo still defines standalone helpers like `web_fetch`, but they are not
+wired into any agent role through `build_tools_for_role(...)`.
+
+### Role-specific workflow tools
+
+`designer`
+- no extra workflow tools beyond the shared inspection tools
+
+`reviewer`
+- no extra workflow tools beyond the shared inspection tools
+
+`coder`
 - `run_synthetic_check`
 - `run_correctness_check`
+- `run_stage_validation`
 
-Planner receives:
-
-- `diff_files`
+`planner`
 - `run_synthetic_check`
 - `run_correctness_check`
 - `run_ncu_profile`
 - `run_sass_analysis`
 - `run_full_benchmark`
 
+`optimizer`
+- `run_synthetic_check`
+- `run_correctness_check`
+
+### Staged round-0 role mapping
+
+- `kernel-stage-coder` uses the `coder` tool surface
+- `kernel-stage-fixer` uses the `coder` tool surface
+- `kernel-stage-reviewer` uses the `reviewer` tool surface
+
 ### Write-capable Codex worker tools
 
 These are added only when `codex_worker_mode=coder_optimizer`:
 
-- coder gets `codex_coder_engineer`
-- optimizer gets `codex_optimizer_engineer`
+- `coder` gets `codex_coder_engineer`
+- `optimizer` gets `codex_optimizer_engineer`
 
-Designer and planner do not get a write-capable Codex worker in the current implementation.
+No other role gets a write-capable Codex worker in the current implementation.
 
 ## Config Combinations
 
 ### Tool access by role and codex_worker_mode
 
 `designer` + `off`
-- base repo tools only
+- shared inspection tools only
 
 `designer` + `coder_optimizer`
-- base repo tools only
+- shared inspection tools only
+
+`reviewer` + `off`
+- shared inspection tools only
+
+`reviewer` + `coder_optimizer`
+- shared inspection tools only
 
 `coder` + `off`
-- base repo tools
-- `diff_files`
+- shared inspection tools
 - `run_synthetic_check`
 - `run_correctness_check`
+- `run_stage_validation`
 
 `coder` + `coder_optimizer`
-- base repo tools
-- `diff_files`
+- shared inspection tools
 - `run_synthetic_check`
 - `run_correctness_check`
+- `run_stage_validation`
 - `codex_coder_engineer`
 
 `planner` + `off`
-- base repo tools
-- `diff_files`
+- shared inspection tools
 - `run_synthetic_check`
 - `run_correctness_check`
 - `run_ncu_profile`
@@ -187,8 +225,7 @@ Designer and planner do not get a write-capable Codex worker in the current impl
 - `run_full_benchmark`
 
 `planner` + `coder_optimizer`
-- base repo tools
-- `diff_files`
+- shared inspection tools
 - `run_synthetic_check`
 - `run_correctness_check`
 - `run_ncu_profile`
@@ -196,14 +233,12 @@ Designer and planner do not get a write-capable Codex worker in the current impl
 - `run_full_benchmark`
 
 `optimizer` + `off`
-- base repo tools
-- `diff_files`
+- shared inspection tools
 - `run_synthetic_check`
 - `run_correctness_check`
 
 `optimizer` + `coder_optimizer`
-- base repo tools
-- `diff_files`
+- shared inspection tools
 - `run_synthetic_check`
 - `run_correctness_check`
 - `codex_optimizer_engineer`
@@ -214,7 +249,7 @@ Only `planner` currently receives `run_full_benchmark`.
 
 `quality_profile=legacy`
 - legacy tool caps
-- no automatic run-level compaction unless explicitly requested via `make_run_config("legacy")` override behavior
+- no automatic public-Codex compaction profile
 
 `quality_profile=public_codex`
 - larger Codex-like tool caps
@@ -224,7 +259,8 @@ Only `planner` currently receives `run_full_benchmark`.
 - `extra_args={"context_management": [{"type": "compaction", "compact_threshold": 200000}]}`
 - `call_model_input_filter=public_codex_input_filter`
 
-Important: `quality_profile` changes runtime behavior and limits, but not which tools the role can access.
+Important: `quality_profile` changes runtime behavior and limits, not which
+tools a role can access.
 
 ## Codex Worker Tool Configuration
 
@@ -247,14 +283,15 @@ Current role-specific keys:
 - coder: `codex_thread_id_coder_engineer`
 - optimizer: `codex_thread_id_optimizer_engineer`
 
-## Why the prompt/tool alignment matters
+## Why prompt/tool alignment matters
 
-The repo used to maintain large static prompt tool lists. That is easy to drift out of sync with the actual tool registration.
+The repo used to maintain larger static tool lists in prose. That is easy to
+drift out of sync with runtime registration.
 
-The current flow fixes that by:
+The current flow avoids that by:
 
 - building the tool list first
-- rendering the prompt tool section from the real tool objects
+- rendering the prompt tool section from the actual tool objects
 - injecting Codex-worker guidance only when the worker is actually registered
 
-That keeps the instruction text, tool schema, and runtime behavior aligned.
+That keeps instruction text, tool schema, and runtime behavior aligned.
