@@ -19,6 +19,7 @@ from kernel_agents.context import (
     Round0StageResult,
     RoundRecord,
     SharedContext,
+    StageOutput,
     StageReviewResult,
     StageSpec,
 )
@@ -45,14 +46,14 @@ def _sample_impl_graph() -> ImplementationGraph:
             StageSpec(
                 stage_id="warp0::load_q",
                 prerequisites=[],
-                outputs=["q_tile_debug matches the eager reference for the active tile"],
+                outputs=[StageOutput(name="q_tile_debug", scope="gmem")],
                 relevant_helpers=["cute.make_tensor", "blackwell load example"],
                 plan_excerpt="## Load Q\nload q details",
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
                 prerequisites=["warp0::load_q"],
-                outputs=["score_tile_debug matches the eager fp32 QK tile"],
+                outputs=[StageOutput(name="score_tile_debug", scope="rmem")],
                 relevant_helpers=["tcgen05.mma", "pipeline example"],
                 plan_excerpt="## QK Mainloop\nqk details",
             ),
@@ -67,7 +68,7 @@ def _single_stage_impl_graph() -> ImplementationGraph:
             StageSpec(
                 stage_id="warp0::load_q",
                 prerequisites=[],
-                outputs=["q_tile_debug matches the eager reference for the active tile"],
+                outputs=[StageOutput(name="q_tile_debug", scope="gmem")],
                 relevant_helpers=["cute.make_tensor", "blackwell load example"],
                 plan_excerpt="## Load Q\nload q details",
             ),
@@ -154,6 +155,47 @@ class _FakeTypedRunResult:
                 f"Expected {cls.__name__}, got {type(self._typed_output).__name__}"
             )
         return self._typed_output
+
+
+def test_stage_spec_requires_stage_output_objects() -> None:
+    import pydantic
+
+    with pytest.raises(pydantic.ValidationError):
+        StageSpec(
+            stage_id="warp0::load_q",
+            prerequisites=[],
+            outputs=["stringy output"],  # type: ignore[list-item]
+            relevant_helpers=["cute.make_tensor"],
+            plan_excerpt="## Load Q\nload q details",
+        )
+
+    with pytest.raises(pydantic.ValidationError, match="must have unique names"):
+        StageSpec(
+            stage_id="warp0::load_q",
+            prerequisites=[],
+            outputs=[
+                StageOutput(name="dup", scope="gmem"),
+                StageOutput(name="dup", scope="rmem"),
+            ],
+            relevant_helpers=["cute.make_tensor"],
+            plan_excerpt="## Load Q\nload q details",
+        )
+
+    with pytest.raises(pydantic.ValidationError):
+        StageOutput(name="x", scope="hbm")  # type: ignore[arg-type]
+
+    spec = StageSpec(
+        stage_id="warp0::load_q",
+        prerequisites=[],
+        outputs=[
+            StageOutput(name="q_tile", scope="gmem"),
+            StageOutput(name="q_tile_frag", scope="rmem"),
+        ],
+        relevant_helpers=["cute.make_tensor"],
+        plan_excerpt="## Load Q\nload q details",
+    )
+    assert spec.outputs[0].scope == "gmem"
+    assert spec.outputs[1].scope == "rmem"
 
 
 def test_require_structured_output_uses_sdk_typed_accessor() -> None:
@@ -355,6 +397,11 @@ def test_stage_agent_prompts_render_dynamic_sections_and_scope_references(
     assert "{..## Current Stage Specifications..}" not in coder_prompt
     assert "## Current Stage Specifications" in coder_prompt
     assert "Return structured output matching `Round0StageResult`." in coder_prompt
+    assert "parser-compatible" in coder_prompt
+    assert "[PyTorch Val] <name>: BEGIN" in coder_prompt
+    assert "[CuTe Val] <name>" in coder_prompt
+    assert "thread 0 of block 0" not in coder_prompt
+    assert "if tidx == 0 and bidx == 0" not in coder_prompt
     assert extract_markdown_section(coder_prompt, "## References").splitlines() == [
         "## References",
         *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],

@@ -361,6 +361,9 @@ def _ensure_solution_module(raw_files: dict[str, str], entry_point: str, entry_f
 
 
 def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[dict]:
+    import contextlib
+    import io
+
     solution_run = getattr(solution_mod, "run", None)
     solution_entry = getattr(solution_mod, entry_func, None)
     use_run = callable(solution_run)
@@ -377,8 +380,9 @@ def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[di
         strict=True,
     ):
         num_tokens = case["num_tokens"]
+        captured = io.StringIO()
         try:
-            with torch.no_grad():
+            with torch.no_grad(), contextlib.redirect_stdout(captured):
                 if use_run:
                     test_output, test_lse = solution_run(
                         case["q_nope"],
@@ -403,6 +407,10 @@ def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[di
                     )
                 torch.cuda.synchronize()
 
+            captured_text = captured.getvalue()
+            if captured_text:
+                sys.stdout.write(captured_text)
+
             output_abs_err = (test_output.float() - ref_output.float()).abs().max().item()
             lse_abs_err = (test_lse - ref_lse).abs().max().item()
             max_abs_err = max(output_abs_err, lse_abs_err)
@@ -417,10 +425,15 @@ def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[di
                     "output_abs_err": output_abs_err,
                     "lse_abs_err": lse_abs_err,
                     "max_abs_err": max_abs_err,
+                    "log": captured_text,
                 }
             )
         except Exception:
             import traceback
+
+            captured_text = captured.getvalue()
+            if captured_text:
+                sys.stdout.write(captured_text)
 
             results.append(
                 {
@@ -428,7 +441,7 @@ def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[di
                     "num_tokens": num_tokens,
                     "num_pages": SYNTHETIC_NUM_PAGES,
                     "status": "FAILED",
-                    "log": traceback.format_exc(),
+                    "log": captured_text + "\n" + traceback.format_exc(),
                 }
             )
     return results

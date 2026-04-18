@@ -35,6 +35,7 @@ from bench_synthetic_common import (
     parse_entry_point,
     print_synthetic_results,
 )
+from stage_validation_parser import compare_tagged_outputs
 
 def resolve_solution_dir(solution_dir: str) -> Path:
     solution_path = Path(solution_dir)
@@ -299,7 +300,18 @@ def main() -> None:
         f"remote={result.get('elapsed_s', 0.0):.3f}s "
         f"end_to_end={time.perf_counter() - start:.3f}s"
     )
-    print_synthetic_results(result.get("results", []))
+    results = result.get("results", [])
+    print_synthetic_results(results)
+
+    transcript = "\n".join(
+        r.get("log", "") for r in results if r.get("log")
+    )
+    report = compare_tagged_outputs(transcript)
+    if report.fields:
+        print()
+        print(report.format_summary())
+        if not report.overall_pass:
+            sys.exit(1)
 
 
 if __name__ == "__main__":

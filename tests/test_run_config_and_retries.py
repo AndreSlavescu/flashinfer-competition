@@ -14,6 +14,7 @@ from kernel_agents.context import (
     DesignerResult,
     ImplementationGraph,
     SharedContext,
+    StageOutput,
     StageSpec,
 )
 from kernel_agents.kernel_designer import make_kernel_designer
@@ -233,14 +234,14 @@ async def test_run_staged_designer_repairs_invalid_impl_graph(
             StageSpec(
                 stage_id="warp0::load_q",
                 prerequisites=[],
-                outputs=["q_tile_debug matches eager reference"],
+                outputs=[StageOutput(name="q_tile_debug", scope="gmem")],
                 relevant_helpers=["cute.make_tensor"],
                 plan_excerpt="## Load Q\nload q details",
             ),
             StageSpec(
                 stage_id="warp1::qk_mma",
                 prerequisites=["warp0::load_q"],
-                outputs=["score_tile_debug matches eager reference"],
+                outputs=[StageOutput(name="score_tile_debug", scope="rmem")],
                 relevant_helpers=["tcgen05.mma"],
                 plan_excerpt="## QK Mainloop\nqk details",
             ),

@@ -192,6 +192,36 @@ class AsyncPipelineSpec(BaseModel):
         return self
 
 
+StageOutputScope = Literal["gmem", "rmem", "smem", "host"]
+
+
+class StageOutput(BaseModel):
+    """Single validated output from a stage, paired with its CuTe memory scope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        description=(
+            "Output tensor identifier. Used verbatim as the <field> token in "
+            "'[PyTorch Val] <field>: BEGIN' / '[CuTe Val] <field>: BEGIN' tags "
+            "or '[CuTe Host] <field>: BEGIN' for host-scope outputs."
+        ),
+    )
+    scope: StageOutputScope = Field(
+        description=(
+            "Validation scope metadata for the output. 'gmem', 'rmem', and 'smem' are "
+            "runtime compared through matching [PyTorch Val] / [CuTe Val] blocks; "
+            "'host' is inspection-only and uses a [CuTe Host] block."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _validate_non_empty_name(self) -> "StageOutput":
+        if not self.name.strip():
+            raise ValueError("name must not be blank.")
+        return self
+
+
 class StageSpec(BaseModel):
     """Single implementation stage derived from the design plan."""
 
@@ -202,10 +232,10 @@ class StageSpec(BaseModel):
         default_factory=list,
         description="Stage IDs that must be completed and validated before this stage runs.",
     )
-    outputs: list[str] = Field(
+    outputs: list[StageOutput] = Field(
         min_length=1,
         description=(
-            "Stage output tensors that the coder MUST validate against naive PyTorch with synthetic inputs."
+            "Stage outputs that MUST be logged for validation or inspection. Each entry provides the output name and its validation scope metadata."
         ),
     )
     relevant_helpers: list[str] = Field(
@@ -232,13 +262,12 @@ class StageSpec(BaseModel):
             if not value.strip():
                 raise ValueError(f"{field_name} must not be blank.")
 
-        required_list_fields = {
-            "outputs": self.outputs,
-            "relevant_helpers": self.relevant_helpers,
-        }
-        for field_name, values in required_list_fields.items():
-            if any(not value.strip() for value in values):
-                raise ValueError(f"{field_name} must not contain blank entries.")
+        if any(not value.strip() for value in self.relevant_helpers):
+            raise ValueError("relevant_helpers must not contain blank entries.")
+
+        names = [output.name for output in self.outputs]
+        if len(names) != len(set(names)):
+            raise ValueError("outputs entries must have unique names.")
 
         return self
 
