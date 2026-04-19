@@ -24,8 +24,10 @@ SYNTHETIC_NUM_QO_HEADS = 16
 SYNTHETIC_CKV_DIM = 512
 SYNTHETIC_KPE_DIM = 64
 SYNTHETIC_SM_SCALE = 0.1352337788608801
+STAGE_VALIDATION_PREFERRED_PAGE_IDS = (1, 3, 5)
 
 STAGE_VALIDATION_INSPECTION_FOOTER = (
+    "Stage validation is inspection-only.\n"
     "Inspect tagged `[PyTorch]` / `[CuTeDSL]` BEGIN/END blocks in this transcript.\n"
     "When invoked through the repo tools, use `grep_search` or `read_file` on "
     "`last_shell_dump.txt` for shell-driven review."
@@ -131,6 +133,39 @@ def print_synthetic_results(results: list[dict]) -> None:
 def print_stage_validation_footer() -> None:
     """Print the shell-oriented footer for inspection-only stage validation."""
     print(STAGE_VALIDATION_INSPECTION_FOOTER)
+
+
+def stage_validation_page_ids(num_pages: int) -> tuple[int, ...]:
+    """Choose a small deterministic set of page ids for round-0 stage validation.
+
+    The stage-validation harness for staged round-0 kernels expects page-dense
+    sparse indices. We keep the validation case shell-friendly and deterministic
+    by selecting a few whole pages and leaving the rest invalid.
+    """
+    if num_pages <= 0:
+        return ()
+
+    max_page_slots = SYNTHETIC_TOPK // SYNTHETIC_PAGE_SIZE
+    target_count = min(len(STAGE_VALIDATION_PREFERRED_PAGE_IDS), num_pages, max_page_slots)
+    page_ids: list[int] = []
+    seen: set[int] = set()
+
+    for page_id in STAGE_VALIDATION_PREFERRED_PAGE_IDS:
+        if 0 <= page_id < num_pages and page_id not in seen:
+            page_ids.append(page_id)
+            seen.add(page_id)
+        if len(page_ids) >= target_count:
+            return tuple(page_ids)
+
+    for page_id in range(num_pages):
+        if page_id in seen:
+            continue
+        page_ids.append(page_id)
+        seen.add(page_id)
+        if len(page_ids) >= target_count:
+            break
+
+    return tuple(page_ids)
 
 
 def write_raw_files(target_dir: Path, raw_files: dict[str, str]) -> None:

@@ -1,15 +1,15 @@
-# TOOL_SCOPE_FLOW
+# TOOL_SCOPE_FLOW.md
 
-This document describes how tool scoping works for all kernel agents in
-`word2kernel` after the current scope-hardening changes.
+This document describes how tool scoping works for the kernel agents in
+`word2kernel` after the current scope-hardening pass.
 
 ## Overview
 
 The repository uses three different scope mechanisms:
 
-1. Function-tool read guardrails
-2. Apply-patch write enforcement
-3. Role-specific Codex read-only workspace scoping
+1. function-tool read guardrails
+2. `apply_patch` write enforcement
+3. role-specific `codex_kernel_assist` workspace narrowing
 
 The high-level idea is:
 
@@ -24,19 +24,50 @@ The canonical allowlists live in `kernel_agents/scoping.py` as `AGENT_SCOPES`.
 
 ```text
 designer
-  read:  references/, solution/dsa_attention/
+  read:  references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
+         references/cutlass/examples/python/CuTeDSL/blackwell/mla/
+         references/cutlass/python/CuTeDSL/cutlass/cute/
+         references/cutlass/python/CuTeDSL/cutlass/pipeline/
+         references/cutlass/python/CuTeDSL/cutlass/utils/
+         solution/dsa_attention/
   write: solution/dsa_attention/kernel_0_plan.md
 
+reviewer
+  read:  references/cutlass/examples/python/CuTeDSL/blackwell/mla/
+         references/CuTeGen_guidelines.md
+         references/cutlass/python/CuTeDSL/cutlass/cute/
+         references/cutlass/python/CuTeDSL/cutlass/pipeline/
+         references/cutlass/python/CuTeDSL/cutlass/utils/
+         solution/dsa_attention/
+         last_shell_dump.txt
+  write: (none)
+
 coder
-  read:  references/, solution/dsa_attention/, last_shell_dump.txt
+  read:  references/cutlass/examples/python/CuTeDSL/blackwell/mla/
+         references/CuTeGen_guidelines.md
+         references/cutlass/python/CuTeDSL/cutlass/cute/
+         references/cutlass/python/CuTeDSL/cutlass/pipeline/
+         references/cutlass/python/CuTeDSL/cutlass/utils/
+         solution/dsa_attention/
+         last_shell_dump.txt
   write: solution/dsa_attention/
 
 planner
-  read:  references/, solution/dsa_attention/, notes/dsa_attention/, last_shell_dump.txt
+  read:  references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
+         references/cutlass/examples/python/CuTeDSL/blackwell/mla/
+         references/cutlass/python/CuTeDSL/cutlass/cute/
+         references/cutlass/python/CuTeDSL/cutlass/pipeline/
+         references/cutlass/python/CuTeDSL/cutlass/utils/
+         solution/dsa_attention/
+         notes/dsa_attention/
+         last_shell_dump.txt
   write: notes/dsa_attention/
 
 optimizer
-  read:  references/, solution/dsa_attention/, notes/dsa_attention/, last_shell_dump.txt
+  read:  references/
+         solution/dsa_attention/
+         notes/dsa_attention/
+         last_shell_dump.txt
   write: solution/dsa_attention/
 ```
 
@@ -47,8 +78,8 @@ Single-file entries must match exactly.
 
 ### 1. File-access function tools
 
-`read_file`, `glob_files`, `grep_search`, `list_directory`, and `diff_files` use
-a `ToolInputGuardrail`.
+`read_file`, `glob_files`, `grep_search`, `list_directory`, and `diff_files`
+use a `ToolInputGuardrail`.
 
 ```text
 Agent
@@ -71,11 +102,11 @@ Tool implementation
 
 Notes:
 
-- `glob_files` guardrail checks `directory`, not `pattern`.
-- `glob_files` now also resolves every match and post-filters each returned file
-  against `role.read_allow`, so patterns like `../*.py` cannot escape.
-- `glob_files` also requires a valid `current_agent_role` in run context and
-  fails closed if it is missing.
+- `glob_files` guardrail checks `directory`, not `pattern`
+- `glob_files` also resolves every match and post-filters each returned file
+  against `role.read_allow`, so patterns like `../*.py` cannot escape
+- `glob_files` requires a valid `current_agent_role` in run context and fails
+  closed if it is missing
 
 ### 2. `apply_patch`
 
@@ -104,8 +135,8 @@ WorkspaceEditor(create/update/delete)
 ### 3. `codex_kernel_assist`
 
 `codex_kernel_assist` is created per role inside `build_tools_for_role(...)`.
-It is read-only and its workspace is narrowed to that role's allowed
-directories.
+It is read-only and its workspace is narrowed to that role's allowed directory
+roots.
 
 ```text
 build_tools_for_role(role)
@@ -120,9 +151,8 @@ _build_codex_kernel_assist(role)
   +--> create read-only codex_tool(...)
 ```
 
-The Codex helper uses directory scope only.
-Single-file exceptions like `last_shell_dump.txt` are not exposed through
-Codex assist.
+The Codex helper uses directory scope only. Single-file exceptions like
+`last_shell_dump.txt` are not exposed through `codex_kernel_assist`.
 
 ### 4. Write-capable Codex workers
 
@@ -169,96 +199,85 @@ These writes are checked against `write_allow`:
 
 ### Role-assigned, but not path-guarded by `AGENT_SCOPES`
 
+- `run_stage_validation`
 - `run_synthetic_check`
 - `run_correctness_check`
 - `run_full_benchmark`
 - `run_ncu_profile`
 - `run_sass_analysis`
-- `web_search`
+
+These tools are part of the role-specific tool surface, but they are not
+enforced by the same path-prefix guardrail/editor mechanism as the file tools.
+
+### Not currently assigned to any role
+
 - `web_fetch`
 
-These tools are still part of the role-specific tool surface, but they are not
-enforced by the same path-prefix guardrail/editor mechanism as the file tools.
+The helper exists in `kernel_agents/tools.py` and is tested directly, but it is
+not exposed through `build_tools_for_role(...)`.
 
 ### Known scoping limitation
 
 - `codex_coder_engineer`
 - `codex_optimizer_engineer`
 
-## Per-Agent Tool Surface
+## Per-Role Tool Surface
 
 ### Designer
 
-```text
-kernel-designer
-  read scope:
-    references/
-    solution/dsa_attention/
-
-  write scope:
-    solution/dsa_attention/kernel_0_plan.md
-```
+Used by `kernel-designer`.
 
 | Tool | Scope |
 |---|---|
 | `apply_patch` | Can only create/update/delete `solution/dsa_attention/kernel_0_plan.md`. |
-| `web_search` | No filesystem scope. Web-only. |
-| `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=references/`, `additional_directories=[solution/dsa_attention/]`. |
-| `read_file` | Can read only `references/` and `solution/dsa_attention/`. |
-| `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the designer read allowlist before being returned. |
-| `grep_search` | Can search only within an explicit scoped `path` under `references/` or `solution/dsa_attention/`. |
-| `list_directory` | Can list only an explicit scoped directory under `references/` or `solution/dsa_attention/`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=references/`, `additional_directories` mirrors the other designer-readable directories. |
+| `read_file` | Can read only the designer `read_allow` set. |
+| `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the designer read allowlist. |
+| `grep_search` | Can search only within an explicit scoped `path` under the designer read allowlist. |
+| `list_directory` | Can list only an explicit scoped directory under the designer read allowlist. |
+| `diff_files` | Both `file_a` and `file_b` must be within the designer read allowlist. |
+
+### Reviewer
+
+Used by `kernel-stage-reviewer`.
+
+| Tool | Scope |
+|---|---|
+| `apply_patch` | No writable paths. All writes are blocked. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories` mirrors the reviewer-readable directories. |
+| `read_file` | Can read the reviewer `read_allow` set, including `last_shell_dump.txt`. |
+| `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the reviewer read allowlist. |
+| `grep_search` | Can search only within an explicit scoped `path` under the reviewer read allowlist. |
+| `list_directory` | Can list only an explicit scoped directory under the reviewer read allowlist. |
+| `diff_files` | Both files must be within the reviewer read allowlist. |
 
 ### Coder
 
-```text
-kernel-coder
-  read scope:
-    references/
-    solution/dsa_attention/
-    last_shell_dump.txt
-
-  write scope:
-    solution/dsa_attention/
-```
+Used by `kernel-coder`, `kernel-stage-coder`, and `kernel-stage-fixer`.
 
 | Tool | Scope |
 |---|---|
 | `apply_patch` | Can only write under `solution/dsa_attention/`. |
-| `web_search` | No filesystem scope. Web-only. |
-| `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/]`. Does not expose `last_shell_dump.txt` as a standalone file root. |
-| `read_file` | Can read `references/`, `solution/dsa_attention/`, and `last_shell_dump.txt`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories` mirrors the other coder-readable directories. |
+| `read_file` | Can read the coder `read_allow` set, including `last_shell_dump.txt`. |
 | `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the coder read allowlist. |
 | `grep_search` | Can search only within an explicit scoped `path` under the coder read allowlist. |
 | `list_directory` | Can list only an explicit scoped directory under the coder read allowlist. |
-| `diff_files` | Both `file_a` and `file_b` must be within the coder read allowlist. |
-| `run_synthetic_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. Uses `solution_dir` and defaults to the context solution directory. |
-| `run_correctness_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. Uses `solution_dir` and defaults to the context solution directory. |
-| `codex_coder_engineer` | Write-capable Codex worker. `workspace-write` at repo root. Known scoping limitation: not constrained by `AGENT_SCOPES`. |
+| `diff_files` | Both files must be within the coder read allowlist. |
+| `run_stage_validation` | Inspection-oriented single-case validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
+| `run_synthetic_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
+| `run_correctness_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
+| `codex_coder_engineer` | Optional write-capable Codex worker. `workspace-write` at repo root. Known scoping limitation: not constrained by `AGENT_SCOPES`. |
 
 ### Planner
 
-```text
-kernel-planner
-  read scope:
-    references/
-    solution/dsa_attention/
-    notes/dsa_attention/
-    last_shell_dump.txt
-
-  write scope:
-    notes/dsa_attention/
-```
+Used by `kernel-planner`.
 
 | Tool | Scope |
 |---|---|
 | `apply_patch` | Can only write under `notes/dsa_attention/`. |
-| `web_search` | No filesystem scope. Web-only. |
-| `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/, notes/dsa_attention/]`. Does not expose `last_shell_dump.txt` as a standalone file root. |
-| `read_file` | Can read `references/`, `solution/dsa_attention/`, `notes/dsa_attention/`, and `last_shell_dump.txt`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories` mirrors the other planner-readable directories. |
+| `read_file` | Can read the planner `read_allow` set, including `last_shell_dump.txt`. |
 | `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the planner read allowlist. |
 | `grep_search` | Can search only within an explicit scoped `path` under the planner read allowlist. |
 | `list_directory` | Can list only an explicit scoped directory under the planner read allowlist. |
@@ -266,37 +285,25 @@ kernel-planner
 | `run_synthetic_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
 | `run_correctness_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
 | `run_ncu_profile` | Planner-only profiling tool. No `AGENT_SCOPES` path guardrail. |
-| `run_sass_analysis` | Planner-only SASS analysis tool. Accepts `kernel_file`, but this path is not guarded by the `AGENT_SCOPES` file guardrail mechanism. |
+| `run_sass_analysis` | Planner-only SASS analysis tool. Accepts `kernel_file`, but this path is not guarded by the file-tool guardrail mechanism. |
 | `run_full_benchmark` | Planner-only benchmark tool. No `AGENT_SCOPES` path guardrail. |
 
 ### Optimizer
 
-```text
-kernel-optimizer
-  read scope:
-    references/
-    solution/dsa_attention/
-    notes/dsa_attention/
-    last_shell_dump.txt
-
-  write scope:
-    solution/dsa_attention/
-```
+Used by `kernel-optimizer`.
 
 | Tool | Scope |
 |---|---|
 | `apply_patch` | Can only write under `solution/dsa_attention/`. |
-| `web_search` | No filesystem scope. Web-only. |
-| `web_fetch` | No filesystem scope. URL fetch only. |
-| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories=[references/, notes/dsa_attention/]`. Does not expose `last_shell_dump.txt` as a standalone file root. |
-| `read_file` | Can read `references/`, `solution/dsa_attention/`, `notes/dsa_attention/`, and `last_shell_dump.txt`. |
+| `codex_kernel_assist` | Read-only Codex workspace. `working_directory=solution/dsa_attention/`, `additional_directories` mirrors the other optimizer-readable directories. |
+| `read_file` | Can read the optimizer `read_allow` set, including `last_shell_dump.txt`. |
 | `glob_files` | Can glob only inside an explicit scoped directory. Returned matches are post-filtered to the optimizer read allowlist. |
 | `grep_search` | Can search only within an explicit scoped `path` under the optimizer read allowlist. |
 | `list_directory` | Can list only an explicit scoped directory under the optimizer read allowlist. |
 | `diff_files` | Both files must be within the optimizer read allowlist. |
 | `run_synthetic_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
 | `run_correctness_check` | Role-available validation tool. Not enforced by `AGENT_SCOPES` path guardrails. |
-| `codex_optimizer_engineer` | Write-capable Codex worker. `workspace-write` at repo root. Known scoping limitation: not constrained by `AGENT_SCOPES`. |
+| `codex_optimizer_engineer` | Optional write-capable Codex worker. `workspace-write` at repo root. Known scoping limitation: not constrained by `AGENT_SCOPES`. |
 
 ## End-to-End Build Flow
 
@@ -325,8 +332,8 @@ If it is a file tool or apply_patch:
 If it is codex_kernel_assist:
   check working_directory + additional_directories for that role
 
-If it is a benchmark/profile/web tool:
-  it is role-assigned, but not enforced by the AGENT_SCOPES guardrail/editor path mechanism
+If it is a benchmark/profile/validation tool:
+  it is role-assigned, but not enforced by the AGENT_SCOPES guardrail/editor mechanism
 
 If it is a write-capable Codex worker:
   treat it as a known exception

@@ -102,19 +102,19 @@ The coder's first-turn user content is only the message from `main.py`. It inclu
 
 ### 3. Tool definitions
 
-The coder gets `ALL_TOOLS` from `kernel_agents/tools.py`. In the current code, that tool surface is:
+The coder gets a role-specific tool list from `build_tools_for_role("coder")`
+in `kernel_agents/tools.py`. In the current code, that tool surface is:
 
-1. `shell`
-2. `apply_patch`
-3. `web_search`
-4. `web_fetch`
-5. `codex_kernel_assist`
-6. `read_file`
-7. `glob_files`
-8. `grep_search`
-9. `run_synthetic_check`
-10. `run_correctness_check`
-11. `run_full_benchmark`
+1. `apply_patch`
+2. `codex_kernel_assist`
+3. `read_file`
+4. `glob_files`
+5. `grep_search`
+6. `list_directory`
+7. `diff_files`
+8. `run_synthetic_check`
+9. `run_correctness_check`
+10. `run_stage_validation`
 
 These tools are not just runtime capabilities; their schemas are part of the model call. They shape what the model believes it can do next.
 
@@ -399,19 +399,19 @@ In other words:
 
 ### Validation and benchmark tools
 
-These tools are especially important for coder context management because they do not just dump raw subprocess output back into the model. They return curated workflow reports.
+These tools are especially important for coder context management because they
+return trimmed shell context and write the full transcript to
+`last_shell_dump.txt`.
 
 The current tools are:
 
 1. `run_synthetic_check`
 2. `run_correctness_check`
-3. `run_full_benchmark`
+3. `run_stage_validation`
 
-These return concise summaries parsed from command output, which is a very important context-control mechanism: the model sees a compact report rather than an uncontrolled terminal log in every turn.
-
-### `web_search` and `web_fetch`
-
-These can bring external information into context. They are available to the coder, but they only affect context if called.
+These do not rely on parser-generated summaries. The model sees recent shell
+context directly and can inspect `last_shell_dump.txt` with `read_file` or
+`grep_search` when the returned context is trimmed.
 
 ### `codex_kernel_assist`
 

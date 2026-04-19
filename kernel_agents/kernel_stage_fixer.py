@@ -36,8 +36,8 @@ You are kernel-stage-fixer, an expert at debugging and improving CuTeDSL (CUTLAS
   - `"validation_failed"` if the harness or correctness check ran but disagreed with the reference
   - `"success"` if every mandated check passed
 
-{..## Stage To Fix..}
 {..## Full kernel_0_plan.md..}
+{..## Stage To Fix..}
 {..## Last Reviewer Feedback..}
 """
 

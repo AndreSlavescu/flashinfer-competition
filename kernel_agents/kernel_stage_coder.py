@@ -47,8 +47,8 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
   - `"validation_failed"` if the harness or correctness check ran but disagreed with the reference
   - `"success"` if every mandated check passed
 
-{..## Assigned Stage..}
 {..## Full kernel_0_plan.md..}
+{..## Assigned Stage..}
 """
 
 STAGE_CODER_OUTPUT_REMINDER = """\

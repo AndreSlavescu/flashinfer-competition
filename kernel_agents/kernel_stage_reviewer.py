@@ -31,11 +31,11 @@ You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention ke
 - Missing or mismatched validation outputs for the current stage (`[PyTorch]` or `[CuTeDSL]` logs) are implementation issues.
 - The latest entry of the trimmed stage-result history is the current attempt under review.
 
-{..## Stage Under Review..}
-{..## Full kernel_0_plan.md..}
 {..## Kernel Snapshots..}
 {..## Trimmed Round0StageResult history..}
 {..## Trimmed StageReviewResult history..}
+{..## Full kernel_0_plan.md..}
+{..## Stage Under Review..}
 {..## Recovery Task..}
 """
 

@@ -15,15 +15,16 @@ from hashlib import sha256
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if not os.environ.get("MODAL_TASK_ID"):
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
 
-from bootstrap_runtime import require_dependencies
+    from bootstrap_runtime import require_dependencies
 
-require_dependencies(
-    {"modal": "modal"},
-    entrypoint="scripts/bench_synthetic_service.py",
-)
+    require_dependencies(
+        {"modal": "modal"},
+        entrypoint="scripts/bench_synthetic_service.py",
+    )
 
 import modal
 
@@ -52,6 +53,7 @@ from bench_synthetic_common import (
     compute_payload_hash,
     make_synthetic_failure_results,
     parse_entry_point,
+    stage_validation_page_ids,
     write_raw_files,
 )
 
@@ -387,6 +389,47 @@ def _restrict_bundle_to_num_tokens(
     }
 
 
+def _build_stage_validation_bundle(bundle: dict) -> dict:
+    reference_mod = _load_reference_module()
+    restricted = _restrict_bundle_to_num_tokens(
+        bundle,
+        allowed_num_tokens=(STAGE_VALIDATION_NUM_TOKENS,),
+    )
+    case = restricted["cases"][0]
+    sparse_indices = torch.full_like(case["sparse_indices"], -1)
+    page_ids = stage_validation_page_ids(int(case["ckv_cache"].shape[0]))
+
+    for page_slot, page_id in enumerate(page_ids):
+        start = page_slot * SYNTHETIC_PAGE_SIZE
+        stop = start + SYNTHETIC_PAGE_SIZE
+        sparse_indices[:, start:stop] = torch.arange(
+            page_id * SYNTHETIC_PAGE_SIZE,
+            (page_id + 1) * SYNTHETIC_PAGE_SIZE,
+            dtype=sparse_indices.dtype,
+            device=sparse_indices.device,
+        )
+
+    stage_case = {
+        **case,
+        "sparse_indices": sparse_indices,
+    }
+    with torch.no_grad():
+        ref_output, ref_lse = reference_mod.run(
+            stage_case["q_nope"],
+            stage_case["q_pe"],
+            stage_case["ckv_cache"],
+            stage_case["kpe_cache"],
+            stage_case["sparse_indices"],
+            stage_case["sm_scale"],
+        )
+        torch.cuda.synchronize()
+
+    return {
+        "cases": [stage_case],
+        "reference_outputs": [(ref_output, ref_lse)],
+    }
+
+
 def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[dict]:
     import contextlib
     import io
@@ -518,10 +561,7 @@ def run_dsa_synthetic_fast(
 
     bundle, fixture_version, fixture_source = _ensure_fixture_bundle(rebuild_fixture)
     if stage_validation:
-        bundle = _restrict_bundle_to_num_tokens(
-            bundle,
-            allowed_num_tokens=(STAGE_VALIDATION_NUM_TOKENS,),
-        )
+        bundle = _build_stage_validation_bundle(bundle)
     solution_mod, payload_hash, solution_source = _ensure_solution_module(
         raw_files,
         entry_point,
