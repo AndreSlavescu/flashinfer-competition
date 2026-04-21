@@ -14,6 +14,7 @@ from kernel_agents.context import (
 )
 from kernel_agents.prompting import (
     CODER_CODEX_WORKER_BLOCK,
+    KERNEL_STRUCTURE_BLOCK,
     build_agent_instructions,
     render_prompt_template,
 )
@@ -36,7 +37,7 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
 ## Rules
 - Use `cutlass.Constexpr` and type annotations extensively for CuTeDSL JIT compiler
 - Run tests only on Modal B200 via `run_stage_validation` / `run_synthetic_check` / `run_correctness_check`
-- Implement a JIT compile cache if it doesn't exist yet
+- Closely follow the kernel structure below when implementing
 
 ## Stopping rule
 - After implementing the stage and prefix validations, call `run_stage_validation` EXACTLY ONCE.
@@ -68,7 +69,11 @@ def _compose_stage_coder_body(ctx: SharedContext) -> str:
         },
     )
 
-    parts = [body, STAGE_CODER_OUTPUT_REMINDER.strip()]
+    parts = [
+        body,
+        KERNEL_STRUCTURE_BLOCK.strip(),
+        STAGE_CODER_OUTPUT_REMINDER.strip(),
+    ]
     return "\n\n".join(parts) + "\n"
 
 

@@ -68,20 +68,7 @@ ROUND0_CODER_SUPPORT_BLOCK = """\
 - Do not create spill files. Refine tool calls instead.
 """
 
-ROUND0_CODER_JIT_CACHE_BLOCK = """\
-## JIT compile cache pattern
-```
-compile_cache = {}
-
-def _get_compiled_kernel(..., stream):
-    cache_key = (...)  # index by shapes
-    compiled = compile_cache.get(cache_key)
-    if compiled is None:
-        compiled = cute.compile(..., stream)
-        compile_cache[cache_key] = compiled
-    return compiled
-```
-"""
+ROUND0_CODER_JIT_CACHE_BLOCK = """"""
 
 ROUND0_CODER_TOOL_POLICY_BLOCK = """\
 ## Tool policy
@@ -92,6 +79,70 @@ ROUND0_CODER_TOOL_POLICY_BLOCK = """\
   or `grep_search` before rerunning another broad shell command.
 - Do not create spill files. Refine tool calls instead.
 """
+
+KERNEL_STRUCTURE_BLOCK = """
+## Kernel structure reference for agentic code + validate workflow
+
+import cutlass.cute as cute
+...
+
+class BlackwellStyleKernel:
+    def __init__(...):
+        # static configurations (dimensions, scheduler policy, warp roles, register budgets, barriers, tilers, iteration counts etc.)
+        ...
+
+    @cute.jit
+    def __call__(...):
+        # launch-time orchestration (operand layouts, tiled MMA objects, TMA atoms / descriptors / sizes, pipeline configs, scheduler params, grid / cluster shapes, shared-storage structs etc.)
+        
+        ...
+        @cute.struct
+        class SharedStorage:
+            ...
+
+        self.kernel1_impl(...).launch(...)
+        # more kernel launches if needed
+
+    @cute.kernel
+    def kernel1_impl(...): ...
+    # more kernel implementations if needed
+
+    @staticmethod
+    def _compute_grid(...): ...
+    # more static config helpers 
+
+    @cute.jit
+    def mma(...): ...
+    @cute.jit
+    def load_tma(...): ...
+    @cute.jit
+    def epilogue(...): ...
+    # more warp role implementations
+
+def torch_reference(...):
+    ...
+
+program_compile_cache = dict()
+
+def run(...):
+    torch.manual_seed(...)
+    def create_synthetic_data(...):
+        ...
+
+    program = BlackwellStyleKernel(...)
+    cache_key = (...)
+    if not (cache_key in program_compile_cache):
+        program_compile_cache[cache_key] = cute.compile(program...)
+    
+    compiled_program = program_compile_cache[cache_key]
+    ...
+
+    # dumps output validations in `last_shell_dump.txt` for reviewer agent inspection
+    compiled_program(...)
+    torch.cuda.synchronize()
+    o_ref, lse_ref = torch_reference(...)
+"""
+
 
 def build_round0_coder_body(
     *,
@@ -108,6 +159,7 @@ def build_round0_coder_body(
         role_rules_block.strip(),
         ROUND0_CODER_SUPPORT_BLOCK.strip(),
         ROUND0_CODER_JIT_CACHE_BLOCK.strip(),
+        KERNEL_STRUCTURE_BLOCK.strip(),
         ROUND0_CODER_TOOL_POLICY_BLOCK.strip(),
     ]
     parts.extend(section.strip() for section in extra_sections if section.strip())

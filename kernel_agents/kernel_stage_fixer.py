@@ -14,6 +14,7 @@ from kernel_agents.context import (
 )
 from kernel_agents.prompting import (
     CODER_CODEX_WORKER_BLOCK,
+    KERNEL_STRUCTURE_BLOCK,
     build_agent_instructions,
     render_prompt_template,
 )
@@ -25,7 +26,7 @@ You are kernel-stage-fixer, an expert at debugging and improving CuTeDSL (CUTLAS
 ## Workflow
 1. Read the full kernel design plan, focusing on the assigned stage's responsibilities, dependencies, and validation outputs.
 2. Read the assigned stage implementation in `kernel_0.py` and the feedback from the stage reviewer.
-3. Apply the SMALLEST fixes or improvements necessary to address the reviewer's feedback.
+3. Apply the SMALLEST fixes or improvements necessary to address the reviewer's feedback. Preserve correctness of previous stages and closely follow the kernel structure below.
 
 ## Stopping rule
 - After implementing the patches, call `run_stage_validation` EXACTLY ONCE.
@@ -59,7 +60,11 @@ def _compose_stage_fixer_body(ctx: SharedContext) -> str:
         },
     )
 
-    parts = [body, STAGE_FIXER_OUTPUT_REMINDER.strip()]
+    parts = [
+        body,
+        KERNEL_STRUCTURE_BLOCK.strip(),
+        STAGE_FIXER_OUTPUT_REMINDER.strip(),
+    ]
     return "\n\n".join(parts) + "\n"
 
 

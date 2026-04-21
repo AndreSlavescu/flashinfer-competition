@@ -9,7 +9,10 @@ SCRIPTS_DIR = PROJECT_ROOT / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
-from bench_synthetic_common import STAGE_VALIDATION_INSPECTION_FOOTER  # noqa: E402
+from bench_synthetic_common import (  # noqa: E402
+    STAGE_VALIDATION_INSPECTION_FOOTER,
+    print_stage_validation_logs,
+)
 
 
 def test_stage_validation_footer_describes_inspection_protocol() -> None:
@@ -24,6 +27,32 @@ def test_stage_validation_footer_describes_inspection_protocol() -> None:
 def test_stage_validation_footer_no_longer_mentions_parser_summary() -> None:
     assert "Stage Validation Summary" not in STAGE_VALIDATION_INSPECTION_FOOTER
     assert "parser" not in STAGE_VALIDATION_INSPECTION_FOOTER.lower()
+
+
+def test_stage_validation_logs_print_for_passed_cases(capsys) -> None:
+    print_stage_validation_logs(
+        [
+            {
+                "num_tokens": 1,
+                "status": "PASSED",
+                "log": (
+                    "[PyTorch] ref.valid_page_count: BEGIN\n"
+                    "3\n"
+                    "[PyTorch] ref.valid_page_count: END\n"
+                    "[CuTeDSL] contract.page_dense_ok: BEGIN\n"
+                    "true\n"
+                    "[CuTeDSL] contract.page_dense_ok: END\n"
+                ),
+            }
+        ]
+    )
+
+    out = capsys.readouterr().out
+    assert "STAGE VALIDATION LOGS (1)" in out
+    assert "[PyTorch] ref.valid_page_count: BEGIN" in out
+    assert "[PyTorch] ref.valid_page_count: END" in out
+    assert "[CuTeDSL] contract.page_dense_ok: BEGIN" in out
+    assert "[CuTeDSL] contract.page_dense_ok: END" in out
 
 
 def test_stage_validation_bundle_uses_page_dense_single_case(

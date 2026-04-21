@@ -34,6 +34,7 @@ from bench_synthetic_common import (
     STAGE_VALIDATION_NUM_TOKENS,
     TRACK,
     parse_entry_point,
+    print_stage_validation_logs,
     print_stage_validation_footer,
     print_synthetic_results,
 )
@@ -315,6 +316,7 @@ def main() -> None:
     results = result.get("results", [])
     print_synthetic_results(results)
     if args.stage_validation:
+        print_stage_validation_logs(results)
         print()
         print_stage_validation_footer()
 

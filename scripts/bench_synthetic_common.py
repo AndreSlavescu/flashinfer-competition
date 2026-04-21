@@ -130,6 +130,34 @@ def print_synthetic_results(results: list[dict]) -> None:
                         print(f"        {line}")
 
 
+def print_stage_validation_logs(results: list[dict]) -> None:
+    """Print raw per-case logs for inspection-oriented stage validation.
+
+    Unlike the generic synthetic summary, stage validation is specifically about
+    inspecting tagged stdout blocks. Surface the captured log even for PASSED
+    cases so the local launcher transcript mirrors what reviewers are told to
+    inspect in `last_shell_dump.txt`.
+    """
+    logs = [
+        (
+            result.get("num_tokens", "?"),
+            result.get("status", "?"),
+            str(result.get("log", "")).rstrip(),
+        )
+        for result in results
+        if str(result.get("log", "")).strip()
+    ]
+
+    if not logs:
+        print("\nNo stage-validation logs were captured.")
+        return
+
+    print(f"\n  STAGE VALIDATION LOGS ({len(logs)}):")
+    for num_tokens, status, log_text in logs:
+        print(f"  --- num_tokens={num_tokens} status={status} ---")
+        print(log_text)
+
+
 def print_stage_validation_footer() -> None:
     """Print the shell-oriented footer for inspection-only stage validation."""
     print(STAGE_VALIDATION_INSPECTION_FOOTER)

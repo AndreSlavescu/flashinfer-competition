@@ -628,6 +628,51 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     ]
 
 
+def test_stage_agent_prompts_include_mlir_context_guidance(tmp_path: Path) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    notes_dir = tmp_path / "notes" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    notes_dir.mkdir(parents=True)
+    plan_text = write_round0_stage_plan_fixture(tmp_path, _sample_stage_plan())
+    (solution_dir / "kernel_0.py").write_text(
+        "def kernel():\n    return 'current'\n",
+        encoding="utf-8",
+    )
+
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+
+    stage_coder = make_round0_stage_coder(context=ctx)
+    main._apply_stage_coder_prompt_sections(
+        ctx,
+        main._build_stage_coder_payload(
+            plan_text=plan_text,
+            stage_id="S2",
+        ),
+    )
+    coder_prompt = main._resolve_agent_instructions_text(stage_coder, ctx)
+    assert "cutlass._mlir" in coder_prompt
+    assert "with ir.Context(), ir.Location.unknown()" in coder_prompt
+    assert "cutlass.ir" in coder_prompt
+
+    stage_fixer = make_round0_stage_fixer(context=ctx)
+    main._apply_stage_fixer_prompt_sections(
+        ctx,
+        main._build_stage_fixer_payload(
+            plan_text=plan_text,
+            stage_id="S2",
+            last_review=_review("S2", "retry_same_stage", next_stage="S2"),
+        ),
+    )
+    fixer_prompt = main._resolve_agent_instructions_text(stage_fixer, ctx)
+    assert "cutlass._mlir" in fixer_prompt
+    assert "with ir.Context(), ir.Location.unknown()" in fixer_prompt
+    assert "cutlass.ir" in fixer_prompt
+
+
 class _FakeAgent:
     def __init__(self, instructions: object) -> None:
         self.instructions = instructions
