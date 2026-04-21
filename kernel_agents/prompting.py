@@ -25,23 +25,9 @@ B200_HARDWARE_SPEC_BLOCK = """
 # already return throughput percentages, hit rates, stall reasons, and
 # memory-bound classification. Agents should reason from actual NCU output.
 
-CODER_CODEX_WORKER_BLOCK = """
-## Write-Capable Codex Worker
+CODER_CODEX_WORKER_BLOCK = """"""
 
-- `codex_coder_engineer` is a write-capable Codex worker for bounded coding subtasks.
-- Use it when a focused Codex edit or repo investigation pass would speed up progress, but keep the scope concrete.
-- Keep validation ownership in this parent agent: run the repo validation tools (`run_stage_validation`,
-  `run_synthetic_check`, `run_correctness_check`) yourself as appropriate, inspect their returned
-  tool output yourself, and return the final structured result yourself.
-"""
-
-OPTIMIZER_CODEX_WORKER_BLOCK = """
-## Write-Capable Codex Worker
-
-- `codex_optimizer_engineer` is a write-capable Codex worker for bounded optimization subtasks.
-- Use it when a focused Codex edit or refactor pass would speed up progress, but keep the scope concrete.
-- Keep validation ownership in this parent agent: run `run_synthetic_check` and `run_correctness_check` yourself and return the final structured result yourself.
-"""
+OPTIMIZER_CODEX_WORKER_BLOCK = """"""
 
 ROUND0_CODER_KERNEL_INTERFACE_BLOCK = """\
 ## Kernel interface
@@ -70,19 +56,12 @@ ROUND0_CODER_SUPPORT_BLOCK = """\
 
 ROUND0_CODER_JIT_CACHE_BLOCK = """"""
 
-ROUND0_CODER_TOOL_POLICY_BLOCK = """\
-## Tool policy
-- The repo's Modal-backed validation tools (`run_stage_validation`, `run_synthetic_check`,
-  `run_correctness_check`) are the canonical correctness source.
-- If a tool returns a `retrieved trimmed ...` banner, narrow the next request.
-- If a Modal tool trims its returned context, inspect `last_shell_dump.txt` with `read_file`
-  or `grep_search` before rerunning another broad shell command.
-- Do not create spill files. Refine tool calls instead.
-"""
+ROUND0_CODER_TOOL_POLICY_BLOCK = """"""
 
 KERNEL_STRUCTURE_BLOCK = """
 ## Kernel structure reference for agentic code + validate workflow
 
+```
 import cutlass.cute as cute
 ...
 
@@ -141,6 +120,9 @@ def run(...):
     compiled_program(...)
     torch.cuda.synchronize()
     o_ref, lse_ref = torch_reference(...)
+```
+
+**YOU MUST USE CuTe DECORATORS ON THE KERNEL PATH, OTHERWISE YOU'LL GET MLIR CONTEXT ISSUES. `@cute.jit` for CuTeDSL helpers and warp role implementations, `@cute.kernel` for device entry kernels, and `@cute.struct` for shared-storage or typed CuTe structs.**
 """
 
 
