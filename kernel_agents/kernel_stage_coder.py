@@ -54,10 +54,7 @@ You are kernel-stage-coder, an expert at CuTeDSL (CUTLASS Python DSL) programmin
 {..## Assigned Stage..}
 """
 
-STAGE_CODER_OUTPUT_REMINDER = """\
-## Output
-Return structured output matching `Round0StageResult`.
-"""
+STAGE_CODER_OUTPUT_REMINDER = """"""
 
 
 def _compose_stage_coder_body(ctx: SharedContext) -> str:

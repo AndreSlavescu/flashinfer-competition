@@ -515,31 +515,122 @@ def test_stage_payload_builders_keep_only_runtime_fields_and_create_snapshots(
         },
         "stage_results_history": [
             {
-                "stage_id": "S0",
-                "stage_output_validation_report": "stage output ok",
-                "correctness_check_report": "correct",
-                "message": "S0 ok",
-            },
-            {
                 "stage_id": "S1",
                 "stage_output_validation_report": "stage output ok",
                 "correctness_check_report": "correct",
                 "message": "S1 ok",
             },
         ],
-        "review_history": [
-            {
-                "action": "continue_next_stage",
-                "next_stage": "S1",
-                "message": "continue_next_stage",
-            }
-        ],
+        "review_history": [],
         "recovery_context": "",
     }
+    assert recovery_payload["stage_results_history"] == [
+        {
+            "stage_id": "S0",
+            "stage_output_validation_report": "stage output ok",
+            "correctness_check_report": "correct",
+            "message": "S0 ok",
+        },
+        {
+            "stage_id": "S1",
+            "stage_output_validation_report": "stage output ok",
+            "correctness_check_report": "correct",
+            "message": "S1 ok",
+        },
+    ]
+    assert recovery_payload["review_history"] == [
+        {
+            "action": "continue_next_stage",
+            "next_stage": "S1",
+            "message": "continue_next_stage",
+        }
+    ]
     assert "Do not return null in recovery mode." in recovery_payload["recovery_context"]
 
     snapshot_path = main.round0_stage_kernel_snapshot_path(solution_dir, "S1", 1)
     assert snapshot_path.exists()
+
+
+def test_stage_review_payload_scopes_retry_histories_to_current_stage(
+    tmp_path: Path,
+) -> None:
+    solution_dir = tmp_path / "solution" / "dsa_attention"
+    notes_dir = tmp_path / "notes" / "dsa_attention"
+    solution_dir.mkdir(parents=True)
+    notes_dir.mkdir(parents=True)
+    (solution_dir / "kernel_0.py").write_text(
+        "def kernel():\n    return 'current'\n",
+        encoding="utf-8",
+    )
+
+    plan_text = _sample_stage_plan()
+    write_round0_stage_plan_fixture(tmp_path, plan_text)
+
+    first_s2_attempt = Round0StageResult(
+        stage_id="S2",
+        stage_output_validation_report="S2 attempt 1 failed",
+        stage_output_verified=False,
+        final_correctness_verified=False,
+        correctness_check_report="not run",
+        status="validation_failed",
+        message="S2 attempt 1",
+    )
+    second_s2_attempt = Round0StageResult(
+        stage_id="S2",
+        stage_output_validation_report="S2 attempt 2 passed",
+        stage_output_verified=True,
+        final_correctness_verified=False,
+        correctness_check_report="not run",
+        status="success",
+        message="S2 attempt 2",
+    )
+
+    ctx = SharedContext(
+        project_root=str(tmp_path),
+        solution_dir="solution/dsa_attention",
+        notes_dir="notes/dsa_attention",
+    )
+    ctx.round0_stage_history = [
+        _stage_result("S0"),
+        _stage_result("S1"),
+        first_s2_attempt,
+        second_s2_attempt,
+    ]
+    ctx.round0_review_history = [
+        _review("S0", "continue_next_stage", next_stage="S1"),
+        _review("S1", "continue_next_stage", next_stage="S2"),
+        _review("S2", "retry_same_stage", next_stage="S2", message="retry S2"),
+    ]
+
+    review_payload = main._build_stage_review_payload(
+        ctx=ctx,
+        solution_dir=solution_dir,
+        plan_text=plan_text,
+        stage_result=second_s2_attempt,
+        stage_attempt=2,
+    )
+
+    assert review_payload["stage_results_history"] == [
+        {
+            "stage_id": "S2",
+            "stage_output_validation_report": "S2 attempt 1 failed",
+            "correctness_check_report": "not run",
+            "message": "S2 attempt 1",
+        },
+        {
+            "stage_id": "S2",
+            "stage_output_validation_report": "S2 attempt 2 passed",
+            "correctness_check_report": "not run",
+            "message": "S2 attempt 2",
+        },
+    ]
+    assert review_payload["review_history"] == [
+        {
+            "action": "retry_same_stage",
+            "next_stage": "S2",
+            "message": "retry S2",
+        }
+    ]
 
 
 def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
@@ -576,10 +667,10 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     assert "## Assigned Stage" in coder_prompt
     assert "## Full kernel_0_plan.md" in coder_prompt
     assert plan_text.strip() in coder_prompt
-    assert "Return structured output matching `Round0StageResult`." in coder_prompt
+    assert "emit the `Round0StageResult` and STOP" in coder_prompt
     assert "[PyTorch] <name>: BEGIN" in coder_prompt
     assert "[CuTeDSL] <name>: BEGIN" in coder_prompt
-    assert "shell-friendly plain text" in coder_prompt
+    assert "YOU MUST USE cute.printf() and cute.print_tensor()" in coder_prompt
     assert extract_markdown_section(coder_prompt, "## References").splitlines() == [
         "## References",
         *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],
@@ -619,8 +710,9 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     assert "## Stage Under Review" in reviewer_prompt
     assert "## Full kernel_0_plan.md" in reviewer_prompt
     assert "## Kernel Snapshots" in reviewer_prompt
-    assert "Use `diff_files` with the kernel snapshot paths" in reviewer_prompt
+    assert "- diff_files" in reviewer_prompt
     assert "Use `grep_search` and `read_file` on `last_shell_dump.txt`" in reviewer_prompt
+    assert "only include attempts for the current stage" in reviewer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
     assert extract_markdown_section(reviewer_prompt, "## References").splitlines() == [
         "## References",
@@ -654,9 +746,10 @@ def test_stage_agent_prompts_include_mlir_context_guidance(tmp_path: Path) -> No
         ),
     )
     coder_prompt = main._resolve_agent_instructions_text(stage_coder, ctx)
-    assert "cutlass._mlir" in coder_prompt
-    assert "with ir.Context(), ir.Location.unknown()" in coder_prompt
-    assert "cutlass.ir" in coder_prompt
+    assert "MLIR CONTEXT ISSUES" in coder_prompt
+    assert "@cute.jit" in coder_prompt
+    assert "@cute.kernel" in coder_prompt
+    assert "@cute.struct" in coder_prompt
 
     stage_fixer = make_round0_stage_fixer(context=ctx)
     main._apply_stage_fixer_prompt_sections(
@@ -668,9 +761,10 @@ def test_stage_agent_prompts_include_mlir_context_guidance(tmp_path: Path) -> No
         ),
     )
     fixer_prompt = main._resolve_agent_instructions_text(stage_fixer, ctx)
-    assert "cutlass._mlir" in fixer_prompt
-    assert "with ir.Context(), ir.Location.unknown()" in fixer_prompt
-    assert "cutlass.ir" in fixer_prompt
+    assert "MLIR CONTEXT ISSUES" in fixer_prompt
+    assert "@cute.jit" in fixer_prompt
+    assert "@cute.kernel" in fixer_prompt
+    assert "@cute.struct" in fixer_prompt
 
 
 class _FakeAgent:
@@ -1105,6 +1199,130 @@ def test_run_round0_staged_resume_pending_review_reuses_latest_executor_prompt_a
 
     assert expected_path.read_text(encoding="utf-8") == f"{expected_role} prompt"
     assert not unexpected_path.exists()
+    assert result.status == "success"
+
+
+def test_run_round0_staged_resume_pending_review_scopes_reviewer_payload_to_current_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, solution_dir, state_path = _prepare_staged_round0_workspace(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        plan_text=_sample_stage_plan(),
+    )
+    pending_stage = _stage_result("S1", final_correctness_verified=True)
+    ctx.round0_stage_history = [_stage_result("S0"), pending_stage]
+    ctx.round0_review_history = [_review("S0", "continue_next_stage", next_stage="S1")]
+    prompt_dump = main._make_prompt_dump_config(tmp_path / "prompts")
+
+    async def _fake_run_agent(**kwargs: Any) -> tuple[_FakeStageRunResult, float]:
+        assert kwargs["stage_label"] == "kernel-stage-reviewer-S1"
+        return _FakeStageRunResult(
+            _review("S1", "continue_next_stage", next_stage=None)
+        ), 0.1
+
+    monkeypatch.setattr(main, "_run_agent", _fake_run_agent)
+
+    result = asyncio.run(
+        main._run_round0_staged(
+            ctx=ctx,
+            solution_dir=solution_dir,
+            state_path=state_path,
+            designer=_FakeAgent("designer"),
+            stage_coder=_FakeAgent("coder prompt"),
+            stage_fixer=_FakeAgent("fixer prompt"),
+            stage_reviewer=_FakeAgent("reviewer prompt"),
+            designer_max_turns=1,
+            designer_verbose=False,
+            coder_max_turns=1,
+            coder_verbose=False,
+            skip_designer=False,
+            resume=True,
+            prompt_dump=prompt_dump,
+        )
+    )
+
+    reviewer_input_path = (
+        prompt_dump.runtime_dir / "stage_S1.attempt_01.reviewer.input.json"
+    )
+    reviewer_input = json.loads(reviewer_input_path.read_text(encoding="utf-8"))
+
+    assert reviewer_input["stage_results_history"] == [
+        {
+            "stage_id": "S1",
+            "stage_output_validation_report": "stage output ok",
+            "correctness_check_report": "correct",
+            "message": "S1 ok",
+        }
+    ]
+    assert reviewer_input["review_history"] == []
+    assert result.status == "success"
+
+
+def test_run_round0_staged_resume_next_stage_scopes_first_reviewer_payload_to_upcoming_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, solution_dir, state_path = _prepare_staged_round0_workspace(
+        tmp_path=tmp_path,
+        monkeypatch=monkeypatch,
+        plan_text=_sample_stage_plan(),
+    )
+    ctx.round0_stage_history = [_stage_result("S0")]
+    ctx.round0_review_history = [_review("S0", "continue_next_stage", next_stage="S1")]
+    prompt_dump = main._make_prompt_dump_config(tmp_path / "prompts")
+    stage_labels: list[str] = []
+
+    async def _fake_run_agent(**kwargs: Any) -> tuple[_FakeStageRunResult, float]:
+        stage_labels.append(kwargs["stage_label"])
+        if kwargs["stage_label"] == "kernel-stage-coder-S1":
+            return _FakeStageRunResult(
+                _stage_result("S1", final_correctness_verified=True)
+            ), 0.1
+        if kwargs["stage_label"] == "kernel-stage-reviewer-S1":
+            return _FakeStageRunResult(
+                _review("S1", "continue_next_stage", next_stage=None)
+            ), 0.1
+        raise AssertionError(f"Unexpected stage label: {kwargs['stage_label']}")
+
+    monkeypatch.setattr(main, "_run_agent", _fake_run_agent)
+
+    result = asyncio.run(
+        main._run_round0_staged(
+            ctx=ctx,
+            solution_dir=solution_dir,
+            state_path=state_path,
+            designer=_FakeAgent("designer"),
+            stage_coder=_FakeAgent("coder prompt"),
+            stage_fixer=_FakeAgent("fixer prompt"),
+            stage_reviewer=_FakeAgent("reviewer prompt"),
+            designer_max_turns=1,
+            designer_verbose=False,
+            coder_max_turns=1,
+            coder_verbose=False,
+            skip_designer=False,
+            resume=True,
+            prompt_dump=prompt_dump,
+        )
+    )
+
+    reviewer_input_path = (
+        prompt_dump.runtime_dir / "stage_S1.attempt_01.reviewer.input.json"
+    )
+    reviewer_input = json.loads(reviewer_input_path.read_text(encoding="utf-8"))
+
+    assert stage_labels == ["kernel-stage-coder-S1", "kernel-stage-reviewer-S1"]
+    assert not (prompt_dump.runtime_dir / "stage_recovery.attempt_00.reviewer.input.json").exists()
+    assert reviewer_input["stage_results_history"] == [
+        {
+            "stage_id": "S1",
+            "stage_output_validation_report": "stage output ok",
+            "correctness_check_report": "correct",
+            "message": "S1 ok",
+        }
+    ]
+    assert reviewer_input["review_history"] == []
     assert result.status == "success"
 
 

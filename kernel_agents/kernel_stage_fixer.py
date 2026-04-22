@@ -46,10 +46,7 @@ You are kernel-stage-fixer, an expert at debugging and improving CuTeDSL (CUTLAS
 {..## Last Reviewer Feedback..}
 """
 
-STAGE_FIXER_OUTPUT_REMINDER = """\
-## Output
-Return structured output matching `Round0StageResult`.
-"""
+STAGE_FIXER_OUTPUT_REMINDER = """"""
 
 
 def _compose_stage_fixer_body(ctx: SharedContext) -> str:

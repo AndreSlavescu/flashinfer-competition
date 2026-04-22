@@ -131,6 +131,7 @@ class SharedContext:
     round0_stage_coder_prompt_sections: dict[str, str] = field(default_factory=dict)
     round0_stage_fixer_prompt_sections: dict[str, str] = field(default_factory=dict)
     round0_stage_reviewer_prompt_sections: dict[str, str] = field(default_factory=dict)
+    analyze: bool = False
 
 
 # ---------------------------------------------------------------------------

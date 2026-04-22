@@ -22,7 +22,7 @@ You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention ke
 2. Analyze the latest implementation attempt in `kernel_0.py` for the assigned stage.
 3. Use `grep_search` and `read_file` on `last_shell_dump.txt` to inspect the raw tagged validation blocks and any compile/runtime errors. Start with targeted searches for `[PyTorch] <name>` / `[CuTeDSL] <name>` markers before broad reads.
 5. Use the raw tagged validation blocks, kernel snapshots, and trimmed stage-result/review histories together to understand the failure.
-6. Report at most ONE critical correctness issue in the current stage, including any deviations from the plan and issues with the stage output validation harness. Be precise.
+6. Report at most ONE critical correctness issue and the MOST LIKELY cause in the current stage. This includes any deviations from the plan and issues with the stage output validation harness. Be precise.
 7. Report at most ONE critical correctness issue with the design plan.
 
 ## Rules
@@ -39,8 +39,7 @@ You are kernel-stage-reviewer, a strict CuTeDSL and Deepseek Sparse Attention ke
 {..## Recovery Task..}
 """
 
-STAGE_REVIEWER_OUTPUT_REMINDER = """\
-"""
+STAGE_REVIEWER_OUTPUT_REMINDER = """"""
 
 
 def _compose_stage_reviewer_body(ctx: SharedContext) -> str:

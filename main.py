@@ -35,6 +35,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -50,7 +51,9 @@ from agents import (
     Runner,
     RunContextWrapper,
     SQLiteSession,
+    add_trace_processor,
     retry_policies,
+    trace,
 )
 from agents.exceptions import MaxTurnsExceeded
 from agents.run_config import CallModelData, ModelInputData
@@ -88,7 +91,7 @@ from kernel_agents.stream_logging import consume_streamed_run
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
-PUBLIC_CODEX_COMPACTION_THRESHOLD = 200_000
+PUBLIC_CODEX_COMPACTION_THRESHOLD = 800_000
 STAGE_RATE_LIMIT_MAX_RETRIES = 100
 STAGE_RATE_LIMIT_MAX_CUMULATIVE_WAIT_S = 600.0
 RATE_LIMIT_RETRY_SAFETY_BUFFER_S = 0.5
@@ -600,12 +603,23 @@ async def _run_agent_once(
     max_turns: int,
     verbose: bool,
     session: SQLiteSession | None = None,
+    stage_label: str | None = None,
 ) -> tuple[object, float]:
     """Run an agent normally or via the streamed progress path."""
     started_at = time.perf_counter()
     run_config = make_run_config(context.quality_profile)
-    if not verbose:
-        result = await Runner.run(
+
+    async def _do_run() -> object:
+        if not verbose:
+            return await Runner.run(
+                starting_agent=starting_agent,
+                input=input,
+                context=context,
+                max_turns=max_turns,
+                run_config=run_config,
+                session=session,
+            )
+        streamed = Runner.run_streamed(
             starting_agent=starting_agent,
             input=input,
             context=context,
@@ -613,17 +627,20 @@ async def _run_agent_once(
             run_config=run_config,
             session=session,
         )
-        return result, time.perf_counter() - started_at
+        return await consume_streamed_run(streamed)
 
-    result = Runner.run_streamed(
-        starting_agent=starting_agent,
-        input=input,
-        context=context,
-        max_turns=max_turns,
-        run_config=run_config,
-        session=session,
-    )
-    return await consume_streamed_run(result), time.perf_counter() - started_at
+    if context.analyze and stage_label:
+        metadata = {
+            "stage_label": stage_label,
+            "round": context.current_round,
+            "agent_role": context.current_agent_role,
+            "quality_profile": context.quality_profile,
+        }
+        with trace(workflow_name=stage_label, metadata=metadata):
+            result = await _do_run()
+    else:
+        result = await _do_run()
+    return result, time.perf_counter() - started_at
 
 
 async def _run_agent(
@@ -652,6 +669,7 @@ async def _run_agent(
                 max_turns=max_turns,
                 verbose=verbose,
                 session=session,
+                stage_label=stage_label,
             )
             return result, time.perf_counter() - started_at
         except Exception as exc:
@@ -705,6 +723,7 @@ async def _run_staged_designer(
                 max_turns=max_turns,
                 verbose=verbose,
                 session=session,
+                stage_label=stage_label,
             )
         except Exception as exc:
             if not _is_rate_limit_error(exc):
@@ -1017,6 +1036,22 @@ def _trim_review_history(
     ]
 
 
+def _trim_stage_local_reviewer_histories(
+    *,
+    ctx: SharedContext,
+    stage_id: str,
+) -> dict[str, list[dict[str, Any]]]:
+    """Return trimmed reviewer histories scoped to the stage under review."""
+    return {
+        "stage_results_history": _trim_stage_history(
+            [record for record in ctx.round0_stage_history if record.stage_id == stage_id]
+        ),
+        "review_history": _trim_review_history(
+            [record for record in ctx.round0_review_history if record.stage_id == stage_id]
+        ),
+    }
+
+
 def _trim_last_review(review: StageReviewResult | None) -> dict[str, Any] | None:
     """Project a single review into the payload form the fixer/designer consume."""
     if review is None:
@@ -1181,6 +1216,10 @@ def _build_stage_review_payload(
     previous_snapshot = _previous_round0_kernel_snapshot_path(ctx, solution_dir)
     if previous_snapshot is not None and not previous_snapshot.exists():
         previous_snapshot = None
+    trimmed_histories = _trim_stage_local_reviewer_histories(
+        ctx=ctx,
+        stage_id=stage_result.stage_id,
+    )
     return {
         "stage_under_review": stage_result.stage_id,
         "full_plan": plan_text,
@@ -1193,8 +1232,8 @@ def _build_stage_review_payload(
                 else None
             ),
         },
-        "stage_results_history": _trim_stage_history(ctx.round0_stage_history),
-        "review_history": _trim_review_history(ctx.round0_review_history),
+        "stage_results_history": trimmed_histories["stage_results_history"],
+        "review_history": trimmed_histories["review_history"],
         "recovery_context": "",
     }
 
@@ -1730,6 +1769,7 @@ async def run_loop(
     planner_extra: str = "",
     optimizer_extra: str = "",
     prompt_dump: PromptDumpConfig | None = None,
+    analyze: bool = False,
 ) -> None:
     """Run the full kernel generation loop."""
 
@@ -1751,7 +1791,15 @@ async def run_loop(
         tool_limits=tool_limits_for_profile(quality_profile),
         codex_worker_mode=codex_worker_mode,
         round0_mode=round0_mode,
+        analyze=analyze,
     )
+
+    if analyze:
+        from kernel_agents.tool_call_analyzer import ToolCallAnalyzer
+
+        analyzer = ToolCallAnalyzer(out_dir=PROJECT_ROOT / "notes" / "tool_calls")
+        add_trace_processor(analyzer)
+        print(f"ToolCallAnalyzer writing to {analyzer.output_path.relative_to(PROJECT_ROOT)}")
 
     # Build agents
     designer = make_kernel_designer(
@@ -2295,7 +2343,18 @@ def main():
         default="high",
         help="Reasoning effort for the kernel-optimizer agent (default: high)",
     )
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help=(
+            "Register the ToolCallAnalyzer TracingProcessor and wrap each stage "
+            "in a named trace. Emits one JSONL row per tool call under "
+            "notes/tool_calls/<run_id>.jsonl. Honored if WORD2KERNEL_ANALYZE=1 "
+            "is set in the environment."
+        ),
+    )
     args = parser.parse_args()
+    analyze_enabled = args.analyze or os.environ.get("WORD2KERNEL_ANALYZE") == "1"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -2349,6 +2408,7 @@ def main():
         planner_reasoning_effort=args.planner_reasoning_effort,
         optimizer_reasoning_effort=args.optimizer_reasoning_effort,
         prompt_dump=prompt_dump,
+        analyze=analyze_enabled,
     ))
 
 

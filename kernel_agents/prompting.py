@@ -156,34 +156,12 @@ def render_prompt_template(body: str, sections: Mapping[str, str]) -> str:
             rendered = rendered.replace(placeholder, replacement.strip())
     return rendered
 
-TOOL_PROMPT_DESCRIPTIONS: dict[str, str] = {
-    "apply_patch": "Create, update, or delete files via SDK apply-patch diffs.",
-    "web_search": "Search the web for documentation, examples, PTX ISA notes, and CUDA/CuTeDSL references.",
-    "web_fetch": "Fetch content from a specific URL when you already know the page to inspect.",
-    "codex_kernel_assist": "Experimental read-only Codex helper for bounded repo investigation only. Do not use it for edits.",
-    "codex_coder_engineer": "Write-capable Codex worker for bounded kernel-coder subtasks. Keep final validation in this agent.",
-    "codex_optimizer_engineer": "Write-capable Codex worker for bounded kernel-optimizer subtasks. Keep final validation in this agent.",
-    "read_file": "Read any file with line numbers. Use range reads for large files.",
-    "glob_files": "Find files by pattern. Prefer scoping with `directory` instead of embedding long prefixes in the pattern.",
-    "grep_search": "Search file contents with regex. Prefer this before broad file reads when locating symbols or APIs.",
-    "list_directory": "List files and directories at a given path.",
-    "diff_files": "Compare two files with a unified diff.",
-    "run_ncu_profile": "Run NCU profiling on Modal B200 and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_sass_analysis": "Run SASS analysis on a CuTeDSL kernel and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_full_benchmark": "Run the full Modal benchmark and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_stage_validation": "Run the fixed `kernel_0.py::prefix_validation_harness` entry point in dedicated single-case inspection mode and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_synthetic_check": "Run the fast multi-case synthetic correctness sweep and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-    "run_correctness_check": "Run the full Modal correctness check and return recent raw shell context; inspect `last_shell_dump.txt` for the full transcript.",
-}
-
-
 def build_tools_section(tools: Sequence[object]) -> str:
     """Render the actual registered tools into prompt text."""
     names = tool_names(tools)
     lines = ["## Tools You Have"]
-    for index, name in enumerate(names, start=1):
-        description = TOOL_PROMPT_DESCRIPTIONS.get(name, "Available tool.")
-        lines.append(f"- {name}: {description}")
+    for name in names:
+        lines.append(f"- {name}")
     return "\n".join(lines)
 
 
