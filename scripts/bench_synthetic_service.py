@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import time
+import traceback
 from hashlib import sha256
 from pathlib import Path
 
@@ -519,6 +520,71 @@ def _run_synthetic_sweep(solution_mod, entry_func: str, bundle: dict) -> list[di
     return results
 
 
+def _run_stage_validation(solution_mod, entry_func: str, bundle: dict):
+    import contextlib
+    import io
+
+    stage_entry = getattr(solution_mod, entry_func, None)
+    if not callable(stage_entry):
+        message = f"Solution module is missing callable '{entry_func}()'."
+        return (
+            make_synthetic_failure_results(
+                message,
+                num_tokens_cases=(STAGE_VALIDATION_NUM_TOKENS,),
+            ),
+            message,
+        )
+
+    case = bundle["cases"][0]
+    num_tokens = case["num_tokens"]
+    captured = io.StringIO()
+    try:
+        with torch.no_grad(), contextlib.redirect_stdout(captured):
+            payload = stage_entry(
+                case["q_nope"],
+                case["q_pe"],
+                case["ckv_cache"],
+                case["kpe_cache"],
+                case["sparse_indices"],
+                case["sm_scale"],
+            )
+            torch.cuda.synchronize()
+
+        captured_text = captured.getvalue()
+        if captured_text:
+            sys.stdout.write(captured_text)
+
+        return (
+            [
+                {
+                    "workload_uuid": f"synthetic-{num_tokens}",
+                    "num_tokens": num_tokens,
+                    "num_pages": SYNTHETIC_NUM_PAGES,
+                    "status": "PASSED",
+                    "log": captured_text,
+                }
+            ],
+            payload,
+        )
+    except Exception:
+        captured_text = captured.getvalue()
+        tb = traceback.format_exc()
+        if captured_text:
+            sys.stdout.write(captured_text)
+        return (
+            [
+                {
+                    "workload_uuid": f"synthetic-{num_tokens}",
+                    "num_tokens": num_tokens,
+                    "num_pages": SYNTHETIC_NUM_PAGES,
+                    "status": "FAILED",
+                    "log": captured_text + "\n" + tb,
+                }
+            ],
+            tb,
+        )
+
+
 @app.function(
     image=image,
     gpu="B200:1",
@@ -551,13 +617,17 @@ def run_dsa_synthetic_fast(
             if stage_validation
             else SYNTHETIC_NUM_TOKENS
         )
-        return {
+        results = make_synthetic_failure_results(
+            f"Entry file '{entry_file}' not found in payload. Available: {available}",
+            num_tokens_cases=case_tokens,
+        )
+        response = {
             "success": True,
-            "results": make_synthetic_failure_results(
-                f"Entry file '{entry_file}' not found in payload. Available: {available}",
-                num_tokens_cases=case_tokens,
-            ),
+            "results": results,
         }
+        if stage_validation:
+            response["stage_validation_result"] = results[0]["log"]
+        return response
 
     bundle, fixture_version, fixture_source = _ensure_fixture_bundle(rebuild_fixture)
     if stage_validation:
@@ -567,9 +637,17 @@ def run_dsa_synthetic_fast(
         entry_point,
         entry_file,
     )
-    results = _run_synthetic_sweep(solution_mod, entry_func, bundle)
+    stage_validation_result = None
+    if stage_validation:
+        results, stage_validation_result = _run_stage_validation(
+            solution_mod,
+            entry_func,
+            bundle,
+        )
+    else:
+        results = _run_synthetic_sweep(solution_mod, entry_func, bundle)
 
-    return {
+    response = {
         "success": True,
         "results": results,
         "fixture_version": fixture_version,
@@ -578,3 +656,6 @@ def run_dsa_synthetic_fast(
         "payload_hash": payload_hash,
         "elapsed_s": time.perf_counter() - start,
     }
+    if stage_validation:
+        response["stage_validation_result"] = stage_validation_result
+    return response

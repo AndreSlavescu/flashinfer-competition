@@ -61,6 +61,7 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
             "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
             "references/cutlass/python/CuTeDSL/cutlass/utils/",
             "solution/dsa_attention/",
+            "last_run_res.txt",
             "last_shell_dump.txt",
         ),
         write_allow=(),
@@ -73,6 +74,7 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
             "references/cutlass/python/CuTeDSL/cutlass/pipeline/",
             "references/cutlass/python/CuTeDSL/cutlass/utils/",
             "solution/dsa_attention/",
+            "last_run_res.txt",
             "last_shell_dump.txt",
         ),
         write_allow=(
@@ -88,6 +90,7 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
             "references/cutlass/python/CuTeDSL/cutlass/utils/",
             "solution/dsa_attention/",
             "notes/dsa_attention/",
+            "last_run_res.txt",
             "last_shell_dump.txt",
         ),
         write_allow=(
@@ -99,6 +102,7 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
             "references/",
             "solution/dsa_attention/",
             "notes/dsa_attention/",
+            "last_run_res.txt",
             "last_shell_dump.txt",
         ),
         write_allow=(

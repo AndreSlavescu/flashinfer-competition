@@ -41,13 +41,11 @@ references/dsa_sparse_attention_h16_ckv512_kpe64_topk2048_ps64.py
      - Prefetch strategy
    - **Infrastructure**: MMA atoms, SMEM layouts, TMEM layouts, TMA atoms/descriptors, SharedStorage struct fields (barriers, staged tiles, aux buffers etc.)
 3. Break down the plan into small implementation stages, each centering around ONE section and ONE instruction/operation (ex. define MMA atoms and layouts, implement TMA warp role etc.) 
-4. For each stage in section 6, include:
+4. For each implementation stage, include:
    - A stable IDs such as `S0`, `S1`...
    - dependencies on other stages and how they are connected (ex. QK mma consumes initial TMA loads)
-   - the exact validation outputs the stage should print, using source tags such as `[sources: PyTorch]`, `[sources: CuTeDSL]`, or `[sources: PyTorch, CuTeDSL]`
-   - for each validation output, note whether the harness should print the full value or a preview (for example, first 100 flattened elements for larger tensors)
+   - The exact output fields that should be validated for correctness, including dtype/shape expectations, capture location (`GMEM`, `SMEM`, `RMEM`, or `host`), and comparison mode (`exact` or `allclose`)
    - the key CuTeDSL helpers or APIs the stage coder agent should consult
-5. Keep the plan precise AND concise for later agents to navigate. The full markdown will be embedded directly into their prompts.
 """
 
 

@@ -42,7 +42,7 @@ Load query tiles and expose a debug output.
 Depends on: none
 
 Validation outputs:
-- `q_tile_debug` [sources: PyTorch, CuTeDSL]
+- `stage0.q_tile` [sources: PyTorch, CuTeDSL] [capture: GMEM] [comparison: allclose]
 
 Key CuTeDSL helpers:
 - `cute.make_tensor`
@@ -55,7 +55,7 @@ Consume the staged query tile and produce a score tile.
 Depends on: S0
 
 Validation outputs:
-- `score_tile_debug` [sources: CuTeDSL]
+- `stage1.score_tile` [sources: CuTeDSL] [capture: GMEM] [comparison: exact]
 
 Key CuTeDSL helpers:
 - `tcgen05.mma`
@@ -75,7 +75,7 @@ Produce the final output.
 Depends on: none
 
 Validation outputs:
-- `output` [sources: PyTorch, CuTeDSL]
+- `stage7.output` [sources: PyTorch, CuTeDSL] [capture: GMEM] [comparison: allclose]
 
 Key CuTeDSL helpers:
 - `cute.copy`
@@ -668,9 +668,12 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     assert "## Full kernel_0_plan.md" in coder_prompt
     assert plan_text.strip() in coder_prompt
     assert "emit the `Round0StageResult` and STOP" in coder_prompt
-    assert "[PyTorch] <name>: BEGIN" in coder_prompt
-    assert "[CuTeDSL] <name>: BEGIN" in coder_prompt
+    assert "host-comparable buffers" in coder_prompt
+    assert "free-form text/dict/string result" in coder_prompt
+    assert "Validation values must not rely on printed previews" in coder_prompt
     assert "YOU MUST USE cute.printf() and cute.print_tensor()" in coder_prompt
+    assert "[PyTorch] <name>: BEGIN" not in coder_prompt
+    assert "[CuTeDSL] <name>: BEGIN" not in coder_prompt
     assert extract_markdown_section(coder_prompt, "## References").splitlines() == [
         "## References",
         *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],
@@ -689,6 +692,9 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     assert "## Stage To Fix" in fixer_prompt
     assert "## Full kernel_0_plan.md" in fixer_prompt
     assert '"next_stage": "S1"' in fixer_prompt
+    assert "preserve the free-form host-side validation protocol" in fixer_prompt
+    assert "do not replace the validation path with printed previews" in fixer_prompt
+    assert "YOU MUST USE cute.printf() and cute.print_tensor()" in fixer_prompt
     assert extract_markdown_section(fixer_prompt, "## References").splitlines() == [
         "## References",
         *[f"- `{path}`" for path in AGENT_SCOPES["coder"].read_allow],
@@ -711,8 +717,10 @@ def test_stage_agent_prompts_render_full_plan_and_no_file_diff_section(
     assert "## Full kernel_0_plan.md" in reviewer_prompt
     assert "## Kernel Snapshots" in reviewer_prompt
     assert "- diff_files" in reviewer_prompt
-    assert "Use `grep_search` and `read_file` on `last_shell_dump.txt`" in reviewer_prompt
-    assert "only include attempts for the current stage" in reviewer_prompt
+    assert "Read the kernel run results in `last_run_res.txt`" in reviewer_prompt
+    assert "Use the runtime CuTe object prints in `last_shell_dump.txt`" in reviewer_prompt
+    assert "stage_validation_report.json" not in reviewer_prompt
+    assert "trimmed stage-result/review histories and previous kernel snapshots" in reviewer_prompt
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" in reviewer_prompt
     assert extract_markdown_section(reviewer_prompt, "## References").splitlines() == [
         "## References",

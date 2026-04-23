@@ -96,6 +96,19 @@ def test_hardware_block_only_appears_for_designer_and_planner(tmp_path: Path) ->
     assert "## NVIDIA B200 (sm100a) Hardware Specifications" not in optimizer_prompt
 
 
+def test_designer_prompt_uses_host_comparable_validation_contract(
+    tmp_path: Path,
+) -> None:
+    write_kernel_plan_fixture(tmp_path)
+    ctx = shared_context(tmp_path)
+
+    designer_prompt = resolve_instructions(make_kernel_designer(context=ctx), ctx)
+
+    assert "capture location (`GMEM`, `SMEM`, `RMEM`, or `host`)" in designer_prompt
+    assert "comparison mode (`exact` or `allclose`)" in designer_prompt
+    assert "do not ask the harness to rely on preview prints or raw tensor dumps" in designer_prompt
+
+
 def test_codex_kernel_assist_uses_role_scoped_workspace_roots() -> None:
     expected_primary = {
         "designer": "references",

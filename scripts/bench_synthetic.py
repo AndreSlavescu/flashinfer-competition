@@ -13,6 +13,7 @@ import ast
 import base64
 import sys
 import time
+import traceback
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -31,6 +32,7 @@ import modal
 from bench_synthetic_common import (
     APP_NAME,
     FUNCTION_NAME,
+    RUN_RESULT_FILE_NAME,
     STAGE_VALIDATION_NUM_TOKENS,
     TRACK,
     parse_entry_point,
@@ -214,6 +216,25 @@ def total_payload_bytes(raw_files: dict[str, str]) -> int:
     return total
 
 
+def write_stage_run_result(
+    *,
+    result: dict | None = None,
+    error: str | None = None,
+) -> Path:
+    """Write exactly the stage-validation return value or error text."""
+    result_path = PROJECT_ROOT / RUN_RESULT_FILE_NAME
+    if error is not None:
+        text = error
+    elif result is None:
+        text = "None"
+    else:
+        value = result.get("stage_validation_result")
+        text = value if isinstance(value, str) else str(value)
+
+    result_path.write_text(text.rstrip() + "\n", encoding="utf-8")
+    return result_path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the deployed fast synthetic DSA correctness sweep.",
@@ -228,7 +249,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Run the entry point in dedicated single-case stage-validation mode. "
-            "This is intended for inspection-oriented prefix_validation_harness runs."
+            "The entry point should be run() and may return free-form harness results."
         ),
     )
     args = parser.parse_args()
@@ -247,6 +268,9 @@ def main() -> None:
     try:
         entry_file, _ = parse_entry_point(args.entry_point)
     except ValueError as exc:
+        if args.stage_validation:
+            result_path = write_stage_run_result(error=str(exc))
+            print(f"Stage run result: {result_path}")
         print(exc)
         sys.exit(1)
 
@@ -256,10 +280,18 @@ def main() -> None:
         else:
             raw_files = collect_dependency_closure(solution_path, entry_file)
     except (FileNotFoundError, ValueError, SyntaxError) as exc:
+        if args.stage_validation:
+            result_path = write_stage_run_result(error=str(exc))
+            print(f"Stage run result: {result_path}")
         print(f"Failed to collect solution payload: {exc}")
         sys.exit(1)
 
     if not raw_files:
+        if args.stage_validation:
+            result_path = write_stage_run_result(
+                error=f"No files collected from {solution_path}",
+            )
+            print(f"Stage run result: {result_path}")
         print(f"No files collected from {solution_path}")
         sys.exit(1)
 
@@ -285,16 +317,34 @@ def main() -> None:
             stage_validation=args.stage_validation,
         )
     except modal.exception.NotFoundError:
+        if args.stage_validation:
+            result_path = write_stage_run_result(
+                error=(
+                    "Synthetic service is not deployed yet.\n"
+                    "Deploy it with: .venv/bin/modal deploy scripts/bench_synthetic_service.py"
+                ),
+            )
+            print(f"Stage run result: {result_path}")
         print(
             "Synthetic service is not deployed yet.\n"
             "Deploy it with: .venv/bin/modal deploy scripts/bench_synthetic_service.py"
         )
         sys.exit(1)
     except Exception as exc:
+        if args.stage_validation:
+            result_path = write_stage_run_result(
+                error=f"{exc}\n\n{traceback.format_exc()}",
+            )
+            print(f"Stage run result: {result_path}")
         print(f"Remote synthetic run failed: {exc}")
         sys.exit(1)
 
     if not result.get("success"):
+        if args.stage_validation:
+            result_path = write_stage_run_result(
+                error=f"Synthetic service failed: {result.get('error', 'unknown error')}",
+            )
+            print(f"Stage run result: {result_path}")
         print(f"Synthetic service failed: {result.get('error', 'unknown error')}")
         sys.exit(1)
 
@@ -316,6 +366,8 @@ def main() -> None:
     results = result.get("results", [])
     print_synthetic_results(results)
     if args.stage_validation:
+        result_path = write_stage_run_result(result=result)
+        print(f"\nStage run result: {result_path}")
         print_stage_validation_logs(results)
         print()
         print_stage_validation_footer()

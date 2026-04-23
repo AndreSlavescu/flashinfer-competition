@@ -40,8 +40,9 @@ DEFAULT_GLOB_MATCH_LIMIT = LEGACY_TOOL_LIMITS.glob_match_limit
 DEFAULT_LIST_DIRECTORY_CAP = LEGACY_TOOL_LIMITS.list_directory_cap
 DEFAULT_GREP_MAX_COLUMNS = LEGACY_TOOL_LIMITS.grep_max_columns
 DEFAULT_BENCH_LANGUAGE = "python"
-DEFAULT_STAGE_VALIDATION_ENTRY_POINT = "kernel_0.py::prefix_validation_harness"
+DEFAULT_STAGE_VALIDATION_ENTRY_POINT = "kernel_0.py::run"
 SHELL_DUMP_FILE_NAME = "last_shell_dump.txt"
+RUN_RESULT_FILE_NAME = "last_run_res.txt"
 DEFAULT_SHELL_DUMP_CONTEXT_LINES = 200
 
 
@@ -779,7 +780,7 @@ async def run_stage_validation(
     include_all_files: bool = False,
     rebuild_fixture: bool = False,
 ) -> str:
-    """Run the single-case stage-validation entry point and return raw inspection context."""
+    """Run single-case stage validation, writing last_run_res.txt and shell transcript."""
     limits = _tool_limits_from_context(ctx)
     try:
         solution_path, solution_rel = _resolve_solution_dir(ctx, solution_dir)

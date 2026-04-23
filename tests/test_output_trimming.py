@@ -255,7 +255,7 @@ async def test_run_stage_validation_invokes_single_case_stage_validation_mode(
     command = list(invoked[0])
     assert command[:2] == [".venv/bin/python", "scripts/bench_synthetic.py"]
     assert "--stage-validation" in command
-    assert "kernel_0.py::prefix_validation_harness" in command
+    assert "kernel_0.py::run" in command
 
 
 @pytest.mark.asyncio

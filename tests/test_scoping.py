@@ -144,6 +144,12 @@ def _make_guardrail_data(
             "kernel-stage-reviewer",
         ),
         (
+            "reviewer",
+            "read_file",
+            {"file_path": "last_run_res.txt"},
+            "kernel-stage-reviewer",
+        ),
+        (
             "designer",
             "diff_files",
             {

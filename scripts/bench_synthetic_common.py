@@ -25,12 +25,13 @@ SYNTHETIC_CKV_DIM = 512
 SYNTHETIC_KPE_DIM = 64
 SYNTHETIC_SM_SCALE = 0.1352337788608801
 STAGE_VALIDATION_PREFERRED_PAGE_IDS = (1, 3, 5)
+RUN_RESULT_FILE_NAME = "last_run_res.txt"
+SHELL_DUMP_FILE_NAME = "last_shell_dump.txt"
 
 STAGE_VALIDATION_INSPECTION_FOOTER = (
-    "Stage validation is inspection-only.\n"
-    "Inspect tagged `[PyTorch]` / `[CuTeDSL]` BEGIN/END blocks in this transcript.\n"
-    "When invoked through the repo tools, use `grep_search` or `read_file` on "
-    "`last_shell_dump.txt` for shell-driven review."
+    "Stage validation writes kernel run results to `last_run_res.txt`.\n"
+    "Use `last_shell_dump.txt` for runtime CuTe object prints, compile traces, "
+    "runtime traces, and raw shell output."
 )
 
 
@@ -131,13 +132,7 @@ def print_synthetic_results(results: list[dict]) -> None:
 
 
 def print_stage_validation_logs(results: list[dict]) -> None:
-    """Print raw per-case logs for inspection-oriented stage validation.
-
-    Unlike the generic synthetic summary, stage validation is specifically about
-    inspecting tagged stdout blocks. Surface the captured log even for PASSED
-    cases so the local launcher transcript mirrors what reviewers are told to
-    inspect in `last_shell_dump.txt`.
-    """
+    """Print failing per-case logs without replaying successful CuTe print dumps."""
     logs = [
         (
             result.get("num_tokens", "?"),
@@ -145,14 +140,13 @@ def print_stage_validation_logs(results: list[dict]) -> None:
             str(result.get("log", "")).rstrip(),
         )
         for result in results
-        if str(result.get("log", "")).strip()
+        if result.get("status") != "PASSED" and str(result.get("log", "")).strip()
     ]
 
     if not logs:
-        print("\nNo stage-validation logs were captured.")
         return
 
-    print(f"\n  STAGE VALIDATION LOGS ({len(logs)}):")
+    print(f"\n  STAGE VALIDATION ERROR LOGS ({len(logs)}):")
     for num_tokens, status, log_text in logs:
         print(f"  --- num_tokens={num_tokens} status={status} ---")
         print(log_text)

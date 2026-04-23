@@ -50,6 +50,9 @@ ROUND0_CODER_SUPPORT_BLOCK = """\
 - Compile only on Modal B200 via `run_synthetic_check` / `run_correctness_check` —
   never locally. For long Modal logs, inspect `last_shell_dump.txt` with `read_file` or
   `grep_search`.
+- For staged round-0 validation, read `last_run_res.txt` for compile, runtime,
+  and validation results. Use `last_shell_dump.txt` for runtime CuTe object
+  prints and raw shell traces.
 - `grep_search` before `read_file` under `references/`.
 - Do not create spill files. Refine tool calls instead.
 """
@@ -98,6 +101,13 @@ class BlackwellStyleKernel:
     def epilogue(...): ...
     # more warp role implementations
 
+def create_synthetic_data(...):
+    ...
+
+def prefix_validation_harness(...):
+    matched = torch.allclose(...)
+    # more validation code
+
 def torch_reference(...):
     ...
 
@@ -105,9 +115,6 @@ program_compile_cache = dict()
 
 def run(...):
     torch.manual_seed(...)
-    def create_synthetic_data(...):
-        ...
-
     program = BlackwellStyleKernel(...)
     cache_key = (...)
     if not (cache_key in program_compile_cache):
@@ -116,10 +123,11 @@ def run(...):
     compiled_program = program_compile_cache[cache_key]
     ...
 
-    # dumps output validations in `last_shell_dump.txt` for reviewer agent inspection
+    # Run and validate kernel on synthetic data
     compiled_program(...)
     torch.cuda.synchronize()
-    o_ref, lse_ref = torch_reference(...)
+    ... = torch_reference(...)
+    return prefix_validation_harness(...)
 ```
 
 **YOU MUST USE CuTe DECORATORS ON THE KERNEL PATH, OTHERWISE YOU'LL GET MLIR CONTEXT ISSUES. `@cute.jit` for CuTeDSL helpers and warp role implementations, `@cute.kernel` for device entry kernels, and `@cute.struct` for shared-storage or typed CuTe structs.**
