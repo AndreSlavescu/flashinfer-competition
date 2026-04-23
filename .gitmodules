@@ -28,3 +28,6 @@
 [submodule "flashinfer"]
 	path = flashinfer
 	url = https://github.com/flashinfer-ai/flashinfer.git
+[submodule "KernelAgent"]
+	path = KernelAgent
+	url = https://github.com/meta-pytorch/KernelAgent.git

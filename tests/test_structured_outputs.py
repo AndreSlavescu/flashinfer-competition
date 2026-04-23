@@ -828,15 +828,20 @@ def test_dump_all_prompts_includes_stage_agents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(main, "PROJECT_ROOT", tmp_path)
+    reviewer_calls: list[dict[str, Any]] = []
 
     def _fake_agent_factory(**_: Any) -> _FakeAgent:
+        return _FakeAgent("static prompt")
+
+    def _fake_reviewer_factory(**kwargs: Any) -> _FakeAgent:
+        reviewer_calls.append(kwargs)
         return _FakeAgent("static prompt")
 
     monkeypatch.setattr(main, "make_kernel_designer", _fake_agent_factory)
     monkeypatch.setattr(main, "make_kernel_coder", _fake_agent_factory)
     monkeypatch.setattr(main, "make_round0_stage_coder", _fake_agent_factory)
     monkeypatch.setattr(main, "make_round0_stage_fixer", _fake_agent_factory)
-    monkeypatch.setattr(main, "make_round0_stage_reviewer", _fake_agent_factory)
+    monkeypatch.setattr(main, "make_round0_stage_reviewer", _fake_reviewer_factory)
     monkeypatch.setattr(main, "make_kernel_planner", _fake_agent_factory)
     monkeypatch.setattr(main, "make_kernel_optimizer", _fake_agent_factory)
 
@@ -852,8 +857,9 @@ def test_dump_all_prompts_includes_stage_agents(
         codex_worker_reasoning_effort="high",
         coder_reasoning_effort="high",
         coder_verbosity="low",
-        designer_reasoning_effort="high",
+        designer_reasoning_effort="xhigh",
         designer_verbosity="low",
+        reviewer_reasoning_effort="high",
         reviewer_verbosity="low",
         planner_reasoning_effort="high",
         optimizer_reasoning_effort="high",
@@ -868,6 +874,7 @@ def test_dump_all_prompts_includes_stage_agents(
     assert (output_dir / "static" / "kernel_stage_reviewer.md").read_text(
         encoding="utf-8"
     ) == "static prompt"
+    assert reviewer_calls[0]["reasoning_effort"] == "high"
 
 
 def test_dump_stage_runtime_prompt_artifacts_writes_and_reuses_files(
@@ -1368,10 +1375,25 @@ def test_main_dump_prompts_runs_loop_with_prompt_dump_enabled(
         run_loop_calls.append(kwargs)
 
     monkeypatch.setattr(main, "run_loop", _fake_run_loop)
-    monkeypatch.setattr(sys, "argv", ["main.py", "--dump-prompts"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "--dump-prompts",
+            "--designer-reasoning-effort",
+            "xhigh",
+            "--reviewer-reasoning-effort",
+            "high",
+        ],
+    )
 
     main.main()
 
     assert len(dump_calls) == 1
     assert len(run_loop_calls) == 1
     assert run_loop_calls[0]["prompt_dump"] is not None
+    assert dump_calls[0]["designer_reasoning_effort"] == "xhigh"
+    assert dump_calls[0]["reviewer_reasoning_effort"] == "high"
+    assert run_loop_calls[0]["designer_reasoning_effort"] == "xhigh"
+    assert run_loop_calls[0]["reviewer_reasoning_effort"] == "high"

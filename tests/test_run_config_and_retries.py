@@ -59,6 +59,21 @@ def test_rate_limit_error_detection_matches_retry_hints() -> None:
     assert main._rate_limit_retry_after_seconds(Exception("no hint")) is None
 
 
+def test_transient_model_error_detection_matches_retryable_api_failures() -> None:
+    transient_error = Exception(
+        "An error occurred while processing your request. You can retry your "
+        "request, or contact support with request ID req_123."
+    )
+
+    class _ServerError(Exception):
+        status_code = 500
+
+    assert main._is_transient_model_error(transient_error) is True
+    assert main._is_transient_model_error(Exception("Connection error.")) is True
+    assert main._is_transient_model_error(_ServerError("boom")) is True
+    assert main._is_transient_model_error(Exception("invalid structured result")) is False
+
+
 @pytest.mark.asyncio
 async def test_run_agent_retries_rate_limits_with_saved_session_context(
     monkeypatch: pytest.MonkeyPatch,
@@ -81,8 +96,16 @@ async def test_run_agent_retries_rate_limits_with_saved_session_context(
         max_turns: int,
         verbose: bool,
         session: SQLiteSession | None = None,
+        stage_label: str | None = None,
     ) -> tuple[object, float]:
-        calls.append({"input": input, "context": context, "session": session})
+        calls.append(
+            {
+                "input": input,
+                "context": context,
+                "session": session,
+                "stage_label": stage_label,
+            }
+        )
         if len(calls) == 1:
             raise rate_limit_error
         return stage_result, 0.25
@@ -108,10 +131,67 @@ async def test_run_agent_retries_rate_limits_with_saved_session_context(
     assert calls[1]["input"] == []
     assert calls[0]["context"] is ctx
     assert calls[1]["context"] is ctx
+    assert calls[0]["stage_label"] == "kernel-designer"
+    assert calls[1]["stage_label"] == "kernel-designer"
     assert isinstance(calls[0]["session"], SQLiteSession)
     assert calls[0]["session"] is calls[1]["session"]
     assert sleep_calls == [
         pytest.approx(1.244 + main.RATE_LIMIT_RETRY_SAFETY_BUFFER_S)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_agent_retries_transient_streaming_errors_non_streamed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = shared_context(Path.cwd(), quality_profile="public_codex")
+    transient_error = Exception(
+        "An error occurred while processing your request. You can retry your request."
+    )
+    calls: list[dict[str, Any]] = []
+    sleep_calls: list[float] = []
+    stage_result = object()
+
+    async def _fake_run_agent_once(
+        *,
+        starting_agent: object,
+        input: str | list[dict[str, Any]],
+        context: SharedContext,
+        max_turns: int,
+        verbose: bool,
+        session: SQLiteSession | None = None,
+        stage_label: str | None = None,
+    ) -> tuple[object, float]:
+        calls.append({"input": input, "verbose": verbose, "session": session})
+        if len(calls) == 1:
+            raise transient_error
+        return stage_result, 0.25
+
+    async def _fake_sleep(delay: float) -> None:
+        sleep_calls.append(delay)
+
+    monkeypatch.setattr(main, "_run_agent_once", _fake_run_agent_once)
+    monkeypatch.setattr(main.asyncio, "sleep", _fake_sleep)
+
+    result, _ = await main._run_agent(
+        stage_label="kernel-stage-coder-S0",
+        starting_agent=object(),
+        input="implement the kernel",
+        context=ctx,
+        max_turns=100,
+        verbose=True,
+    )
+
+    assert result is stage_result
+    assert len(calls) == 2
+    assert calls[0]["input"] == "implement the kernel"
+    assert calls[1]["input"] == []
+    assert calls[0]["verbose"] is True
+    assert calls[1]["verbose"] is False
+    assert isinstance(calls[0]["session"], SQLiteSession)
+    assert calls[0]["session"] is calls[1]["session"]
+    assert sleep_calls == [
+        pytest.approx(main.TRANSIENT_RETRY_BACKOFF_INITIAL_S + main.RATE_LIMIT_RETRY_SAFETY_BUFFER_S)
     ]
 
 
@@ -130,6 +210,7 @@ async def test_run_agent_non_rate_limits_raise_immediately(
         max_turns: int,
         verbose: bool,
         session: SQLiteSession | None = None,
+        stage_label: str | None = None,
     ) -> tuple[object, float]:
         calls.append({"input": input, "session": session})
         raise RuntimeError("boom")
@@ -172,6 +253,7 @@ async def test_run_agent_stops_after_stage_rate_limit_retry_cap(
         max_turns: int,
         verbose: bool,
         session: SQLiteSession | None = None,
+        stage_label: str | None = None,
     ) -> tuple[object, float]:
         calls.append({"input": input, "session": session})
         raise rate_limit_error
@@ -233,6 +315,7 @@ async def test_run_staged_designer_requires_written_plan_file(
         max_turns: int,
         verbose: bool,
         session: SQLiteSession | None = None,
+        stage_label: str | None = None,
     ) -> tuple[object, float]:
         calls.append({"input": input, "session": session, "context": context})
         return _FakeRunResult(

@@ -806,6 +806,7 @@ def _build_prompt_dump_agents(
     coder_verbosity: str,
     designer_reasoning_effort: str,
     designer_verbosity: str,
+    reviewer_reasoning_effort: str,
     reviewer_verbosity: str,
     planner_reasoning_effort: str,
     optimizer_reasoning_effort: str,
@@ -845,7 +846,7 @@ def _build_prompt_dump_agents(
         "kernel_stage_reviewer": make_round0_stage_reviewer(
             context=ctx,
             model=designer_model,
-            reasoning_effort=designer_reasoning_effort,  # type: ignore[arg-type]
+            reasoning_effort=reviewer_reasoning_effort,  # type: ignore[arg-type]
             verbosity=reviewer_verbosity,  # type: ignore[arg-type]
         ),
         "kernel_planner": make_kernel_planner(
@@ -877,6 +878,7 @@ def dump_all_prompts(
     coder_verbosity: str,
     designer_reasoning_effort: str,
     designer_verbosity: str,
+    reviewer_reasoning_effort: str,
     reviewer_verbosity: str,
     planner_reasoning_effort: str,
     optimizer_reasoning_effort: str,
@@ -911,6 +913,7 @@ def dump_all_prompts(
         coder_verbosity=coder_verbosity,
         designer_reasoning_effort=designer_reasoning_effort,
         designer_verbosity=designer_verbosity,
+        reviewer_reasoning_effort=reviewer_reasoning_effort,
         reviewer_verbosity=reviewer_verbosity,
         planner_reasoning_effort=planner_reasoning_effort,
         optimizer_reasoning_effort=optimizer_reasoning_effort,
@@ -1761,6 +1764,7 @@ async def run_loop(
     designer_max_turns: int = 80,
     designer_reasoning_effort: str = "high",
     designer_verbosity: str = "low",
+    reviewer_reasoning_effort: str = "high",
     reviewer_verbosity: str = "low",
     planner_reasoning_effort: str = "high",
     optimizer_reasoning_effort: str = "high",
@@ -1830,7 +1834,7 @@ async def run_loop(
     stage_reviewer = make_round0_stage_reviewer(
         context=ctx,
         model=designer_model,
-        reasoning_effort=designer_reasoning_effort,
+        reasoning_effort=reviewer_reasoning_effort,
         verbosity=reviewer_verbosity,
         extra_instructions=designer_extra,
     )
@@ -2332,6 +2336,12 @@ def main():
         help="Verbosity for the round-0 kernel-stage-reviewer agent (default: low)",
     )
     parser.add_argument(
+        "--reviewer-reasoning-effort",
+        choices=REASONING_EFFORT_CHOICES,
+        default="high",
+        help="Reasoning effort for the round-0 kernel-stage-reviewer agent (default: high)",
+    )
+    parser.add_argument(
         "--planner-reasoning-effort",
         choices=REASONING_EFFORT_CHOICES,
         default="high",
@@ -2376,6 +2386,7 @@ def main():
             coder_verbosity=args.coder_verbosity,
             designer_reasoning_effort=args.designer_reasoning_effort,
             designer_verbosity=args.designer_verbosity,
+            reviewer_reasoning_effort=args.reviewer_reasoning_effort,
             reviewer_verbosity=args.reviewer_verbosity,
             planner_reasoning_effort=args.planner_reasoning_effort,
             optimizer_reasoning_effort=args.optimizer_reasoning_effort,
@@ -2404,6 +2415,7 @@ def main():
         designer_max_turns=args.designer_max_turns,
         designer_reasoning_effort=args.designer_reasoning_effort,
         designer_verbosity=args.designer_verbosity,
+        reviewer_reasoning_effort=args.reviewer_reasoning_effort,
         reviewer_verbosity=args.reviewer_verbosity,
         planner_reasoning_effort=args.planner_reasoning_effort,
         optimizer_reasoning_effort=args.optimizer_reasoning_effort,

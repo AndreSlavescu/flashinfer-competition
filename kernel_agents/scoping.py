@@ -78,7 +78,7 @@ AGENT_SCOPES: dict[str, AgentFileScope] = {
             "last_shell_dump.txt",
         ),
         write_allow=(
-            "solution/dsa_attention/",
+            "solution/dsa_attention/kernel_0.py",
         ),
     ),
     "planner": AgentFileScope(
