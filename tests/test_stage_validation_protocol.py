@@ -32,7 +32,7 @@ def test_stage_validation_footer_describes_free_form_result_protocol() -> None:
     assert "[CuTeDSL]" not in STAGE_VALIDATION_INSPECTION_FOOTER
 
 
-def test_stage_validation_logs_skip_passed_cases(capsys) -> None:
+def test_stage_validation_logs_print_passed_cases(capsys) -> None:
     print_stage_validation_logs(
         [
             {
@@ -44,7 +44,9 @@ def test_stage_validation_logs_skip_passed_cases(capsys) -> None:
     )
 
     out = capsys.readouterr().out
-    assert out == ""
+    assert "STAGE VALIDATION LOGS (1)" in out
+    assert "--- num_tokens=1 status=PASSED ---" in out
+    assert "verbose cute.printf output should remain in last_shell_dump" in out
 
 
 def test_stage_validation_logs_print_only_failing_cases(capsys) -> None:
@@ -59,7 +61,7 @@ def test_stage_validation_logs_print_only_failing_cases(capsys) -> None:
     )
 
     out = capsys.readouterr().out
-    assert "STAGE VALIDATION ERROR LOGS (1)" in out
+    assert "STAGE VALIDATION LOGS (1)" in out
     assert "--- num_tokens=1 status=FAILED ---" in out
     assert "validation crash" in out
 
@@ -289,6 +291,7 @@ def test_stage_validation_remote_result_surfaces_free_form_payload(monkeypatch) 
 def test_stage_validation_launcher_writes_and_replaces_last_run_result(
     monkeypatch,
     tmp_path: Path,
+    capsys,
 ) -> None:
     import bench_synthetic
 
@@ -309,7 +312,7 @@ def test_stage_validation_launcher_writes_and_replaces_last_run_result(
                     "num_tokens": 1,
                     "num_pages": 8,
                     "status": "PASSED",
-                    "log": "",
+                    "log": "runtime CuTe object dump from passing stage validation",
                 }
             ],
             "stage_validation_result": "allclose ok",
@@ -363,12 +366,20 @@ def test_stage_validation_launcher_writes_and_replaces_last_run_result(
     )
 
     bench_synthetic.main()
+    first_out = capsys.readouterr().out
     result_path = tmp_path / RUN_RESULT_FILE_NAME
     first_result = result_path.read_text(encoding="utf-8")
     assert first_result == "allclose ok\n"
     assert not (solution_dir / "stage_validation_report.json").exists()
+    assert "STAGE VALIDATION LOGS (1)" in first_out
+    assert "--- num_tokens=1 status=PASSED ---" in first_out
+    assert "runtime CuTe object dump from passing stage validation" in first_out
 
     bench_synthetic.main()
+    second_out = capsys.readouterr().out
     second_result = result_path.read_text(encoding="utf-8")
     assert second_result == "stage validation crashed\n"
     assert "allclose ok" not in second_result
+    assert "STAGE VALIDATION LOGS (1)" in second_out
+    assert "--- num_tokens=1 status=FAILED ---" in second_out
+    assert "stage validation crashed" in second_out

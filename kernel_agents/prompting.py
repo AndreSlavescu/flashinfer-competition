@@ -70,7 +70,7 @@ import cutlass.cute as cute
 
 class BlackwellStyleKernel:
     def __init__(...):
-        # static configurations (dimensions, scheduler policy, warp roles, register budgets, barriers, tilers, iteration counts etc.)
+        # static configurations (dimensions, scheduler policy, warp roles, register budgets, barriers, tilers, iteration counts, tmem offsets etc.)
         ...
 
     @cute.jit
@@ -132,6 +132,41 @@ def run(...):
 
 **YOU MUST USE CuTe DECORATORS ON THE KERNEL PATH, OTHERWISE YOU'LL GET MLIR CONTEXT ISSUES. `@cute.jit` for CuTeDSL helpers and warp role implementations, `@cute.kernel` for device entry kernels, and `@cute.struct` for shared-storage or typed CuTe structs.**
 """
+
+CUTE_DUMP_BLOCK = """
+## Reference of dumping CuTeDSL values for harness:
+
+```
+class BlackwellStyleKernel:
+    ...
+    
+    @cute.jit
+    def __call__(... debug_mma_meta, debug_tensor ...):
+        ...
+        # Dumping scalar values (storage bytes, mma shapes, iterations, flags, scheduling order etc.)
+        debug_mma_meta[0] = qk_tiled_mma.op.shape_mnk[0]
+        debug_mma_meta[1] = pv_tiled_mma.op.shape_mnk[0]
+        ...
+        # Dumping tensor values (loaded operands, mma accumulators, reduced intermediates etc.)
+        cute.autovec_copy(smem_tensor, debug_tensor) # accounts for layouts, swizzling
+        ...
+
+def run()
+    ...
+    debug_mma_meta = torch.zeros(...)
+    debug_mma_meta_cute = from_dlpack(debug_mma_meta)
+    debug_tensor = torch.tensor(...)
+    debug_tensor_cute = from_dlpack(debug_tensor)
+    ...
+    compiled_program = cute.compile(program, ... debug_mma_meta_cute, debug_tensor_cute ...)
+    compiled_program(... debug_mma_meta_cute, debug_tensor_cute ...)
+    ...
+    return prefix_validation_harness(... debug_mma_meta, debug_tensor ...)
+    
+```
+
+"""
+
 
 
 def build_round0_coder_body(

@@ -132,7 +132,7 @@ def print_synthetic_results(results: list[dict]) -> None:
 
 
 def print_stage_validation_logs(results: list[dict]) -> None:
-    """Print failing per-case logs without replaying successful CuTe print dumps."""
+    """Print per-case stage-validation logs so shell dumps preserve runtime traces."""
     logs = [
         (
             result.get("num_tokens", "?"),
@@ -140,13 +140,13 @@ def print_stage_validation_logs(results: list[dict]) -> None:
             str(result.get("log", "")).rstrip(),
         )
         for result in results
-        if result.get("status") != "PASSED" and str(result.get("log", "")).strip()
+        if str(result.get("log", "")).strip()
     ]
 
     if not logs:
         return
 
-    print(f"\n  STAGE VALIDATION ERROR LOGS ({len(logs)}):")
+    print(f"\n  STAGE VALIDATION LOGS ({len(logs)}):")
     for num_tokens, status, log_text in logs:
         print(f"  --- num_tokens={num_tokens} status={status} ---")
         print(log_text)

@@ -1,0 +1,34 @@
+Source tool: run_stage_validation
+Working directory: /home/mark123/projects/word2kernel
+Dump file: last_shell_dump.txt
+This file is overwritten by the next shell-like tool call.
+
+[Command 1]
+Command: .venv/bin/python scripts/bench_synthetic.py --solution-dir solution/dsa_attention --entry-point kernel_0.py::run --stage-validation
+Exit code: 0
+STDOUT:
+Track: dsa_attention
+Solution: /home/mark123/projects/word2kernel/solution/dsa_attention
+Entry point: kernel_0.py::run
+Mode: stage-validation (single case, num_tokens=1)
+Payload: 1 file(s), 119.5 KiB (dependency closure)
+Invoking deployed synthetic runner...
+Service cache: fixture=volume solution=reloaded
+Service ids: fixture_version=9298acd1eabe payload_hash=fbcc06452cab
+Timing: remote=7.362s end_to_end=15.926s
+
+================================================================================
+  SYNTHETIC RESULTS: 1/1 cases passed
+================================================================================
+
+  tokens   pages    status       out_abs       lse_abs       max_abs
+  ------  ------  --------  ------------  ------------  ------------
+       1    8462      PASS             -             -             -
+
+Stage run result: /home/mark123/projects/word2kernel/last_run_res.txt
+
+Stage validation writes kernel run results to `last_run_res.txt`.
+Use `last_shell_dump.txt` for runtime CuTe object prints, compile traces, runtime traces, and raw shell output.
+
+STDERR:
+(empty)
